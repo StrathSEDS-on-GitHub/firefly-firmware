@@ -1,37 +1,35 @@
-use core::cell::RefCell;
+use core::{cell::RefCell};
 
-use cortex_m::{interrupt::Mutex};
+use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
-    gpio::{Pin, Input, Floating},
+    gpio::{Floating, Input, Pin},
     otg_fs::{UsbBus, USB},
-    pac::{OTG_FS_GLOBAL, OTG_FS_DEVICE, OTG_FS_PWRCLK},
+    pac::{OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     rcc::Clocks,
 };
 use usb_device::{
+    class_prelude::UsbBusAllocator,
     device::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
-    UsbError, class_prelude::UsbBusAllocator,
+    UsbError,
 };
 use usbd_serial::SerialPort;
+
+use crate::futures::UsbFuture;
 
 static mut SERIAL: Option<Serial> = None;
 static mut USB_BUS: Option<UsbBusAllocator<UsbBus<USB>>> = None;
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 
-
 /// Get a reference to the serial port.
 pub fn get_serial() -> &'static Serial<'static> {
     // SAFETY: SERIAL is only mutated once at initialization.
-    unsafe {
-        SERIAL.as_ref().unwrap()
-    }
+    unsafe { SERIAL.as_ref().unwrap() }
 }
 
 /// Try to get a reference to the serial port
 pub fn try_get_serial() -> Option<&'static Serial<'static>> {
     // SAFETY: SERIAL is only mutated once at initialization.
-    unsafe {
-        SERIAL.as_ref()
-    }
+    unsafe { SERIAL.as_ref() }
 }
 
 /// A wrapper around the serial port that hides some unsafe stuff.
@@ -53,43 +51,54 @@ impl<'a> Serial<'a> {
         }
     }
 
-    pub fn log(&self, buf: &str) {
+    pub async fn log(&self, buf: &str) {
         let mut write_offset = 0;
         let count = buf.len();
 
-        cortex_m::interrupt::free(|cs| {
-            let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
-            while write_offset < count {
-                match serial_port.write(&buf[write_offset..count].as_bytes()) {
-                    Ok(len) if len > 0 => {
-                        write_offset += len;
+        UsbFuture::new(
+            || {
+                cortex_m::interrupt::free(|cs| {
+                    let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
+                    while write_offset < count {
+                        match serial_port.write(&buf[write_offset..count].as_bytes()) {
+                            Ok(len) => {
+                                if len > 0 {
+                                    write_offset += len
+                                };
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
-                    _ => {
-                        while !self.poll() {}
-                    }
-                }
-            }
-            while serial_port.flush().is_err() {};
-        });
+                    serial_port.flush()
+                })
+            },
+            || self.poll(),
+        )
+        .await
+        .unwrap();
     }
 
-    pub fn read(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
-        let mut result = Ok(0);
-        cortex_m::interrupt::free(|cs| {
-            let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
-            result = serial_port.read(buffer);
-        });
-        result
+    pub async fn read(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
+        UsbFuture::new(
+            || {
+                let s = cortex_m::interrupt::free(|cs| {
+                    let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
+                    serial_port.read(buffer)
+                });
+                // unsafe { ERROR_LED.as_mut().unwrap().set_high() };
+                s
+            },
+            || self.poll(),
+        )
+        .await
     }
 
     pub fn poll(&self) -> bool {
-        let mut result = false;
         cortex_m::interrupt::free(|cs| {
             let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
             let mut usb_dev = self.usb_device.borrow(cs).borrow_mut();
-            result = usb_dev.poll(&mut [&mut *serial_port]);
-        });
-        result
+            usb_dev.poll(&mut [&mut *serial_port])
+        })
     }
 }
 
@@ -119,16 +128,17 @@ pub fn setup_usb<'a>(
 
     let serial = usbd_serial::SerialPort::new(unsafe { &USB_BUS.as_ref().unwrap() });
 
-    let usb_dev = UsbDeviceBuilder::new(unsafe { &USB_BUS.as_ref().unwrap() }, UsbVidPid(0x16c0, 0x27dd))
-        .manufacturer("Fake company")
-        .product("Serial port")
-        .serial_number("TEST")
-        .device_class(usbd_serial::USB_CLASS_CDC)
-        .build();
-
+    let usb_dev = UsbDeviceBuilder::new(
+        unsafe { &USB_BUS.as_ref().unwrap() },
+        UsbVidPid(0x16c0, 0x27dd),
+    )
+    .manufacturer("Fake company")
+    .product("Serial port")
+    .serial_number("TEST")
+    .device_class(usbd_serial::USB_CLASS_CDC)
+    .build();
 
     unsafe { SERIAL = Some(Serial::new(serial, usb_dev)) };
-    
 }
 
 /// Lets you format a string by providing your own buffer. Returns an error if the buffer is too small.

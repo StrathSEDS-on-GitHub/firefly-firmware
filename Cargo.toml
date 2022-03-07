@@ -15,6 +15,8 @@ usbd-serial = "0.1"
 
 smart-leds = "0.3"
 ws2812-timer-delay = "0.3"
+cassette = "0.2"
+futures = { version = "0.3", default-features = false, features= ["async-await"] }
 
 [dependencies.stm32f4xx-hal]
 version = "0.12.0"
