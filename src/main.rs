@@ -6,10 +6,19 @@
 #![no_std]
 
 use crate::futures::NbFuture;
+use crate::hal::timer::TimerExt;
 use cassette::pin_mut;
 use cassette::Cassette;
 use cortex_m::interrupt::Mutex;
+use embedded_hal::digital::v2::OutputPin;
+use hal::gpio::Pin;
+use hal::i2c::I2c;
+use hal::pac::SDIO;
+use hal::sdio::ClockFreq;
+use hal::sdio::SdCard;
+use hal::sdio::Sdio;
 use hal::timer::CounterHz;
+use hal::timer::CounterMs;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
@@ -32,7 +41,7 @@ mod futures;
 mod logger;
 
 // SAFETY: It's properly Mutex'd and RefCell'd, so everything should be fine
-static mut ERROR_LED: Option<Mutex<RefCell<gpio::Pin<Output<PushPull>, 'C', 1>>>> = None;
+static mut ERROR_LED: Option<Mutex<RefCell<gpio::Pin<'C', 1, Output<PushPull>>>>> = None;
 
 #[entry]
 fn main() -> ! {
@@ -87,6 +96,7 @@ async fn prog_main() {
         cortex_m::peripheral::Peripherals::take(),
     ) {
         let gpioc = dp.GPIOC.split();
+        let gpiod = dp.GPIOD.split();
         let mut led = gpioc.pc1.into_push_pull_output();
         led.set_high();
         // SAFETY: error_led is only mutated once at initialization.
@@ -113,15 +123,25 @@ async fn prog_main() {
             gpioa.pa12,
             &clocks,
         );
-
         let mut timer = dp.TIM2.counter_hz(&clocks);
 
         timer.start(3.MHz()).unwrap();
 
-        let neo_pin = gpioc.pc0.into_push_pull_output().set_speed(Speed::High);
+        let mut neo_pin = gpioc.pc0.into_push_pull_output();
+        neo_pin.set_speed(Speed::High);
         let neopixel = Ws2812::new(timer, neo_pin);
 
-        let f = run_usb(neopixel);
+        let mut delay = cp.SYST.delay(&clocks);
+
+        let d0 = gpioc.pc8.into_alternate().internal_pull_up(true);
+        let d1 = gpioc.pc9.into_alternate().internal_pull_up(true);
+        let d2 = gpioc.pc10.into_alternate().internal_pull_up(true);
+        let d3 = gpioc.pc11.into_alternate().internal_pull_up(true);
+        let clk = gpioc.pc12.into_alternate().internal_pull_up(false);
+        let cmd = gpiod.pd2.into_alternate().internal_pull_up(true);
+
+
+        let f = run_usb(neopixel, clk, cmd, d0, d1, d2, d3, &clocks, delay, dp.SDIO);
         let mut timer2 = dp.TIM3.counter_hz(&clocks);
         let f2 = blink_led(&mut timer2);
 
@@ -129,8 +149,68 @@ async fn prog_main() {
     }
 }
 
+async fn sd_card_shit(
+    clk: Pin<'C', 12, gpio::Alternate<12>>,
+    cmd: Pin<'D', 2, gpio::Alternate<12>>,
+    d0: Pin<'C', 8, gpio::Alternate<12>>,
+    d1: Pin<'C', 9, gpio::Alternate<12>>,
+    d2: Pin<'C', 10, gpio::Alternate<12>>,
+    d3: Pin<'C', 11, gpio::Alternate<12>>,
+    clocks: &hal::rcc::Clocks,
+    mut delay: hal::timer::SysDelay,
+    sdio_port: SDIO,
+) {
+    let mut sdio: Sdio<SdCard> = Sdio::new(sdio_port, (clk, cmd, d0, d1, d2, d3), clocks);
+    get_serial().log("Waiting for card...\n").await;
+    // Wait for card to be ready
+    loop {
+        match sdio.init(ClockFreq::F24Mhz) {
+            Ok(_) => break,
+            Err(_err) => (),
+        }
+
+        delay.delay_ms(1000u32);
+    }
+    let mut buffer = [0; 256];
+    let nblocks = sdio.card().map(|c| c.block_count()).unwrap_or(0);
+    get_serial()
+        .log(
+            show(
+                &mut buffer,
+                format_args!("Card detected: nbr of blocks: {:?}\n", nblocks),
+            )
+            .unwrap(),
+        )
+        .await;
+    // Read a block from the card and print the data
+    let mut block = [0u8; 512];
+    match sdio.read_block(0, &mut block) {
+        Ok(()) => (),
+        Err(err) => {
+            panic!("Error reading block: {:?}\n", err);
+        }
+    }
+    for b in block.iter() {
+        get_serial()
+            .log(show(&mut buffer, format_args!("{:?}", b)).unwrap())
+            .await;
+    }
+
+    get_serial().log("\n").await;
+}
+
 async fn run_usb(
-    mut neopixel: Ws2812<hal::timer::CounterHz<pac::TIM2>, gpio::Pin<Output<PushPull>, 'C', 0>>,
+    mut neopixel: Ws2812<hal::timer::CounterHz<pac::TIM2>, gpio::Pin<'C', 0, Output<PushPull>>>,
+
+    clk: Pin<'C', 12, gpio::Alternate<12>>,
+    cmd: Pin<'D', 2, gpio::Alternate<12>>,
+    d0: Pin<'C', 8, gpio::Alternate<12>>,
+    d1: Pin<'C', 9, gpio::Alternate<12>>,
+    d2: Pin<'C', 10, gpio::Alternate<12>>,
+    d3: Pin<'C', 11, gpio::Alternate<12>>,
+    clocks: &hal::rcc::Clocks,
+    delay: hal::timer::SysDelay,
+    sdio_port: SDIO,
 ) -> ! {
     loop {
         let mut buf = [0u8; 64];
@@ -142,7 +222,8 @@ async fn run_usb(
                     continue;
                 }
 
-                if buf[0..count].starts_with(b"panic!") {
+                if buf[0..count].starts_with(b"sd") {
+                    sd_card_shit(clk, cmd, d0, d1, d2, d3, clocks, delay, sdio_port).await;
                     panic!("at the disco");
                 }
 

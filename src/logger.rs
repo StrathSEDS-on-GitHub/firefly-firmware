@@ -2,7 +2,7 @@ use core::{cell::RefCell};
 
 use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
-    gpio::{Floating, Input, Pin},
+    gpio::{Input, Pin},
     otg_fs::{UsbBus, USB},
     pac::{OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     rcc::Clocks,
@@ -106,8 +106,8 @@ pub fn setup_usb<'a>(
     otg_fs_global: OTG_FS_GLOBAL,
     otg_fs_device: OTG_FS_DEVICE,
     otg_fs_powerclock: OTG_FS_PWRCLK,
-    gpioa_pa11: Pin<Input<Floating>, 'A', 11>,
-    gpioa_pa12: Pin<Input<Floating>, 'A', 12>,
+    gpioa_pa11: Pin<'A', 11, Input>,
+    gpioa_pa12: Pin<'A', 12, Input>,
     clocks: &'a Clocks,
 ) {
     let usb = USB {

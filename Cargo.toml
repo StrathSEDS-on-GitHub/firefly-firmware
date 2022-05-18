@@ -19,5 +19,5 @@ cassette = "0.2"
 futures = { version = "0.3", default-features = false, features= ["async-await"] }
 
 [dependencies.stm32f4xx-hal]
-version = "0.12.0"
-features = ["rt", "stm32f405", "usb_fs"] # replace the model of your microcontroller here
+version = "0.13.2"
+features = ["rt", "stm32f405", "usb_fs", "sdio", "sdio-host"] # replace the model of your microcontroller here

@@ -288,15 +288,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hd44780-driver"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aab2b13fdeaed7dde9133a57c28b2cbde4a8fc8c3196b5631428aad114857d3a"
-dependencies = [
- "embedded-hal 0.2.7",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -387,6 +378,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdio-host"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "355c411b00ad0634aa29824b37d0755e931a349b3230ffdef846c140eeed9c09"
+
+[[package]]
 name = "semver"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,9 +436,9 @@ dependencies = [
 
 [[package]]
 name = "stm32f4xx-hal"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dec85aed466acc6fcd7f2f2cc01b40e7ed54b50cc0a723f3c78b0edf9e4841a"
+checksum = "23ff737e5c7bd48ed40b5e14f1da1413c34be611c9871779199b67c40f40a396"
 dependencies = [
  "bare-metal 1.0.0",
  "bitflags",
@@ -453,9 +450,9 @@ dependencies = [
  "embedded-storage",
  "fugit",
  "fugit-timer",
- "hd44780-driver",
  "nb 1.0.0",
  "rand_core",
+ "sdio-host",
  "stm32f4",
  "synopsys-usb-otg",
  "time",
