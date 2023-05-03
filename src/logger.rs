@@ -1,5 +1,6 @@
-use core::{cell::RefCell};
+use core::cell::RefCell;
 
+use cassette::{Cassette, pin_mut};
 use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
     gpio::{Input, Pin},
@@ -189,5 +190,29 @@ pub mod write_to {
         let mut w = WriteTo::new(buffer);
         fmt::write(&mut w, args)?;
         w.as_str().ok_or(fmt::Error)
+    }
+}
+
+impl core::fmt::Write for &Serial<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let mut buffer = [0u8; 64];
+        let mut offset = 0;
+        let count = s.len();
+        while offset < count {
+            let write_num = core::cmp::min(count - offset, buffer.len());
+            buffer[..write_num].copy_from_slice(&s.as_bytes()[offset..offset + write_num]);
+            offset += write_num;
+
+            let fut = self.log(&write_to::show(&mut buffer[..], format_args!("{}\r\n", s)).unwrap());
+
+            pin_mut!(fut);
+            let mut cm = Cassette::new(fut);
+            loop {
+                if let Some(_) = cm.poll_on() {
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }

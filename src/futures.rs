@@ -1,9 +1,5 @@
 use core::{future::Future, pin};
-
-
 use usb_device::UsbError;
-
-
 
 pub struct NbFuture<T, E, F>
 where
@@ -39,7 +35,35 @@ where
     }
 }
 
-pub struct UsbFuture<T, F, P,>
+/// Empty future. Await on it in order to yield execution to other tasks.
+pub struct YieldFuture {
+    yielded: bool,
+}
+
+impl Future for YieldFuture {
+    type Output = ();
+
+    fn poll(
+        mut self: pin::Pin<&mut Self>,
+        _cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        match self.yielded {
+            true => core::task::Poll::Ready(()),
+            false => {
+                self.yielded = true;
+                core::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl YieldFuture {
+    pub fn new() -> Self {
+        YieldFuture { yielded: false }
+    }
+}
+
+pub struct UsbFuture<T, F, P>
 where
     F: FnMut() -> Result<T, UsbError> + Unpin,
     P: FnMut() -> bool + Unpin,
