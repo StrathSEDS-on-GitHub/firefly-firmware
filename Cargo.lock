@@ -85,6 +85,7 @@ dependencies = [
  "cortex-m 0.7.4",
  "cortex-m-rt",
  "cortex-m-semihosting",
+ "dummy-pin",
  "embedded-hal 0.2.7",
  "futures",
  "heapless",
@@ -163,6 +164,15 @@ name = "critical-section"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6548a0ad5d2549e111e1f6a11a6c2e2d00ce6a3dafe22948d67c2b443f775e52"
+
+[[package]]
+name = "dummy-pin"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35a398d1147b4cf46064025c34f3c5319020fc5f112471d6b36581c9ded1c248"
+dependencies = [
+ "embedded-hal 0.2.7",
+]
 
 [[package]]
 name = "embedded-dma"

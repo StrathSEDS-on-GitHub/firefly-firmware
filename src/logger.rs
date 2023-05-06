@@ -79,6 +79,14 @@ impl<'a> Serial<'a> {
         .unwrap();
     }
 
+    pub fn read_no_block(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
+        cortex_m::interrupt::free(|cs| {
+            let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
+            serial_port.flush()?;
+            serial_port.read(buffer)
+        })
+    }
+
     pub async fn read(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
         UsbFuture::new(
             || {
@@ -195,22 +203,12 @@ pub mod write_to {
 
 impl core::fmt::Write for &Serial<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let mut buffer = [0u8; 64];
-        let mut offset = 0;
-        let count = s.len();
-        while offset < count {
-            let write_num = core::cmp::min(count - offset, buffer.len());
-            buffer[..write_num].copy_from_slice(&s.as_bytes()[offset..offset + write_num]);
-            offset += write_num;
-
-            let fut = self.log(&write_to::show(&mut buffer[..], format_args!("{}\r\n", s)).unwrap());
-
-            pin_mut!(fut);
-            let mut cm = Cassette::new(fut);
-            loop {
-                if let Some(_) = cm.poll_on() {
-                    break;
-                }
+        let future = self.log(s);
+        cassette::pin_mut!(future);
+        let mut cm = cassette::Cassette::new(future);
+        loop {
+            if let Some(_) = cm.poll_on() {
+                break;
             }
         }
         Ok(())
