@@ -565,8 +565,6 @@ dependencies = [
 [[package]]
 name = "sx126x"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09614de4bf9369f9ca56a4134c5dd5a6b89a2bed2eb10ce8a34e91a250a8b9ff"
 dependencies = [
  "cortex-m 0.6.7",
  "embedded-hal 0.2.7",

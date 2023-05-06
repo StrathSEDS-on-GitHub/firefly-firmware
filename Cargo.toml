@@ -20,7 +20,7 @@ futures = { version = "0.3", default-features = false, features= ["async-await"]
 cortex-m-semihosting = "0.5.0"
 nmea0183 = "0.3.0"
 heapless = "0.7.0"
-sx126x = { version = "0.1.1" }
+sx126x = { version = "0.1.1", path="sx126x-rs" }
 dummy-pin = "0.1.1"
 
 [dependencies.stm32f4xx-hal]
