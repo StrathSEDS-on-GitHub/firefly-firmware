@@ -1,7 +1,7 @@
 use core::cell::RefCell;
 
-use cassette::{Cassette, pin_mut};
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use stm32f4xx_hal::{
     gpio::{Input, Pin},
     otg_fs::{UsbBus, USB},
@@ -54,6 +54,7 @@ impl<'a> Serial<'a> {
 
     pub async fn log(&self, buf: &str) {
         let mut write_offset = 0;
+        let buf = buf.as_bytes();
         let count = buf.len();
 
         UsbFuture::new(
@@ -61,10 +62,10 @@ impl<'a> Serial<'a> {
                 cortex_m::interrupt::free(|cs| {
                     let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
                     while write_offset < count {
-                        match serial_port.write(&buf[write_offset..count].as_bytes()) {
+                        match serial_port.write(&buf[write_offset..count]) {
                             Ok(len) => {
                                 if len > 0 {
-                                    write_offset += len
+                                    write_offset += len;
                                 };
                             }
                             Err(e) => return Err(e),

@@ -22,7 +22,7 @@ impl<'a, I2C: i2c::WriteRead> BMP581<'a, I2C> {
     where
         I2C: i2c::WriteRead<Error = E>,
     {
-        let mut chip = BMP581 { com: i2c };
+        let chip = BMP581 { com: i2c };
         Ok(chip)
     }
 

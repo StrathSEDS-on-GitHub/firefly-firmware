@@ -22,7 +22,7 @@ impl<'a, I2C: i2c::WriteRead> BNO085<'a, I2C> {
     where
         I2C: i2c::WriteRead<Error = E>,
     {
-        let mut chip = BNO085 { com: i2c };
+        let chip = BNO085 { com: i2c };
         Ok(chip)
     }
 
