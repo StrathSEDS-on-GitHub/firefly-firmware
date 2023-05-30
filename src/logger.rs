@@ -1,9 +1,8 @@
 use core::cell::RefCell;
 
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use stm32f4xx_hal::{
-    gpio::{Input, Pin},
+    gpio::{Input, Pin, alt::otg_fs},
     otg_fs::{UsbBus, USB},
     pac::{OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     rcc::Clocks,
@@ -124,8 +123,8 @@ pub fn setup_usb<'a>(
         usb_global: otg_fs_global,
         usb_device: otg_fs_device,
         usb_pwrclk: otg_fs_powerclock,
-        pin_dm: gpioa_pa11.into_alternate(),
-        pin_dp: gpioa_pa12.into_alternate(),
+        pin_dm: otg_fs::Dm::PA11(gpioa_pa11.into_alternate()),
+        pin_dp: otg_fs::Dp::PA12(gpioa_pa12.into_alternate()),
         hclk: clocks.hclk(),
     };
 

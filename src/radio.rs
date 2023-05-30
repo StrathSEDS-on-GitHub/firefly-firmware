@@ -10,7 +10,7 @@ use embedded_hal::digital::v2::InputPin;
 use embedded_hal::digital::v2::OutputPin;
 use heapless::Deque;
 use stm32f4xx_hal::interrupt;
-use stm32f4xx_hal::prelude::_fugit_DurationExtU32;
+use fugit::ExtU32;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::timer::CounterMs;
 use sx126x::op::ChipMode;

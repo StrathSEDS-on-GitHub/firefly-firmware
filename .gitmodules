@@ -1,3 +1,9 @@
 [submodule "sx126x-rs"]
 	path = sx126x-rs
 	url = https://github.com/tweedegolf/sx126x-rs
+[submodule "f4-w25q"]
+	path = f4-w25q
+	url = https://github.com/X-yl/f4-w25q
+[submodule "stm32f4xx-hal"]
+	path = stm32f4xx-hal
+	url = https://github.com/stm32-rs/stm32f4xx-hal

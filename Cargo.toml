@@ -3,12 +3,16 @@ name = "cansat"
 version = "0.1.0"
 edition = "2021"
 
+# Minimise size of the binary
+[profile.dev]
+opt-level = "z"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 embedded-hal="0.2"
 nb = "1"
-cortex-m = "0.7"
+cortex-m = {version = "0.7", features=["critical-section-single-core"]}
 cortex-m-rt = "0.7"
 usb-device="0.2"
 usbd-serial = "0.1"
@@ -22,7 +26,12 @@ nmea0183 = "0.3.0"
 heapless = "0.7.0"
 sx126x = { version = "0.1.1", path="sx126x-rs" }
 dummy-pin = "0.1.1"
+libm = "0.2.6"
+embedded-sdmmc = "0.4.0"
+fugit = {version = "0.3.6", features = []}
+f4-w25q = {version = "0.1.0", path="f4-w25q"}
 
 [dependencies.stm32f4xx-hal]
-version = "0.15.0"
+version = "0.16.0"
+path="stm32f4xx-hal"
 features = ["rt", "stm32f412", "usb_fs", "sdio", "sdio-host"] # replace the model of your microcontroller here

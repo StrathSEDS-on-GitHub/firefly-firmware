@@ -7,11 +7,11 @@ use core::{
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
 use hal::{
-    dma::{Stream2, Stream7, StreamsTuple},
+    dma::{Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
     pac::USART1,
     prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxISR, SerialExt},
+    serial::{RxISR, SerialExt, RxListen},
 };
 use heapless::Deque;
 use nmea0183::ParseResult;
@@ -19,7 +19,6 @@ use stm32f4xx_hal::{
     dma::{
         self,
         traits::{Stream, StreamISR},
-        Transfer,
     },
     interrupt, pac,
     serial::{Rx, Tx},
@@ -64,16 +63,11 @@ static RX_COMPLETE: AtomicBool = AtomicBool::new(false);
 static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
 
 const RX_BUFFER_SIZE: usize = 512;
-pub fn setup(
+pub fn setup<UART>(
     dma2: pac::DMA2,
-    gps: hal::serial::Serial<
-        pac::USART1,
-        (
-            gpio::Pin<'A', 15, gpio::Alternate<7>>,
-            gpio::Pin<'A', 10, gpio::Alternate<7>>,
-        ),
-    >,
-) {
+    gps: hal::serial::Serial<USART1>,
+)
+ {
     let streams = StreamsTuple::new(dma2);
     let tx_stream = streams.7;
     let rx_stream = streams.2;
@@ -81,6 +75,7 @@ pub fn setup(
     let rx_buf1_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let (tx, mut rx) = gps.split();
+    
     let mut tx_transfer = Transfer::init_memory_to_peripheral(
         tx_stream,
         tx,
@@ -214,7 +209,7 @@ pub async fn next_sentence() -> ParseResult {
     }
 }
 
-/// Interrupt for radio DMA TX,
+/// Interrupt for gps DMA TX,
 #[interrupt]
 fn DMA2_STREAM7() {
     cortex_m::interrupt::free(|cs| {

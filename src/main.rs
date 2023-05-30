@@ -7,19 +7,27 @@
 #![no_main]
 #![no_std]
 
+use core::ffi::c_void;
 use core::fmt::Write;
 
-use crate::futures::NbFuture;
+use crate::bmp581::BMP581;
 use crate::hal::timer::TimerExt;
-use crate::radio::Radio;
-use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
-use dummy_pin::DummyPin;
+use f4_w25q::w25q::Address;
+use f4_w25q::w25q::SectorAddress;
+use f4_w25q::w25q::W25Q;
 use hal::gpio;
-use hal::serial::Serial;
+use hal::gpio::alt::quadspi::Bank1;
+use hal::i2c::I2c;
+use hal::qspi::FlashSize;
+use hal::qspi::Qspi;
+use hal::qspi::QspiConfig;
+use hal::qspi::QspiMode;
+use hal::qspi::QspiReadCommand;
+use hal::qspi::QspiWriteCommand;
 use hal::spi;
 use logger::setup_usb;
 use smart_leds::RGB8;
@@ -30,7 +38,6 @@ use sx126x::op::PaConfig;
 use sx126x::op::RampTime;
 use sx126x::op::TcxoVoltage;
 use sx126x::op::TxParams;
-use sx126x::SX126x;
 use ws2812_timer_delay::Ws2812;
 
 use core::cell::RefCell;
@@ -46,8 +53,10 @@ mod bmp581;
 mod bno085;
 mod futures;
 mod gps;
+mod ina219;
 mod logger;
 mod radio;
+mod sdcard;
 mod words;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
@@ -83,14 +92,20 @@ async fn prog_main() {
         let gpioe = dp.GPIOE.split();
 
         let _pin = gpioe.pe10.into_push_pull_output();
+
+        dp.RCC
+            .ahb3enr
+            .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
         let rcc = dp.RCC.constrain();
+
         let clocks = rcc
             .cfgr
             .sysclk(48.MHz())
             .use_hse(16.MHz())
+            .pclk1(48.MHz())
+            .pclk2(48.MHz())
             .require_pll48clk()
             .freeze();
-
         let mut delay = cp.SYST.delay(&clocks);
         let mut timer = dp.TIM2.counter_hz(&clocks);
         timer.start(4.MHz()).unwrap();
@@ -138,6 +153,14 @@ async fn prog_main() {
 
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
+        let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
+        let mut bmp = BMP581::new(&mut i2c1).unwrap();
+        bmp.enable_pressure().unwrap();
+
+        //let mut i2c3 = I2c::new(dp.I2C3, (gpioa.pb4, gpiob.pb4.into_input()), 100u32.kHz(), &clocks);
+        //let mut ina = INA219::new(&mut i2c3).unwrap();
+
+        /*
         let lora_nreset = gpiob
             .pb0
             .into_push_pull_output_in_state(gpio::PinState::High);
@@ -185,51 +208,77 @@ async fn prog_main() {
         }
 
         let mut timer2 = dp.TIM3.counter_ms(&clocks);
+        timer2.start(1000u32.millis());
+        NbFuture::new(|| timer2.wait()).await;
 
         let mut radio = Radio::new(lora, spi1, delay);
-        let f1 = async {
-            timer2.start(3000u32.millis()).unwrap();
-            NbFuture::new(|| timer2.wait()).await.unwrap();
-            if tx_test {
-                radio.radio_test_tx(timer2).await;
-            } else {
-                radio.radio_test_rx(timer2).await;
-            }
-        };
-        let f2 = async {
-            if !tx_test {
-                loop {
-                    let mut buf = [0; 32];
-                    let len = get_serial().read(&mut buf).await.unwrap();
-                    if len == 0 {
-                        continue;
-                    }
+         */
+        let gpiod = dp.GPIOD.split();
 
-                    get_serial()
-                        .log(unsafe { core::str::from_utf8_unchecked(&buf[..len]) })
-                        .await;
-                }
-            } else {
-           /*     let serial = Serial::new(
-                    dp.USART1,
-                    (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
-                    hal::serial::config::Config {
-                        baudrate: 115200.bps(),
-                        dma: hal::serial::config::DmaConfig::TxRx,
-                        ..Default::default()
-                    },
-                    &clocks,
-                ).unwrap();
-                gps::setup(dp.DMA2, serial);
-                gps::tx("$PMTK314,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n".as_bytes()).await;
+        gpioe.pe3.into_floating_input();
+        gpioe.pe4.into_floating_input();
 
-                let mut timer3 = dp.TIM4.counter_ms(&clocks);
-                timer3.start(100u32.millis()).unwrap();
-                gps::parse_recvd_data().await;
-            */
-            }
-        };
-        join!(f1, f2);
+        let qspi = Qspi::<Bank1>::new(
+            dp.QUADSPI,
+            (
+                gpiob.pb6, gpiod.pd11, gpiod.pd12, gpioe.pe2, gpioa.pa1, gpiob.pb1,
+            ),
+            QspiConfig::default()
+                .address_size(hal::qspi::AddressSize::Addr24Bit)
+                .flash_size(FlashSize::from_megabytes(16))
+                .clock_prescaler(0)
+                .sample_shift(hal::qspi::SampleShift::HalfACycle),
+        );
+
+        extern "C" {
+            static sota_update: u8;
+            static eota_update: u8;
+        }
+
+        if unsafe { sota_update } == 0 {
+            // required to make the linker keep the symbol in the final binary
+            // ridiculous but I don't know how to do it otherwise
+            over_the_air_update();
+        }
+
+        let fn_ptr =
+            unsafe { core::mem::transmute::<_, fn()>((&sota_update as *const _ as usize) | 1) };
+        fn_ptr();
+
+
+        let mut flash = W25Q::new(qspi).unwrap();
+        flash.erase_sector(SectorAddress::from_address(0)).unwrap();
+        flash
+            .program_page(
+                Address::from_page_and_offset(0, 0),
+                "Hello, world!".as_bytes(),
+            )
+            .unwrap();
+
+        let mut buf = [0u8; 13];
+        flash.read(0.into(), &mut buf).unwrap();
+
+        hprintln!("Read: {:?}", core::str::from_utf8(&buf));
+
+        let mem_mapped = flash.memory_mapped().unwrap();
+        hprintln!(
+            "Mapped: {:?}",
+            core::str::from_utf8(&mem_mapped.buffer()[0..13])
+        );
+        drop(mem_mapped);
+
+        flash.erase_sector(SectorAddress::from_address(0)).unwrap();
+        flash.read(0.into(), &mut buf).unwrap();
+        hprintln!("Erased: {:x?}", buf);
+    }
+}
+
+#[inline(never)]
+#[no_mangle]
+#[link_section = ".ota_update"]
+pub extern fn over_the_air_update() -> ! {
+    loop {
+        hprintln!("OTA update");
     }
 }
 
@@ -239,31 +288,7 @@ async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
         PacketType::LoRa,
     };
 
-    let spread_factor = if prompt_for_sf {
-        loop {
-            writeln!(get_serial(), "Enter spreading factor: ");
-            let mut buf = [0; 32];
-            let len = get_serial().read(&mut buf).await.unwrap();
-
-            let sf = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
-
-            match sf.trim().parse::<u8>() {
-                Ok(sf) => {
-                    if sf >= 5 && sf <= 12 {
-                        writeln!(get_serial(), "Spreading factor: {}", sf);
-                        break sf;
-                    } else {
-                        writeln!(get_serial(), "Invalid spreading factor: {}", sf);
-                    }
-                }
-                Err(_) => {
-                    writeln!(get_serial(), "Invalid spreading factor: {}", sf);
-                }
-            }
-        }
-    } else {
-        9
-    };
+    let spread_factor = 9;
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(spread_factor.into())
@@ -305,7 +330,7 @@ async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
         dio3_irq_mask: IrqMask::none(),
         rf_frequency: RF_FREQUENCY,
         rf_freq,
-        tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into()))
+        tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into())),
     }
 }
 
