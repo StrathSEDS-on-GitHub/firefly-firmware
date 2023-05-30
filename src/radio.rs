@@ -9,6 +9,7 @@ use embedded_hal::blocking::spi::Write as SPIWrite;
 use embedded_hal::digital::v2::InputPin;
 use embedded_hal::digital::v2::OutputPin;
 use heapless::Deque;
+use heapless::Vec;
 use stm32f4xx_hal::interrupt;
 use fugit::ExtU32;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
@@ -21,6 +22,114 @@ use crate::futures::NbFuture;
 use crate::logger::get_serial;
 use crate::words::CHECK_WORDS;
 
+const MAX_PAYLOAD_SIZE: usize = 255;
+pub struct Lexer<'a> {
+    idx: usize,
+    data: &'a [u8],
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { idx: 0, data }
+    }
+
+    pub fn remaining_bytes(&self) -> usize {
+        self.data.len() - self.idx
+    }
+
+    pub fn next_u8(self: &mut Self) -> Option<u8> {
+        self.idx += 1;
+        self.data.get(self.idx - 1).copied()
+    }
+
+    pub fn next_u16(self: &mut Self) -> Option<u16> {
+        let it = u16::from_be_bytes(self.data.get(self.idx..self.idx + 2)?.try_into().ok()?);
+        self.idx += 2;
+        Some(it)
+    }
+
+    pub fn next_u32(self: &mut Self) -> Option<u32> {
+        let it = u32::from_be_bytes(self.data.get(self.idx..self.idx + 4)?.try_into().ok()?);
+        self.idx += 4;
+        Some(it)
+    }
+
+    pub fn next_u64(self: &mut Self) -> Option<u64> {
+        let it = u64::from_be_bytes(self.data.get(self.idx..self.idx + 8)?.try_into().ok()?);
+        self.idx += 8;
+        Some(it)
+    }
+
+    pub fn next_f32(self: &mut Self) -> Option<f32> {
+        let it = f32::from_be_bytes(self.data.get(self.idx..self.idx + 4)?.try_into().ok()?);
+        self.idx += 4;
+        Some(it)
+    }
+
+    pub fn next_f64(self: &mut Self) -> Option<f64> {
+        let it = f64::from_be_bytes(self.data.get(self.idx..self.idx + 8)?.try_into().ok()?);
+        self.idx += 8;
+        Some(it)
+    }
+
+    pub fn next_i64(self: &mut Self) -> Option<i64> {
+        let it = i64::from_be_bytes(self.data.get(self.idx..self.idx + 8)?.try_into().ok()?);
+        self.idx += 8;
+        Some(it)
+    }
+
+    pub fn consume(self: &mut Self, x: u8) -> Option<u8> {
+        if *self.data.get(self.idx)? == x {
+            self.idx += 1;
+            Some(x)
+        } else {
+            None
+        }
+    }
+
+    pub fn next_str(self: &mut Self, len: usize) -> Option<&'a str> {
+        let it =
+            unsafe { core::str::from_utf8_unchecked(self.data.get(self.idx..self.idx + len)?) };
+        self.idx += len;
+        Some(it)
+    }
+
+    pub fn next_bytes(self: &mut Self, len: usize) -> Option<&'a [u8]> {
+        let it = self.data.get(self.idx..self.idx + len)?;
+        self.idx += len;
+        Some(it)
+    }
+
+    pub fn next_null_terminated_str(self: &mut Self) -> Option<&'a str> {
+        let mut idx = self.idx;
+        while *self.data.get(idx)? != 0 {
+            idx += 1;
+        }
+        let it = unsafe {
+            core::str::from_utf8_unchecked(self.data.get(self.idx..idx)?.try_into().ok()?)
+        };
+        self.idx = idx + 1;
+        Some(it)
+    }
+
+    pub fn at_end(self: &Self) -> bool {
+        self.idx == self.data.len()
+    }
+
+    pub fn skip_till(&mut self, arg: u8) -> Option<u8> {
+        while self.next_u8()? != arg {}
+        Some(arg)
+    }
+
+    fn pos(&self) -> usize {
+        self.idx
+    }
+
+    pub fn set_pos(&mut self, pos: usize) {
+        self.idx = pos;
+    }
+}
+
 static DIO1_RISEN: atomic::AtomicBool = atomic::AtomicBool::new(false);
 #[interrupt]
 fn EXTI4() {
@@ -32,37 +141,40 @@ fn EXTI4() {
     }
 }
 
-#[repr(packed)]
-struct TestPacket {
-    check_word: [u8; 8],
-    counter: u16,
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Message {
+    Ota(u32,[u8; 128]),
 }
 
-impl From<[u8; 10]> for TestPacket {
-    fn from(bytes: [u8; 10]) -> Self {
-        let mut check_word = [0; 8];
-        for (i, b) in check_word.iter_mut().enumerate() {
-            *b = bytes[i];
+impl Message {
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut lexer = Lexer::new(payload);
+        let message_type = lexer.next_str(4)?;
+        hprintln!("message_type: {}", message_type);
+        match message_type {
+            "OTAD" => {
+                let start_addr = lexer.next_u32()?;
+                let mut data = [0u8; 128];
+                data.copy_from_slice(lexer.next_bytes(128)?);
+                Some(Self::Ota(start_addr, data))
+            }
         }
-        let counter = u16::from_be_bytes([bytes[8], bytes[9]]);
+    }
 
-        Self {
-            check_word,
-            counter,
+    pub fn data(&self) -> Vec<u8, MAX_PAYLOAD_SIZE> {
+        // get_logger().log(format_args!("{:?}", self));
+        match self {
+            Message::Ota(start_addr, data) => {
+                let mut payload = Vec::new();
+                payload.extend_from_slice(b"OTAD").unwrap();
+                payload.extend(start_addr.to_be_bytes());
+                payload.extend_from_slice(data);
+                payload
+            }
         }
     }
 }
 
-impl From<TestPacket> for [u8; 10] {
-    fn from(packet: TestPacket) -> Self {
-        let mut bytes = [0; 10];
-        for (i, b) in packet.check_word.iter().enumerate() {
-            bytes[i] = *b;
-        }
-        bytes[8..10].copy_from_slice(&packet.counter.to_be_bytes());
-        bytes
-    }
-}
 
 pub struct Radio<TSPI, TNSS: OutputPin, TNRST, TBUSY, TANT, TDIO1, DELAY>
 where
