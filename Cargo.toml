@@ -12,7 +12,7 @@ opt-level = "z"
 [dependencies]
 embedded-hal="0.2"
 nb = "1"
-cortex-m = {version = "0.7", features=["critical-section-single-core"]}
+cortex-m = {version = "0.7.3", features=["critical-section-single-core"]}
 cortex-m-rt = "0.7"
 usb-device="0.2"
 usbd-serial = "0.1"
