@@ -7,21 +7,31 @@
 #![no_main]
 #![no_std]
 
+use core::arch::asm;
 use core::ffi::c_void;
 use core::fmt::Write;
 
 use crate::bmp581::BMP581;
+use crate::dfu::begin_update;
 use crate::hal::timer::TimerExt;
+use crate::radio::Radio;
 use cassette::pin_mut;
 use cassette::Cassette;
+use cortex_m::asm::bkpt;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
+use dummy_pin::DummyPin;
 use f4_w25q::w25q::Address;
 use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
+use hal::flash;
+use hal::flash::FlashExt;
+use hal::flash::LockedFlash;
+use hal::flash::UnlockedFlash;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
 use hal::i2c::I2c;
+use hal::pac::FLASH;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
@@ -38,6 +48,7 @@ use sx126x::op::PaConfig;
 use sx126x::op::RampTime;
 use sx126x::op::TcxoVoltage;
 use sx126x::op::TxParams;
+use sx126x::SX126x;
 use ws2812_timer_delay::Ws2812;
 
 use core::cell::RefCell;
@@ -51,6 +62,7 @@ use stm32f4xx_hal as hal;
 
 mod bmp581;
 mod bno085;
+mod dfu;
 mod futures;
 mod gps;
 mod ina219;
@@ -160,7 +172,6 @@ async fn prog_main() {
         //let mut i2c3 = I2c::new(dp.I2C3, (gpioa.pb4, gpiob.pb4.into_input()), 100u32.kHz(), &clocks);
         //let mut ina = INA219::new(&mut i2c3).unwrap();
 
-        /*
         let lora_nreset = gpiob
             .pb0
             .into_push_pull_output_in_state(gpio::PinState::High);
@@ -208,11 +219,8 @@ async fn prog_main() {
         }
 
         let mut timer2 = dp.TIM3.counter_ms(&clocks);
-        timer2.start(1000u32.millis());
-        NbFuture::new(|| timer2.wait()).await;
 
         let mut radio = Radio::new(lora, spi1, delay);
-         */
         let gpiod = dp.GPIOD.split();
 
         gpioe.pe3.into_floating_input();
@@ -226,59 +234,90 @@ async fn prog_main() {
             QspiConfig::default()
                 .address_size(hal::qspi::AddressSize::Addr24Bit)
                 .flash_size(FlashSize::from_megabytes(16))
-                .clock_prescaler(0)
+                .clock_prescaler(5)
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
-        extern "C" {
-            static sota_update: u8;
-            static eota_update: u8;
-        }
-
-        if unsafe { sota_update } == 0 {
-            // required to make the linker keep the symbol in the final binary
-            // ridiculous but I don't know how to do it otherwise
-            over_the_air_update();
-        }
-
-        let fn_ptr =
-            unsafe { core::mem::transmute::<_, fn()>((&sota_update as *const _ as usize) | 1) };
-        fn_ptr();
-
-
+        // Copy the OTA update function to the external flash
         let mut flash = W25Q::new(qspi).unwrap();
-        flash.erase_sector(SectorAddress::from_address(0)).unwrap();
-        flash
-            .program_page(
-                Address::from_page_and_offset(0, 0),
-                "Hello, world!".as_bytes(),
+
+        extern "C" {
+            static sota_update: u8; // VMA
+            static eota_update: u8; // VMA
+            static __etext: u8; // LMA of ota_update
+            static __ebss: u8; // LMA firmware end
+        }
+
+        let ota_fn = unsafe {
+            core::slice::from_raw_parts(
+                &__etext as *const u8,
+                &eota_update as *const u8 as usize - &sota_update as *const u8 as usize,
             )
+        };
+
+        let mut buf = [0u8; 8];
+        flash
+            .erase_sector(SectorAddress::from_address(16 * 4096))
             .unwrap();
+        flash.read((16u32 * 4096).into(), &mut buf).unwrap();
+        //hprintln!("sector reads {:x?}", buf);
+        //hprintln!("ota_fn is {:x?}... [len={}]", &ota_fn[..8], ota_fn.len());
 
-        let mut buf = [0u8; 13];
-        flash.read(0.into(), &mut buf).unwrap();
+        let mut bytes_written = 0;
 
-        hprintln!("Read: {:?}", core::str::from_utf8(&buf));
+        while bytes_written < ota_fn.len() {
+            let bytes_to_write = core::cmp::min(256, ota_fn.len() - bytes_written);
+            flash
+                .program_page(
+                    (16u32 * 4096 + bytes_written as u32).into(),
+                    &ota_fn[bytes_written..bytes_written + bytes_to_write],
+                )
+                .unwrap();
+            flash.read((16u32 * 4096 + bytes_written as u32).into(), &mut buf).unwrap();
+            //hprintln!("sector reads {:x?}", buf);
+            bytes_written += bytes_to_write;
+        }
+        let _mem_map = flash.memory_mapped();
 
-        let mem_mapped = flash.memory_mapped().unwrap();
-        hprintln!(
-            "Mapped: {:?}",
-            core::str::from_utf8(&mem_mapped.buffer()[0..13])
-        );
-        drop(mem_mapped);
+        let new_firmware = [0u8; 512];
+        begin_update(&new_firmware, dp.FLASH);
 
-        flash.erase_sector(SectorAddress::from_address(0)).unwrap();
-        flash.read(0.into(), &mut buf).unwrap();
-        hprintln!("Erased: {:x?}", buf);
-    }
-}
+        drop(_mem_map);
 
-#[inline(never)]
-#[no_mangle]
-#[link_section = ".ota_update"]
-pub extern fn over_the_air_update() -> ! {
-    loop {
-        hprintln!("OTA update");
+        /*
+        let mut is_ground = [0];
+        flash.read(0.into(), &mut is_ground).unwrap();
+        if is_ground[0] != 0 {
+            hprintln!("is ground");
+            radio
+                .radio_tx_ota(timer2, unsafe {
+                    core::slice::from_raw_parts(
+                        0x0800_0000 as *const u8,
+                        &__ebss as *const _ as usize - 0x0800_0000,
+                    )
+                })
+                .await;
+        } else {
+            let packets = radio.radio_rx_ota(timer2, &mut flash).await;
+            let ota_fn = unsafe {
+                core::slice::from_raw_parts(
+                    &sota_update as *const u8,
+                    &eota_update as *const u8 as usize - &sota_update as *const u8 as usize,
+                )
+            };
+
+            flash.erase_sector(SectorAddress::from_address(32)).unwrap();
+            flash.program_page((32u32 * 4096).into(), ota_fn).unwrap();
+            let _mem_map = flash.memory_mapped();
+            let ota_fn_ptr = (0x9000_0000u32 + 32 * 4096 + 1) as *const fn(u32);
+            unsafe {
+                (*ota_fn_ptr)(packets / 2 + packets % 2);
+            }
+
+            let mut internal_flash = dp.FLASH.unlocked();
+            internal_flash.erase(0).unwrap();
+            drop(_mem_map);
+        }*/
     }
 }
 
@@ -346,7 +385,6 @@ async fn run_usb() -> ! {
     }
 }
 
-/// Parses a hex #rrggbb string into an RGB8 color.
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
     if let Some(serial) = logger::try_get_serial() {
