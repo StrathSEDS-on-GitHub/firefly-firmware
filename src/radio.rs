@@ -93,17 +93,14 @@ where
         Self { radio, delay, spi }
     }
 
-    pub async fn radio_test_tx(
+    pub async fn send_eject_packet(
         &mut self,
-        mut timer: CounterMs<impl stm32f4xx_hal::timer::Instance>,
+        timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
     ) {
-        let mut counter: u16 = 0;
-        loop {
             let packet = TestPacket {
-                check_word: CHECK_WORDS[counter as usize % CHECK_WORDS.len()].try_into().unwrap(),
-                counter,
+                check_word: *b"eject000",
+                counter: 0,
             };
-            hprintln!("Sending packet #{}: {}", unsafe{core::str::from_utf8_unchecked(&packet.check_word)}, counter);
 
             self.radio
                 .write_buffer(&mut self.spi, &mut self.delay, 0x00, &Into::<[u8; 10]>::into(packet))
@@ -127,10 +124,143 @@ where
             }
             timer.start(1000u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
-            counter += 1;
-        }
     }
 
+    pub async fn send_echo_packet(
+        &mut self,
+        timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
+    ) {
+            let packet = TestPacket {
+                check_word: *b"echo0000",
+                counter: 0,
+            };
+
+            self.radio
+                .write_buffer(&mut self.spi, &mut self.delay, 0x00, &Into::<[u8; 10]>::into(packet))
+                .unwrap();
+            self.radio
+                .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
+                .unwrap();
+
+            // Wait for busy line to go low
+            self.radio.wait_on_busy(&mut self.delay).unwrap();
+
+            loop {
+                if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
+                    self.radio
+                        .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
+                        .unwrap();
+                    break;
+                }
+                timer.start(10u32.millis()).unwrap();
+                NbFuture::new(|| timer.wait()).await.unwrap();
+            }
+            timer.start(1000u32.millis()).unwrap();
+            NbFuture::new(|| timer.wait()).await.unwrap();
+    }
+
+    pub async fn radio_rx_ejection(
+        &mut self,
+        timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
+        buzz: &mut impl OutputPin,
+        pyro_enable: &mut impl OutputPin,
+        pyro_fire: &mut impl OutputPin
+    ) {
+        self.radio
+            .set_rx(&mut self.spi, &mut self.delay, RxTxTimeout::continuous_rx())
+            .unwrap();
+
+        loop {
+            if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
+                let irq_status = self
+                    .radio
+                    .get_irq_status(&mut self.spi, &mut self.delay)
+                    .unwrap();
+                self.radio
+                    .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
+                    .unwrap();
+                if !irq_status.timeout() {
+                    if irq_status.crc_err() {
+                        continue;
+                    }
+                    let rx_buf_status = self
+                        .radio
+                        .get_rx_buffer_status(&mut self.spi, &mut self.delay)
+                        .unwrap();
+                    let mut packet = [0; 10];
+                    if rx_buf_status.payload_length_rx() != 10 {
+                        continue;
+                    }
+
+                    self.radio
+                        .read_buffer(
+                            &mut self.spi,
+                            &mut self.delay,
+                            rx_buf_status.rx_start_buffer_pointer(),
+                            &mut packet,
+                        )
+                        .unwrap();
+
+                    let packet = TestPacket::from(packet);
+
+                    if &packet.check_word == b"echo0000" {
+                        buzz.set_high();
+                        timer.start(250u32.millis()); 
+                        nb::block!(timer.wait());
+                        buzz.set_low();
+                        timer.start(250u32.millis()); 
+                        nb::block!(timer.wait());
+                        buzz.set_high();
+                        timer.start(250u32.millis()); 
+                        nb::block!(timer.wait());
+                        buzz.set_low();
+                    } else if &packet.check_word == b"eject000" {
+                        // Decreasing length break between buzzes:
+                        let mut time = 100u32;
+                        while time > 0 {
+                            buzz.set_high();
+                            timer.start(250u32.millis());
+                            nb::block!(timer.wait());
+                            buzz.set_low();
+                            timer.start(time.millis());
+                            nb::block!(timer.wait());
+                            time -= 5;
+                        }
+
+                        buzz.set_high();
+                        pyro_enable.set_high();
+                        pyro_fire.set_high();
+
+                        timer.start(1000u32.millis());
+                        nb::block!(timer.wait());
+                        pyro_fire.set_low();
+                        pyro_enable.set_low();
+                        buzz.set_low();
+                    } else {
+                        buzz.set_high();
+                        timer.start(2000u32.millis()); 
+                        nb::block!(timer.wait());
+                        buzz.set_low();
+                    }
+                }
+
+                if self
+                    .radio
+                    .get_status(&mut self.spi, &mut self.delay)
+                    .unwrap()
+                    .chip_mode()
+                    .unwrap()
+                    != ChipMode::RX
+                {
+                    self.radio
+                        .set_rx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(2000))
+                        .unwrap();
+                }
+            }
+            timer.start(100u32.millis()).unwrap();
+            NbFuture::new(|| timer.wait()).await.unwrap();
+        }
+    }
     pub async fn radio_test_rx(
         &mut self,
         mut timer: CounterMs<impl stm32f4xx_hal::timer::Instance>,

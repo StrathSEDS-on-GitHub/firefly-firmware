@@ -80,6 +80,7 @@ async fn prog_main() {
         let gpioa = dp.GPIOA.split();
         let gpiob = dp.GPIOB.split();
         let gpioc = dp.GPIOC.split();
+        let gpiod = dp.GPIOD.split();
         let gpioe = dp.GPIOE.split();
 
         let _pin = gpioe.pe10.into_push_pull_output();
@@ -170,9 +171,9 @@ async fn prog_main() {
             lora_dio1,   // D6
         );
 
-        let tx_test = true;
+        let TX_TEST = false;
 
-        let conf = build_config(!tx_test).await;
+        let conf = build_config(!TX_TEST).await;
 
         delay.delay_ms(1000u32);
 
@@ -185,19 +186,11 @@ async fn prog_main() {
         }
 
         let mut timer2 = dp.TIM3.counter_ms(&clocks);
+        let mut buzzer = gpioe.pe1.into_push_pull_output();
 
         let mut radio = Radio::new(lora, spi1, delay);
         let f1 = async {
-            timer2.start(3000u32.millis()).unwrap();
-            NbFuture::new(|| timer2.wait()).await.unwrap();
-            if tx_test {
-                radio.radio_test_tx(timer2).await;
-            } else {
-                radio.radio_test_rx(timer2).await;
-            }
-        };
-        let f2 = async {
-            if !tx_test {
+            if TX_TEST {
                 loop {
                     let mut buf = [0; 32];
                     let len = get_serial().read(&mut buf).await.unwrap();
@@ -205,31 +198,23 @@ async fn prog_main() {
                         continue;
                     }
 
-                    get_serial()
-                        .log(unsafe { core::str::from_utf8_unchecked(&buf[..len]) })
-                        .await;
+                    if buf[..len].starts_with(b"echo") {
+                        radio.send_echo_packet(&mut timer2).await;
+                        writeln!(get_serial(), "sending echo packet");
+                    } else if buf[..len].starts_with(b"eject") {
+                        radio.send_eject_packet(&mut timer2).await;
+                        writeln!(get_serial(), "sending eject packet");
+                    }
                 }
             } else {
-           /*     let serial = Serial::new(
-                    dp.USART1,
-                    (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
-                    hal::serial::config::Config {
-                        baudrate: 115200.bps(),
-                        dma: hal::serial::config::DmaConfig::TxRx,
-                        ..Default::default()
-                    },
-                    &clocks,
-                ).unwrap();
-                gps::setup(dp.DMA2, serial);
-                gps::tx("$PMTK314,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n".as_bytes()).await;
+                let mut pyro_enable = gpiod.pd7.into_push_pull_output();
+                let mut pyro_fire = gpiod.pd5.into_push_pull_output();
 
-                let mut timer3 = dp.TIM4.counter_ms(&clocks);
-                timer3.start(100u32.millis()).unwrap();
-                gps::parse_recvd_data().await;
-            */
+
+                radio.radio_rx_ejection(&mut timer2, &mut buzzer, &mut pyro_enable, &mut pyro_fire).await;
             }
         };
-        join!(f1, f2);
+        join!(f1);
     }
 }
 
@@ -239,31 +224,7 @@ async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
         PacketType::LoRa,
     };
 
-    let spread_factor = if prompt_for_sf {
-        loop {
-            writeln!(get_serial(), "Enter spreading factor: ");
-            let mut buf = [0; 32];
-            let len = get_serial().read(&mut buf).await.unwrap();
-
-            let sf = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
-
-            match sf.trim().parse::<u8>() {
-                Ok(sf) => {
-                    if sf >= 5 && sf <= 12 {
-                        writeln!(get_serial(), "Spreading factor: {}", sf);
-                        break sf;
-                    } else {
-                        writeln!(get_serial(), "Invalid spreading factor: {}", sf);
-                    }
-                }
-                Err(_) => {
-                    writeln!(get_serial(), "Invalid spreading factor: {}", sf);
-                }
-            }
-        }
-    } else {
-        9
-    };
+    let spread_factor = 9;
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(spread_factor.into())
