@@ -1,8 +1,6 @@
-use cortex_m_semihosting::hprintln;
 use embedded_hal::blocking::i2c;
 
-const ADDR: u8 = 0x0;
-static mut offset: u8 = 0;
+const ADDR: u8 = 0x42;
 
 pub struct INA219<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> {
     com: &'a mut I2C,
@@ -10,6 +8,7 @@ pub struct INA219<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>>
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Register {
+    Config = 0x00,
     ShuntVoltage = 0x01,
     BusVoltage = 0x02,
     Power = 0x03,
@@ -51,12 +50,14 @@ impl<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> INA219<'a, E
         Ok(value as i16)
     }
 
+    pub fn read_config_reg(&mut self) -> Result<u16, E> {
+        self.read(Register::Config)
+    }
+
     fn read(&mut self, register: Register) -> Result<u16, E> {
         let mut buf: [u8; 2] = [0x00; 2];
-        hprintln!("{}", ADDR + unsafe { offset });
-        unsafe { offset += 1};
         self.com
-            .write_read(ADDR + unsafe { offset - 1 }, &[register as u8], &mut buf)?;
+            .write_read(ADDR , &[register as u8], &mut buf)?;
         Ok(u16::from_be_bytes(buf))
     }
 }

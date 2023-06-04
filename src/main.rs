@@ -12,9 +12,11 @@ use core::ffi::c_void;
 use core::fmt::Write;
 
 use crate::bmp581::BMP581;
-use crate::dfu::begin_update;
+use crate::futures::NbFuture;
 use crate::hal::timer::TimerExt;
+use crate::ina219::INA219;
 use crate::radio::Radio;
+use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
 use cortex_m::asm::bkpt;
@@ -24,6 +26,7 @@ use dummy_pin::DummyPin;
 use f4_w25q::w25q::Address;
 use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
+use fugit::ExtU32;
 use hal::flash;
 use hal::flash::FlashExt;
 use hal::flash::LockedFlash;
@@ -40,6 +43,8 @@ use hal::qspi::QspiReadCommand;
 use hal::qspi::QspiWriteCommand;
 use hal::spi;
 use logger::setup_usb;
+use smart_leds::hsv::Hsv;
+use smart_leds::SmartLedsWrite;
 use smart_leds::RGB8;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -62,7 +67,6 @@ use stm32f4xx_hal as hal;
 
 mod bmp581;
 mod bno085;
-mod dfu;
 mod futures;
 mod gps;
 mod ina219;
@@ -120,11 +124,11 @@ async fn prog_main() {
             .freeze();
         let mut delay = cp.SYST.delay(&clocks);
         let mut timer = dp.TIM2.counter_hz(&clocks);
-        timer.start(4.MHz()).unwrap();
+        timer.start(6.MHz()).unwrap();
 
         const LED_NUM: usize = 4;
-        let _data = [RGB8::default(); LED_NUM];
-        let _neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
+        let mut data = [RGB8::default(); LED_NUM];
+        let mut neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
 
         setup_usb(
             dp.OTG_FS_GLOBAL,
@@ -139,7 +143,7 @@ async fn prog_main() {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
         });
 
-        /*let gps_serial = dp.USART1
+        let gps_serial = dp.USART1
         .serial(
             (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
             hal::serial::config::Config {
@@ -149,7 +153,7 @@ async fn prog_main() {
             },
             &clocks,
         )
-        .unwrap();*/
+        .unwrap();
 
         // ===== Init SPI1 =====
         let spi1_sck = gpioa.pa5.into_alternate();
@@ -168,9 +172,6 @@ async fn prog_main() {
         let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
         let mut bmp = BMP581::new(&mut i2c1).unwrap();
         bmp.enable_pressure().unwrap();
-
-        //let mut i2c3 = I2c::new(dp.I2C3, (gpioa.pb4, gpiob.pb4.into_input()), 100u32.kHz(), &clocks);
-        //let mut ina = INA219::new(&mut i2c3).unwrap();
 
         let lora_nreset = gpiob
             .pb0
@@ -204,9 +205,7 @@ async fn prog_main() {
             lora_dio1,   // D6
         );
 
-        let tx_test = true;
-
-        let conf = build_config(!tx_test).await;
+        let conf = build_config().await;
 
         delay.delay_ms(1000u32);
 
@@ -217,8 +216,6 @@ async fn prog_main() {
             pac::NVIC::unmask(pac::Interrupt::EXTI4);
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
-
-        let mut timer2 = dp.TIM3.counter_ms(&clocks);
 
         let mut radio = Radio::new(lora, spi1, delay);
         let gpiod = dp.GPIOD.split();
@@ -238,99 +235,25 @@ async fn prog_main() {
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
-        // Copy the OTA update function to the external flash
         let mut flash = W25Q::new(qspi).unwrap();
+        let mut board_id = [0];
+        flash.read(0.into(), &mut board_id).unwrap();
 
-        extern "C" {
-            static sota_update: u8; // VMA
-            static eota_update: u8; // VMA
-            static __etext: u8; // LMA of ota_update
-            static __ebss: u8; // LMA firmware end
-        }
-
-        let ota_fn = unsafe {
-            core::slice::from_raw_parts(
-                &__etext as *const u8,
-                &eota_update as *const u8 as usize - &sota_update as *const u8 as usize,
-            )
-        };
-
-        let mut buf = [0u8; 8];
-        flash
-            .erase_sector(SectorAddress::from_address(16 * 4096))
-            .unwrap();
-        flash.read((16u32 * 4096).into(), &mut buf).unwrap();
-        //hprintln!("sector reads {:x?}", buf);
-        //hprintln!("ota_fn is {:x?}... [len={}]", &ota_fn[..8], ota_fn.len());
-
-        let mut bytes_written = 0;
-
-        while bytes_written < ota_fn.len() {
-            let bytes_to_write = core::cmp::min(256, ota_fn.len() - bytes_written);
-            flash
-                .program_page(
-                    (16u32 * 4096 + bytes_written as u32).into(),
-                    &ota_fn[bytes_written..bytes_written + bytes_to_write],
-                )
-                .unwrap();
-            flash.read((16u32 * 4096 + bytes_written as u32).into(), &mut buf).unwrap();
-            //hprintln!("sector reads {:x?}", buf);
-            bytes_written += bytes_to_write;
-        }
-        let _mem_map = flash.memory_mapped();
-
-        let new_firmware = [0u8; 512];
-        begin_update(&new_firmware, dp.FLASH);
-
-        drop(_mem_map);
-
-        /*
-        let mut is_ground = [0];
-        flash.read(0.into(), &mut is_ground).unwrap();
-        if is_ground[0] != 0 {
-            hprintln!("is ground");
-            radio
-                .radio_tx_ota(timer2, unsafe {
-                    core::slice::from_raw_parts(
-                        0x0800_0000 as *const u8,
-                        &__ebss as *const _ as usize - 0x0800_0000,
-                    )
-                })
-                .await;
-        } else {
-            let packets = radio.radio_rx_ota(timer2, &mut flash).await;
-            let ota_fn = unsafe {
-                core::slice::from_raw_parts(
-                    &sota_update as *const u8,
-                    &eota_update as *const u8 as usize - &sota_update as *const u8 as usize,
-                )
-            };
-
-            flash.erase_sector(SectorAddress::from_address(32)).unwrap();
-            flash.program_page((32u32 * 4096).into(), ota_fn).unwrap();
-            let _mem_map = flash.memory_mapped();
-            let ota_fn_ptr = (0x9000_0000u32 + 32 * 4096 + 1) as *const fn(u32);
-            unsafe {
-                (*ota_fn_ptr)(packets / 2 + packets % 2);
-            }
-
-            let mut internal_flash = dp.FLASH.unlocked();
-            internal_flash.erase(0).unwrap();
-            drop(_mem_map);
-        }*/
     }
 }
 
-async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
+async fn build_config() -> sx126x::conf::Config {
     use sx126x::op::{
         modulation::lora::*, packet::lora::LoRaPacketParams, rxtx::DeviceSel::SX1262,
         PacketType::LoRa,
     };
 
-    let spread_factor = 9;
+    let spread_factor = 6;
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(spread_factor.into())
+        .set_bandwidth(LoRaBandWidth::BW500)
+        .set_coding_rate(LoraCodingRate::CR4_5)
         .into();
 
     let tx_params = TxParams::default()
@@ -347,9 +270,9 @@ async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
         .combine(IrqMaskBit::Timeout);
 
     let packet_params = LoRaPacketParams {
-        payload_len: 10,
+        payload_len: 255,
         preamble_len: 0x12,
-        crc_type: sx126x::op::packet::lora::LoRaCrcType::CrcOff,
+        crc_type: sx126x::op::packet::lora::LoRaCrcType::CrcOn,
         ..Default::default()
     }
     .into();

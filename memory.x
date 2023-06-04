@@ -10,7 +10,6 @@ SECTIONS {
   .ota_update : ALIGN(4) {
     sota_update = .;
     *(.ota_update_begin*)
-    *(.ota_update*)
     eota_update = .;
   } > EXTERNAL_FLASH AT> FLASH
 } INSERT AFTER .text;

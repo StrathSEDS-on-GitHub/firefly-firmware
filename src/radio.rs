@@ -14,6 +14,9 @@ use f4_w25q::w25q::W25Q;
 use fugit::ExtU32;
 use heapless::Deque;
 use heapless::Vec;
+use smart_leds::SmartLedsWrite;
+use smart_leds::RGB;
+use smart_leds::RGB8;
 use stm32f4xx_hal::interrupt;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::qspi::QspiPins;
@@ -21,6 +24,7 @@ use stm32f4xx_hal::timer::CounterMs;
 use sx126x::op::ChipMode;
 use sx126x::op::IrqMask;
 use sx126x::op::RxTxTimeout;
+use ws2812_timer_delay::Ws2812;
 
 use crate::futures::NbFuture;
 use crate::logger::get_serial;
@@ -147,6 +151,7 @@ fn EXTI4() {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Message {
+    OtaBegin { size: u32 },
     Ota(u32, [u8; 128]),
     OtaDone,
 }
@@ -155,7 +160,6 @@ impl Message {
     pub fn parse(payload: &[u8]) -> Option<Self> {
         let mut lexer = Lexer::new(payload);
         let message_type = lexer.next_str(4)?;
-        hprintln!("message_type: {}", message_type);
         match message_type {
             "OTAD" => {
                 let start_addr = lexer.next_u32()?;
@@ -164,6 +168,10 @@ impl Message {
                 Some(Self::Ota(start_addr, data))
             }
             "OTAQ" => Some(Self::OtaDone),
+            "OTAB" => {
+                let size = lexer.next_u32()?;
+                Some(Self::OtaBegin { size })
+            }
             _ => None,
         }
     }
@@ -175,12 +183,18 @@ impl Message {
                 let mut payload = Vec::new();
                 payload.extend_from_slice(b"OTAD").unwrap();
                 payload.extend(start_addr.to_be_bytes());
-                payload.extend_from_slice(data);
+                payload.extend_from_slice(data).unwrap();
                 payload
             }
             Message::OtaDone => {
                 let mut payload = Vec::new();
                 payload.extend_from_slice(b"OTAQ").unwrap();
+                payload
+            }
+            Message::OtaBegin { size } => {
+                let mut payload = Vec::new();
+                payload.extend_from_slice(b"OTAB").unwrap();
+                payload.extend(size.to_be_bytes());
                 payload
             }
         }
@@ -216,144 +230,4 @@ where
         Self { radio, delay, spi }
     }
 
-    pub async fn radio_tx_ota(
-        &mut self,
-        mut timer: CounterMs<impl stm32f4xx_hal::timer::Instance>,
-        firmware: &[u8],
-    ) {
-        for (i, chunk) in firmware.chunks(128).enumerate() {
-            let start_addr = i as u32;
-            let message = Message::Ota(start_addr, chunk.try_into().unwrap());
-
-            self.radio
-                .write_buffer(
-                    &mut self.spi,
-                    &mut self.delay,
-                    0x00,
-                    message.data().as_slice(),
-                )
-                .unwrap();
-            self.radio
-                .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
-                .unwrap();
-
-            // Wait for busy line to go low
-            self.radio.wait_on_busy(&mut self.delay).unwrap();
-
-            loop {
-                if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
-                    self.radio
-                        .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
-                        .unwrap();
-                    break;
-                }
-                timer.start(10u32.millis()).unwrap();
-                NbFuture::new(|| timer.wait()).await.unwrap();
-            }
-        }
-        let message = Message::OtaDone;
-
-        self.radio
-            .write_buffer(
-                &mut self.spi,
-                &mut self.delay,
-                0x00,
-                message.data().as_slice(),
-            )
-            .unwrap();
-        self.radio
-            .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
-            .unwrap();
-
-        // Wait for busy line to go low
-        self.radio.wait_on_busy(&mut self.delay).unwrap();
-
-        loop {
-            if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
-                self.radio
-                    .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
-                    .unwrap();
-                break;
-            }
-            timer.start(10u32.millis()).unwrap();
-            NbFuture::new(|| timer.wait()).await.unwrap();
-        }
-        timer.start(10u32.millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
-    }
-
-    pub async fn radio_rx_ota<PINS>(
-        &mut self,
-        mut timer: CounterMs<impl stm32f4xx_hal::timer::Instance>,
-        flash: &mut W25Q<PINS>,
-    ) -> u32
-    where
-        PINS: QspiPins,
-    {
-        let mut packets_recvd = 0;
-        self.radio
-            .set_rx(&mut self.spi, &mut self.delay, RxTxTimeout::continuous_rx())
-            .unwrap();
-
-        loop {
-            if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
-                let irq_status = self
-                    .radio
-                    .get_irq_status(&mut self.spi, &mut self.delay)
-                    .unwrap();
-                self.radio
-                    .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
-                    .unwrap();
-
-                let rx_buf_status = self
-                    .radio
-                    .get_rx_buffer_status(&mut self.spi, &mut self.delay)
-                    .unwrap();
-
-                if !irq_status.timeout() {
-                    let mut packet = [0u8; 128 + 4];
-                    self.radio
-                        .read_buffer(
-                            &mut self.spi,
-                            &mut self.delay,
-                            rx_buf_status.rx_start_buffer_pointer(),
-                            &mut packet,
-                        )
-                        .unwrap();
-
-                    let packet = Message::parse(&packet).unwrap();
-                    match packet {
-                        Message::Ota(start_addr, data) => {
-                            let start: u32 = 4096 + start_addr * 128;
-                            if start % 4096 == 0 {
-                                flash
-                                    .erase_sector(SectorAddress::from_address(start))
-                                    .unwrap();
-                            }
-                            packets_recvd += 1;
-                            flash.program_page(start.into(), &data).unwrap();
-                        }
-                        Message::OtaDone => {
-                            return packets_recvd;
-                        }
-                    }
-                }
-
-                if self
-                    .radio
-                    .get_status(&mut self.spi, &mut self.delay)
-                    .unwrap()
-                    .chip_mode()
-                    .unwrap()
-                    != ChipMode::RX
-                {
-                    self.radio
-                        .set_rx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(2000))
-                        .unwrap();
-                }
-            }
-            timer.start(10u32.millis()).unwrap();
-            NbFuture::new(|| timer.wait()).await.unwrap();
-        }
-    }
 }
