@@ -66,6 +66,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "bitflags"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6776fc96284a0bb647b615056fc496d1fe1644a7ab01829818a6d91cae888b84"
+
+[[package]]
 name = "bytemuck"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -82,17 +88,18 @@ name = "cansat"
 version = "0.1.0"
 dependencies = [
  "cassette",
- "cortex-m 0.7.4",
+ "cortex-m 0.7.7",
  "cortex-m-rt",
  "cortex-m-semihosting",
  "dummy-pin",
  "embedded-hal 0.2.7",
+ "f4-w25q",
  "futures",
  "heapless",
  "nb 1.1.0",
  "nmea0183",
  "smart-leds",
- "stm32f4xx-hal",
+ "stm32f4xx-hal 0.15.0",
  "sx126x",
  "usb-device",
  "usbd-serial",
@@ -114,27 +121,28 @@ dependencies = [
  "aligned",
  "bare-metal 0.2.5",
  "bitfield",
- "cortex-m 0.7.4",
+ "cortex-m 0.7.7",
  "volatile-register",
 ]
 
 [[package]]
 name = "cortex-m"
-version = "0.7.4"
+version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37ff967e867ca14eba0c34ac25cd71ea98c678e741e3915d923999bb2fe7c826"
+checksum = "8ec610d8f49840a5b376c69663b6369e71f4b34484b9b2eb29fb918d92516cb9"
 dependencies = [
  "bare-metal 0.2.5",
  "bitfield",
+ "critical-section",
  "embedded-hal 0.2.7",
  "volatile-register",
 ]
 
 [[package]]
 name = "cortex-m-rt"
-version = "0.7.1"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c433da385b720d5bb9f52362fa2782420798e68d40d67bfe4b0d992aba5dfe7"
+checksum = "ee84e813d593101b1723e13ec38b6ab6abbdbaaa4546553f5395ed274079ddb1"
 dependencies = [
  "cortex-m-rt-macros",
 ]
@@ -156,7 +164,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c23234600452033cc77e4b761e740e02d2c4168e11dbf36ab14a0f58973592b0"
 dependencies = [
- "cortex-m 0.7.4",
+ "cortex-m 0.6.7",
 ]
 
 [[package]]
@@ -207,6 +215,14 @@ name = "embedded-storage"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "723dce4e9f25b6e6c5f35628e144794e5b459216ed7da97b7c4b66cdb3fa82ca"
+
+[[package]]
+name = "f4-w25q"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 0.2.7",
+ "stm32f4xx-hal 0.16.0",
+]
 
 [[package]]
 name = "fugit"
@@ -428,9 +444,9 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d34f1408f55294453790c48b2f1ebbb1c5b4b7563eb1f418bcfcfdbb06ebb4e7"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "rgb"
@@ -532,7 +548,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb94729242cd1aebe6dab42a2ca0131985ae93bc3ab2751b680df724bb35528d"
 dependencies = [
  "bare-metal 1.0.0",
- "cortex-m 0.7.4",
+ "cortex-m 0.7.7",
  "cortex-m-rt",
  "vcell",
 ]
@@ -544,8 +560,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e60d70c1deaa1411348f1efc64761d183ab87e86b8208c5c42796a86fe6217a7"
 dependencies = [
  "bare-metal 1.0.0",
- "bitflags",
- "cortex-m 0.7.4",
+ "bitflags 1.3.2",
+ "cortex-m 0.7.7",
  "cortex-m-rt",
  "embedded-dma",
  "embedded-hal 0.2.7",
@@ -558,6 +574,27 @@ dependencies = [
  "sdio-host",
  "stm32f4",
  "synopsys-usb-otg",
+ "time",
+ "void",
+]
+
+[[package]]
+name = "stm32f4xx-hal"
+version = "0.16.0"
+dependencies = [
+ "bare-metal 1.0.0",
+ "bitflags 2.3.1",
+ "cortex-m 0.7.7",
+ "cortex-m-rt",
+ "embedded-dma",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0-alpha.8",
+ "embedded-storage",
+ "fugit",
+ "fugit-timer",
+ "nb 1.1.0",
+ "rand_core",
+ "stm32f4",
  "time",
  "void",
 ]
@@ -587,7 +624,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "678f3707a7b1fd4863023292c42f73c6bab0e9b0096f41ae612d1af0ff221b45"
 dependencies = [
- "cortex-m 0.7.4",
+ "cortex-m 0.7.7",
  "embedded-hal 0.2.7",
  "usb-device",
  "vcell",

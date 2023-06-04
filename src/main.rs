@@ -18,6 +18,7 @@ use cassette::Cassette;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
+use f4_w25q::w25q::W25Q;
 use hal::gpio;
 use hal::serial::Serial;
 use hal::spi;
@@ -172,7 +173,6 @@ async fn prog_main() {
         );
 
         let TX_TEST = false;
-
         let conf = build_config(!TX_TEST).await;
 
         delay.delay_ms(1000u32);
@@ -202,16 +202,43 @@ async fn prog_main() {
                         radio.send_echo_packet(&mut timer2).await;
                         writeln!(get_serial(), "sending echo packet");
                     } else if buf[..len].starts_with(b"eject") {
-                        radio.send_eject_packet(&mut timer2).await;
-                        writeln!(get_serial(), "sending eject packet");
+                        let mut pins = buf[..len].split(|c| c == &b' ').skip(1);
+                        if let Some(pins) = pins.next() {
+                            let mut cmd = b"000";
+                            if pins.starts_with(b"both") {
+                                cmd = b"b00"
+                            } else if pins.starts_with(b"pyro1") {
+                                cmd = b"p00"
+                            } else if pins.starts_with(b"pyro2") {
+                                cmd = b"p10"
+                            } else {
+                                writeln!(get_serial(), "invalid command");
+                                continue;
+                            }
+
+                            radio.send_eject_packet(&mut timer2, cmd).await;
+                            writeln!(get_serial(), "sending eject packet {}", unsafe {
+                                core::str::from_utf8_unchecked(cmd)
+                            });
+                        } else {
+                            writeln!(get_serial(), "invalid command");
+                        }
                     }
                 }
             } else {
                 let mut pyro_enable = gpiod.pd7.into_push_pull_output();
                 let mut pyro_fire = gpiod.pd5.into_push_pull_output();
+                let mut pyro_fire2 = gpiod.pd6.into_push_pull_output();
 
-
-                radio.radio_rx_ejection(&mut timer2, &mut buzzer, &mut pyro_enable, &mut pyro_fire).await;
+                radio
+                    .radio_rx_ejection(
+                        &mut timer2,
+                        &mut buzzer,
+                        &mut pyro_enable,
+                        &mut pyro_fire,
+                        &mut pyro_fire2,
+                    )
+                    .await;
             }
         };
         join!(f1);
@@ -266,7 +293,7 @@ async fn build_config(prompt_for_sf: bool) -> sx126x::conf::Config {
         dio3_irq_mask: IrqMask::none(),
         rf_frequency: RF_FREQUENCY,
         rf_freq,
-        tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into()))
+        tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into())),
     }
 }
 

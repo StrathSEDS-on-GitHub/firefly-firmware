@@ -96,67 +96,82 @@ where
     pub async fn send_eject_packet(
         &mut self,
         timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
+        pins: &[u8]
     ) {
-            let packet = TestPacket {
-                check_word: *b"eject000",
-                counter: 0,
-            };
+        let mut check_word = [0;8];
+        check_word[..5].copy_from_slice(b"eject");
+        check_word[5..8].copy_from_slice(pins);
 
-            self.radio
-                .write_buffer(&mut self.spi, &mut self.delay, 0x00, &Into::<[u8; 10]>::into(packet))
-                .unwrap();
-            self.radio
-                .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
-                .unwrap();
+        let packet = TestPacket {
+            check_word,
+            counter: 0,
+        };
 
-            // Wait for busy line to go low
-            self.radio.wait_on_busy(&mut self.delay).unwrap();
+        self.radio
+            .write_buffer(
+                &mut self.spi,
+                &mut self.delay,
+                0x00,
+                &Into::<[u8; 10]>::into(packet),
+            )
+            .unwrap();
+        self.radio
+            .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
+            .unwrap();
 
-            loop {
-                if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
-                    self.radio
-                        .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
-                        .unwrap();
-                    break;
-                }
-                timer.start(10u32.millis()).unwrap();
-                NbFuture::new(|| timer.wait()).await.unwrap();
+        // Wait for busy line to go low
+        self.radio.wait_on_busy(&mut self.delay).unwrap();
+
+        loop {
+            if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
+                self.radio
+                    .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
+                    .unwrap();
+                break;
             }
-            timer.start(1000u32.millis()).unwrap();
+            timer.start(10u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
+        }
+        timer.start(1000u32.millis()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
     }
 
     pub async fn send_echo_packet(
         &mut self,
         timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
     ) {
-            let packet = TestPacket {
-                check_word: *b"echo0000",
-                counter: 0,
-            };
+        let packet = TestPacket {
+            check_word: *b"echo0000",
+            counter: 0,
+        };
 
-            self.radio
-                .write_buffer(&mut self.spi, &mut self.delay, 0x00, &Into::<[u8; 10]>::into(packet))
-                .unwrap();
-            self.radio
-                .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
-                .unwrap();
+        self.radio
+            .write_buffer(
+                &mut self.spi,
+                &mut self.delay,
+                0x00,
+                &Into::<[u8; 10]>::into(packet),
+            )
+            .unwrap();
+        self.radio
+            .set_tx(&mut self.spi, &mut self.delay, RxTxTimeout::from_ms(3000))
+            .unwrap();
 
-            // Wait for busy line to go low
-            self.radio.wait_on_busy(&mut self.delay).unwrap();
+        // Wait for busy line to go low
+        self.radio.wait_on_busy(&mut self.delay).unwrap();
 
-            loop {
-                if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
-                    self.radio
-                        .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
-                        .unwrap();
-                    break;
-                }
-                timer.start(10u32.millis()).unwrap();
-                NbFuture::new(|| timer.wait()).await.unwrap();
+        loop {
+            if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
+                self.radio
+                    .clear_irq_status(&mut self.spi, &mut self.delay, IrqMask::all())
+                    .unwrap();
+                break;
             }
-            timer.start(1000u32.millis()).unwrap();
+            timer.start(10u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
+        }
+        timer.start(1000u32.millis()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
     }
 
     pub async fn radio_rx_ejection(
@@ -164,7 +179,8 @@ where
         timer: &mut CounterMs<impl stm32f4xx_hal::timer::Instance>,
         buzz: &mut impl OutputPin,
         pyro_enable: &mut impl OutputPin,
-        pyro_fire: &mut impl OutputPin
+        pyro_fire: &mut impl OutputPin,
+        pyro_fire2: &mut impl OutputPin,
     ) {
         self.radio
             .set_rx(&mut self.spi, &mut self.delay, RxTxTimeout::continuous_rx())
@@ -205,40 +221,51 @@ where
 
                     if &packet.check_word == b"echo0000" {
                         buzz.set_high();
-                        timer.start(250u32.millis()); 
+                        timer.start(250u32.millis());
                         nb::block!(timer.wait());
                         buzz.set_low();
-                        timer.start(250u32.millis()); 
+                        timer.start(250u32.millis());
                         nb::block!(timer.wait());
                         buzz.set_high();
-                        timer.start(250u32.millis()); 
+                        timer.start(250u32.millis());
                         nb::block!(timer.wait());
                         buzz.set_low();
-                    } else if &packet.check_word == b"eject000" {
+                    } else if &packet.check_word == b"ejectp00"
+                        || &packet.check_word == b"ejectp10"
+                        || &packet.check_word == b"ejectb00"
+                    {
                         // Decreasing length break between buzzes:
-                        let mut time = 100u32;
+                        let mut time = 200i32;
                         while time > 0 {
                             buzz.set_high();
-                            timer.start(250u32.millis());
+                            timer.start(200u32.millis());
                             nb::block!(timer.wait());
                             buzz.set_low();
-                            timer.start(time.millis());
+                            timer.start((time as u32).millis());
                             nb::block!(timer.wait());
-                            time -= 5;
+                            time = (time as f32 * 0.8 - 5.0) as i32;
                         }
 
                         buzz.set_high();
-                        pyro_enable.set_high();
-                        pyro_fire.set_high();
 
                         timer.start(1000u32.millis());
                         nb::block!(timer.wait());
-                        pyro_fire.set_low();
-                        pyro_enable.set_low();
                         buzz.set_low();
+                        pyro_enable.set_high();
+                        if &packet.check_word == b"ejectp00" || &packet.check_word == b"ejectb00" {
+                            pyro_fire.set_high();
+                        }
+                        if &packet.check_word == b"ejectp10" || &packet.check_word == b"ejectb00" {
+                            pyro_fire2.set_high();
+                        }
+                        timer.start(500u32.millis());
+                        nb::block!(timer.wait());
+                        pyro_fire.set_low();
+                        pyro_fire2.set_low();
+                        pyro_enable.set_low();
                     } else {
                         buzz.set_high();
-                        timer.start(2000u32.millis()); 
+                        timer.start(2000u32.millis());
                         nb::block!(timer.wait());
                         buzz.set_low();
                     }
@@ -270,9 +297,9 @@ where
             .unwrap();
 
         const HISTORY_SIZE: usize = 32;
-        let mut previous_rssis : Deque<f32, HISTORY_SIZE> = Deque::new();
-        let mut previous_lora_rssis : Deque<f32, HISTORY_SIZE> = Deque::new();
-        let mut last_received_counters : Deque<u16, HISTORY_SIZE> = Deque::new();
+        let mut previous_rssis: Deque<f32, HISTORY_SIZE> = Deque::new();
+        let mut previous_lora_rssis: Deque<f32, HISTORY_SIZE> = Deque::new();
+        let mut last_received_counters: Deque<u16, HISTORY_SIZE> = Deque::new();
 
         loop {
             if DIO1_RISEN.swap(false, atomic::Ordering::Relaxed) {
@@ -316,12 +343,21 @@ where
                         unsafe { core::str::from_utf8_unchecked(&packet.check_word) },
                     );
 
-                    let packet_status = self.radio.get_packet_status(&mut self.spi, &mut self.delay).unwrap();
+                    let packet_status = self
+                        .radio
+                        .get_packet_status(&mut self.spi, &mut self.delay)
+                        .unwrap();
                     let rssi = packet_status.rssi_pkt();
                     let snr = packet_status.snr_pkt();
                     let lora_rssi = packet_status.signal_rssi_pkt();
 
-                    writeln!(get_serial(), "[info] Stats: rssi: {:3.3} | snr: {:3.3} | signal_rssi: {:3.3}", rssi, snr, lora_rssi);
+                    writeln!(
+                        get_serial(),
+                        "[info] Stats: rssi: {:3.3} | snr: {:3.3} | signal_rssi: {:3.3}",
+                        rssi,
+                        snr,
+                        lora_rssi
+                    );
 
                     if previous_rssis.len() == HISTORY_SIZE {
                         previous_rssis.pop_front();
@@ -334,15 +370,23 @@ where
 
                     if previous_rssis.len() == HISTORY_SIZE {
                         let avg_rssi = previous_rssis.iter().sum::<f32>() / HISTORY_SIZE as f32;
-                        let avg_lora_rssi = previous_lora_rssis.iter().sum::<f32>() / HISTORY_SIZE as f32;
-                        if last_received_counters.back().unwrap() < last_received_counters.front().unwrap() {
-                            writeln!(get_serial(), "[warn] Counter overflow detected, clearing history");
+                        let avg_lora_rssi =
+                            previous_lora_rssis.iter().sum::<f32>() / HISTORY_SIZE as f32;
+                        if last_received_counters.back().unwrap()
+                            < last_received_counters.front().unwrap()
+                        {
+                            writeln!(
+                                get_serial(),
+                                "[warn] Counter overflow detected, clearing history"
+                            );
                             previous_rssis.clear();
                             previous_lora_rssis.clear();
                             last_received_counters.clear();
                             continue;
                         }
-                        let sent_packets = last_received_counters.back().unwrap() - last_received_counters.front().unwrap() + 1;
+                        let sent_packets = last_received_counters.back().unwrap()
+                            - last_received_counters.front().unwrap()
+                            + 1;
                         let packet_loss = 1f32 - HISTORY_SIZE as f32 / sent_packets as f32;
                         writeln!(get_serial(), "[info] Avg Stats: avg_rssi: {:3.3} | avg_lora_rssi: {:3.3} | packet_loss: {:3.3}", avg_rssi, avg_lora_rssi, packet_loss);
                     }
