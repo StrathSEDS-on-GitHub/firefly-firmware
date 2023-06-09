@@ -7,44 +7,27 @@
 #![no_main]
 #![no_std]
 
-use core::arch::asm;
-use core::ffi::c_void;
-use core::fmt::Write;
-
-use crate::bmp581::BMP581;
-use crate::futures::NbFuture;
 use crate::hal::timer::TimerExt;
-use crate::ina219::INA219;
+use crate::mission::Role;
 use crate::radio::Radio;
-use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
-use cortex_m::asm::bkpt;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
-use f4_w25q::w25q::Address;
-use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
-use fugit::ExtU32;
-use hal::flash;
-use hal::flash::FlashExt;
-use hal::flash::LockedFlash;
-use hal::flash::UnlockedFlash;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
+use hal::gpio::Output;
+use hal::gpio::Pin;
 use hal::i2c::I2c;
-use hal::pac::FLASH;
+use hal::pac::TIM2;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
-use hal::qspi::QspiMode;
-use hal::qspi::QspiReadCommand;
-use hal::qspi::QspiWriteCommand;
 use hal::spi;
+use hal::timer::CounterHz;
 use logger::setup_usb;
-use smart_leds::hsv::Hsv;
-use smart_leds::SmartLedsWrite;
 use smart_leds::RGB8;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -58,7 +41,6 @@ use ws2812_timer_delay::Ws2812;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
-use logger::get_serial;
 use logger::write_to::show;
 
 use crate::hal::{pac, prelude::*};
@@ -71,9 +53,9 @@ mod futures;
 mod gps;
 mod ina219;
 mod logger;
+mod mission;
 mod radio;
 mod sdcard;
-mod words;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -83,6 +65,9 @@ static mut DIO1_PIN: Option<Dio1Pin> = None;
 
 const RF_FREQUENCY: u32 = 868_000_000; // 868MHz (EU)
 const F_XTAL: u32 = 32_000_000; // 32MHz
+
+static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output>>>>> =
+    Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
@@ -141,19 +126,31 @@ async fn prog_main() {
 
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
+            NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
+            radio::TIMER
+                .borrow(cs)
+                .borrow_mut()
+                .replace(dp.TIM5.counter_us(&clocks));
         });
 
-        let gps_serial = dp.USART1
-        .serial(
-            (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
-            hal::serial::config::Config {
-                baudrate: 9600.bps(),
-                dma: hal::serial::config::DmaConfig::TxRx,
-                ..Default::default()
-            },
-            &clocks,
-        )
-        .unwrap();
+        let gps_serial = dp
+            .USART1
+            .serial(
+                (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
+                hal::serial::config::Config {
+                    baudrate: 9600.bps(),
+                    dma: hal::serial::config::DmaConfig::TxRx,
+                    ..Default::default()
+                },
+                &clocks,
+            )
+            .unwrap();
+
+        gps::setup(dp.DMA2, gps_serial);
+        gps::tx(b"$PMTK251,115200*1F\r\n").await;
+        gps::change_baudrate(115200).await;
+        gps::set_nmea_output().await;
+        gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         // ===== Init SPI1 =====
         let spi1_sck = gpioa.pa5.into_alternate();
@@ -170,8 +167,8 @@ async fn prog_main() {
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
         let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
-        let mut bmp = BMP581::new(&mut i2c1).unwrap();
-        bmp.enable_pressure().unwrap();
+        // let mut bmp = BMP581::new(&mut i2c1).unwrap();
+        // bmp.enable_pressure().unwrap();
 
         let lora_nreset = gpiob
             .pb0
@@ -217,7 +214,7 @@ async fn prog_main() {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        let mut radio = Radio::new(lora, spi1, delay);
+        Radio::init(lora, spi1, delay);
         let gpiod = dp.GPIOD.split();
 
         gpioe.pe3.into_floating_input();
@@ -231,7 +228,7 @@ async fn prog_main() {
             QspiConfig::default()
                 .address_size(hal::qspi::AddressSize::Addr24Bit)
                 .flash_size(FlashSize::from_megabytes(16))
-                .clock_prescaler(5)
+                .clock_prescaler(0)
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
@@ -239,6 +236,24 @@ async fn prog_main() {
         let mut board_id = [0];
         flash.read(0.into(), &mut board_id).unwrap();
 
+        let role = match board_id[0] {
+            4 => Role::Avionics,
+            _ => Role::Ground,
+        };
+
+        unsafe { mission::ROLE = role };
+
+        let mut i2c2 = I2c::new(
+            dp.I2C3,
+            (gpioa.pa8.into_input(), gpiob.pb4.into_input()),
+            100u32.kHz(),
+            &clocks,
+        );
+
+        //let mut ina = INA219::new(&mut i2c2).unwrap();
+        //ina.calibrate(87).unwrap();
+
+        mission::begin().await;
     }
 }
 
@@ -248,12 +263,12 @@ async fn build_config() -> sx126x::conf::Config {
         PacketType::LoRa,
     };
 
-    let spread_factor = 6;
+    let spread_factor = 9;
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(spread_factor.into())
         .set_bandwidth(LoRaBandWidth::BW500)
-        .set_coding_rate(LoraCodingRate::CR4_5)
+        .set_coding_rate(LoraCodingRate::CR4_8)
         .into();
 
     let tx_params = TxParams::default()
@@ -293,18 +308,6 @@ async fn build_config() -> sx126x::conf::Config {
         rf_frequency: RF_FREQUENCY,
         rf_freq,
         tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into())),
-    }
-}
-
-async fn run_usb() -> ! {
-    loop {
-        let mut buf = [0u8; 64];
-        match get_serial().read(&mut buf).await {
-            Ok(count) if count > 0 => {
-                writeln!(get_serial(), "Hi").unwrap();
-            }
-            _ => {}
-        }
     }
 }
 

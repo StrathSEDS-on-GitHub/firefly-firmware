@@ -4,17 +4,18 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
+use cortex_m_semihosting::{hprint, hprintln};
 use hal::{
     dma::{Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
     pac::USART1,
     prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxISR, SerialExt, RxListen},
+    serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::ParseResult;
+use nmea0183::{ParseResult, GGA};
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -24,7 +25,7 @@ use stm32f4xx_hal::{
     serial::{Rx, Tx},
 };
 
-use crate::futures::YieldFuture;
+use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -62,20 +63,17 @@ static TX_COMPLETE: AtomicBool = AtomicBool::new(false);
 static RX_COMPLETE: AtomicBool = AtomicBool::new(false);
 static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
 
-const RX_BUFFER_SIZE: usize = 512;
-pub fn setup<UART>(
-    dma2: pac::DMA2,
-    gps: hal::serial::Serial<USART1>,
-)
- {
+const RX_BUFFER_SIZE: usize = 1024;
+
+pub fn setup(dma2: pac::DMA2, gps: hal::serial::Serial<USART1>) {
     let streams = StreamsTuple::new(dma2);
     let tx_stream = streams.7;
     let rx_stream = streams.2;
-    let tx_buf_gps = cortex_m::singleton!(:[u8; 64] = [0; 64]).unwrap();
+    let tx_buf_gps = cortex_m::singleton!(:[u8; 128] = [0; 128]).unwrap();
     let rx_buf1_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let (tx, mut rx) = gps.split();
-    
+
     let mut tx_transfer = Transfer::init_memory_to_peripheral(
         tx_stream,
         tx,
@@ -117,6 +115,11 @@ pub fn setup<UART>(
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA2_STREAM7);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART1);
     }
+}
+
+pub async fn set_nmea_output() {
+    let msg = b"$PMTK314,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n";
+    tx(msg).await;
 }
 
 pub async fn change_baudrate(baudrate: u32) {
@@ -228,31 +231,43 @@ fn DMA2_STREAM7() {
     });
 }
 
-// Call this to poll for new frames.
-pub async fn parse_recvd_data() {
-    let mut rx_buf = [0u8; RX_BUFFER_SIZE];
-    let mut bytes = crate::gps::rx(&mut rx_buf).await;
+// Runs as a background job and puts GPS frames into GPS_SENTENCE_BUFFER.
+// Call next_sentence() to get the next available sentence.
+pub async fn poll_for_sentences() -> ! {
     let mut parser = nmea0183::Parser::new();
+    let mut rx_buf = [0u8; RX_BUFFER_SIZE];
+    let mut start = 0;
+
+    let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
 
     loop {
-        for parse_result in parser.parse_from_bytes(&rx_buf[..bytes]) {
-            hprintln!("{:?}", parse_result);
-            if let Ok(parse_result) = parse_result {
+        for (i,c) in rx_buf[start..bytes].iter().enumerate() {
+            if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
+                if let ParseResult::GGA(Some(gga)) = parse_result.clone() {
+                    update_timer(gga.time.seconds);
+                }
                 cortex_m::interrupt::free(|cs| {
-                    let mut buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
-                    let buffer = buffer_ref.as_mut().unwrap();
-                    match buffer.push_back(parse_result) {
-                        Ok(()) => {}
-                        Err(parse_result) => {
-                            //hprintln!("warn: GPS buffer full. packet discarded.");
-                            buffer.pop_front();
-                            buffer.push_back(parse_result).unwrap();
-                        }
-                    }
+                    let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
+                    let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
+                    gps_sentence_buffer
+                        .push_back(parse_result).or_else(|parse_result| {
+                            // Running behind, clear the buffer so old data is dropped.
+                            gps_sentence_buffer.clear();
+                            gps_sentence_buffer.push_back(parse_result)
+                        }).unwrap();
                 });
+                start = i + 1;
             }
         }
-        bytes = crate::gps::rx(&mut rx_buf).await;
+        
+        // Once we've processed all the bytes, or if the buffer is totally full then reset the buffer.
+        // The buffer may be full if none of the bytes were parseable.
+        if start == bytes || bytes == rx_buf.len() {
+            start = 0;
+            bytes = 0;
+        }
+
+        bytes += crate::gps::rx(&mut rx_buf[bytes..]).await;
     }
 }
 

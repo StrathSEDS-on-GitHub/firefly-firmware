@@ -22,7 +22,7 @@ ws2812-timer-delay = "0.3"
 cassette = "0.2"
 futures = { version = "0.3", default-features = false, features= ["async-await"] }
 cortex-m-semihosting = "0.5.0"
-nmea0183 = "0.3.0"
+nmea0183 = { version = "0.3.0", path="nmea0183" }
 heapless = "0.7.0"
 sx126x = { version = "0.1.1", path="sx126x-rs" }
 dummy-pin = "0.1.1"
@@ -30,6 +30,9 @@ libm = "0.2.6"
 embedded-sdmmc = "0.4.0"
 fugit = {version = "0.3.6", features = []}
 f4-w25q = {version = "0.1.0", path="f4-w25q"}
+serde = { version = "1.0", features = ["derive"], default-features = false }    
+serde-big-array = "0.5.1"
+postcard = "1.0"
 
 [dependencies.stm32f4xx-hal]
 version = "0.16.0"
