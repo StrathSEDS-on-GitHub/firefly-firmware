@@ -7,12 +7,16 @@
 #![no_main]
 #![no_std]
 
+use crate::futures::NbFuture;
 use crate::hal::timer::TimerExt;
 use crate::mission::Role;
 use crate::radio::Radio;
+use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
+use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hio;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use f4_w25q::w25q::W25Q;
@@ -22,13 +26,14 @@ use hal::gpio::Output;
 use hal::gpio::Pin;
 use hal::i2c::I2c;
 use hal::pac::TIM2;
+use hal::pac::TIM9;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
 use hal::spi;
 use hal::timer::CounterHz;
 use logger::setup_usb;
-use smart_leds::RGB8;
+use smart_leds::SmartLedsWrite;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
@@ -69,6 +74,8 @@ const F_XTAL: u32 = 32_000_000; // 32MHz
 static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output>>>>> =
     Mutex::new(RefCell::new(None));
 
+static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
+
 #[entry]
 fn main() -> ! {
     let x = prog_main();
@@ -107,13 +114,17 @@ async fn prog_main() {
             .pclk2(48.MHz())
             .require_pll48clk()
             .freeze();
+
+        unsafe {
+            PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
+        }
+
         let mut delay = cp.SYST.delay(&clocks);
         let mut timer = dp.TIM2.counter_hz(&clocks);
-        timer.start(6.MHz()).unwrap();
+        timer.start(7.MHz()).unwrap();
 
         const LED_NUM: usize = 4;
-        let mut data = [RGB8::default(); LED_NUM];
-        let mut neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
+        let neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
 
         setup_usb(
             dp.OTG_FS_GLOBAL,
@@ -313,29 +324,22 @@ async fn build_config() -> sx126x::conf::Config {
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    if let Some(serial) = logger::try_get_serial() {
-        hprintln!("Panic {:?}", info);
-        {
-            let f = serial.log("A panic! occured! The system has been halted!\n");
-            pin_mut!(f);
-            let mut cm = Cassette::new(f);
-            while cm.poll_on().is_none() {}
-        }
-
-        let mut buffer = [0u8; 1024];
-
-        {
-            let f = serial.log(
-                show(&mut buffer, format_args!("{}\n", info))
-                    .unwrap_or("Formatting error occured!\n"),
-            );
-            pin_mut!(f);
-            let mut cm = Cassette::new(f);
-            while cm.poll_on().is_none() {}
-        }
+    if let Ok(mut stdout) = hio::hstdout() {
+        writeln!(stdout, "A panic occured:\n {}", info).ok();
     }
-
-    loop {}
+    let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
+    timer.start(4.Hz()).ok();
+    cortex_m::interrupt::free(|cs| {
+        let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
+        let neo = neo_ref.as_mut().unwrap();
+        loop {
+            neo.write([[255, 0, 0]; 4].into_iter()).unwrap();
+            nb::block!(timer.wait()).ok();
+            neo.write([[0, 0, 0]; 4].into_iter()).unwrap();
+            nb::block!(timer.wait()).ok();
+        }
+    }); 
+    unreachable!();
 }
 
 struct Dio1PinRefMut<'dio1>(&'dio1 mut Dio1Pin);

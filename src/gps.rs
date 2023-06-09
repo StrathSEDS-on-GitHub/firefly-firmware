@@ -4,9 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::{hprint, hprintln};
 use hal::{
     dma::{Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
@@ -15,7 +13,7 @@ use hal::{
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::{ParseResult, GGA};
+use nmea0183::ParseResult;
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -25,7 +23,7 @@ use stm32f4xx_hal::{
     serial::{Rx, Tx},
 };
 
-use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer};
+use crate::{futures::YieldFuture, radio::update_timer};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
