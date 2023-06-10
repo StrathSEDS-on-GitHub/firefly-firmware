@@ -22,7 +22,6 @@ async fn usb_handler() {
     let mut buf = [0u8; 256];
     loop {
         get_serial().read(&mut buf).await;
-        //writeln!(get_serial(), "got: {:?}", buf).unwrap();
     }
 }
 
@@ -50,7 +49,9 @@ async fn gps_broadcast() {
             longitudes,
             altitudes,
         };
-        radio::queue_packet(message);
+        for i in 0..5 {
+            radio::queue_packet(message);
+        }
     }
 }
 
@@ -61,7 +62,7 @@ pub async fn begin() {
             join!(usb_handler());
         }
         _ => {
-            join!(gps_handler(), gps_broadcast());
+            join!(usb_handler(), gps_handler(), gps_broadcast());
         }
     }
 }

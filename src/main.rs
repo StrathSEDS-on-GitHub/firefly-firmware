@@ -7,13 +7,13 @@
 #![no_main]
 #![no_std]
 
-use crate::futures::NbFuture;
+use crate::bmp581::BMP581;
 use crate::hal::timer::TimerExt;
 use crate::mission::Role;
 use crate::radio::Radio;
-use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
+use f4_w25q::w25q::SectorAddress;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hio;
@@ -46,7 +46,6 @@ use ws2812_timer_delay::Ws2812;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
-use logger::write_to::show;
 
 use crate::hal::{pac, prelude::*};
 use cortex_m_rt::entry;
@@ -178,8 +177,8 @@ async fn prog_main() {
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
         let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
-        // let mut bmp = BMP581::new(&mut i2c1).unwrap();
-        // bmp.enable_pressure().unwrap();
+        //let mut bmp = BMP581::new(&mut i2c1).unwrap();
+        //bmp.enable_pressure().unwrap();
 
         let lora_nreset = gpiob
             .pb0
@@ -187,7 +186,7 @@ async fn prog_main() {
         let lora_nss = gpioa
             .pa4
             .into_push_pull_output_in_state(gpio::PinState::High);
-        let mut lora_busy = gpioc.pc5.into_floating_input();
+        let lora_busy = gpioc.pc5.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
         // This is safe as long as the only other place we use DIO1_PIN is in the ISR
@@ -249,12 +248,13 @@ async fn prog_main() {
 
         let role = match board_id[0] {
             4 => Role::Avionics,
+            5 => Role::Cansat,
             _ => Role::Ground,
         };
 
         unsafe { mission::ROLE = role };
 
-        let mut i2c2 = I2c::new(
+        let i2c2 = I2c::new(
             dp.I2C3,
             (gpioa.pa8.into_input(), gpiob.pb4.into_input()),
             100u32.kHz(),
@@ -274,12 +274,12 @@ async fn build_config() -> sx126x::conf::Config {
         PacketType::LoRa,
     };
 
-    let spread_factor = 9;
+    let spread_factor = 5;
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(spread_factor.into())
-        .set_bandwidth(LoRaBandWidth::BW500)
-        .set_coding_rate(LoraCodingRate::CR4_8)
+        .set_bandwidth(LoRaBandWidth::BW125)
+        .set_coding_rate(LoraCodingRate::CR4_7)
         .into();
 
     let tx_params = TxParams::default()
@@ -290,7 +290,7 @@ async fn build_config() -> sx126x::conf::Config {
         .set_pa_duty_cycle(0x04)
         .set_hp_max(0x07);
 
-    let dio1_irq_mask = IrqMask::none()
+    let dio1_irq_mask = IrqMask::all()
         .combine(IrqMaskBit::RxDone)
         .combine(IrqMaskBit::TxDone)
         .combine(IrqMaskBit::Timeout);
@@ -324,9 +324,9 @@ async fn build_config() -> sx126x::conf::Config {
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    if let Ok(mut stdout) = hio::hstdout() {
-        writeln!(stdout, "A panic occured:\n {}", info).ok();
-    }
+    // if let Ok(mut stdout) = hio::hstdout() {
+    //     writeln!(stdout, "A panic occured:\n {}", info).ok();
+    // }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
     timer.start(4.Hz()).ok();
     cortex_m::interrupt::free(|cs| {
@@ -338,7 +338,7 @@ pub fn panic(info: &PanicInfo) -> ! {
             neo.write([[0, 0, 0]; 4].into_iter()).unwrap();
             nb::block!(timer.wait()).ok();
         }
-    }); 
+    });
     unreachable!();
 }
 

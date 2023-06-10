@@ -101,6 +101,7 @@ dependencies = [
  "smart-leds",
  "stm32f4xx-hal",
  "sx126x",
+ "tmc2209",
  "usb-device",
  "usbd-serial",
  "ws2812-timer-delay",
@@ -698,6 +699,16 @@ name = "time-core"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e153e1f1acaef8acc537e68b44906d2db6436e2b35ac2c6b42640fff91f00fd"
+
+[[package]]
+name = "tmc2209"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2552dbf5901e37abcd381f930731432d2c952245fe277eadcf3e03ac438a2783"
+dependencies = [
+ "bitfield",
+ "embedded-hal 0.2.7",
+]
 
 [[package]]
 name = "typenum"

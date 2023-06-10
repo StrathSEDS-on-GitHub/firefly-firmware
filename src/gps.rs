@@ -13,7 +13,7 @@ use hal::{
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::ParseResult;
+use nmea0183::{ParseResult, GGA};
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -23,7 +23,7 @@ use stm32f4xx_hal::{
     serial::{Rx, Tx},
 };
 
-use crate::{futures::YieldFuture, radio::update_timer};
+use crate::{futures::YieldFuture, radio::update_timer, logger::get_serial};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -239,25 +239,32 @@ pub async fn poll_for_sentences() -> ! {
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
 
     loop {
-        for (i,c) in rx_buf[start..bytes].iter().enumerate() {
+        for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
-                if let ParseResult::GGA(Some(gga)) = parse_result.clone() {
-                    update_timer(gga.time.seconds);
+                if let ParseResult::GGA(Some(GGA {
+                    time,
+                    fix: Some(fix),
+                    ..
+                })) = parse_result.clone()
+                {
+                    update_timer(time.seconds);
                 }
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
                     let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
                     gps_sentence_buffer
-                        .push_back(parse_result).or_else(|parse_result| {
+                        .push_back(parse_result)
+                        .or_else(|parse_result| {
                             // Running behind, clear the buffer so old data is dropped.
                             gps_sentence_buffer.clear();
                             gps_sentence_buffer.push_back(parse_result)
-                        }).unwrap();
+                        })
+                        .unwrap();
                 });
                 start = i + 1;
             }
         }
-        
+
         // Once we've processed all the bytes, or if the buffer is totally full then reset the buffer.
         // The buffer may be full if none of the bytes were parseable.
         if start == bytes || bytes == rx_buf.len() {
