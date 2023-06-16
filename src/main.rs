@@ -11,9 +11,9 @@ use crate::bmp581::BMP581;
 use crate::hal::timer::TimerExt;
 use crate::mission::Role;
 use crate::radio::Radio;
+use crate::usb_msc::setup_usb_msc;
 use crate::usb_msc::USB_DEVICE;
 use crate::usb_msc::USB_STORAGE;
-use crate::usb_msc::setup_usb_msc;
 use cassette::pin_mut;
 use cassette::Cassette;
 use core::fmt::Write;
@@ -63,6 +63,7 @@ mod logger;
 mod mission;
 mod radio;
 mod sdcard;
+mod stepper;
 mod usb_msc;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
@@ -156,19 +157,6 @@ async fn prog_main() {
                 .borrow_mut()
                 .replace(dp.TIM5.counter_us(&clocks));
         });
-
-        setup_usb_msc(
-            dp.OTG_FS_GLOBAL,
-            dp.OTG_FS_DEVICE,
-            dp.OTG_FS_PWRCLK,
-            gpioa.pa11,
-            gpioa.pa12,
-            &clocks,
-            flash
-        );
-
-        loop {
-        }
 
         setup_usb_serial(
             dp.OTG_FS_GLOBAL,
@@ -281,6 +269,35 @@ async fn prog_main() {
 
         //let mut ina = INA219::new(&mut i2c2).unwrap();
         //ina.calibrate(87).unwrap();
+
+        let stepper_serial = dp
+            .USART2
+            .serial(
+                (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
+                hal::serial::config::Config {
+                    baudrate: 9600.bps(),
+                    dma: hal::serial::config::DmaConfig::TxRx,
+                    ..Default::default()
+                },
+                &clocks,
+            )
+            .unwrap();
+
+        stepper::setup(dp.DMA1, stepper_serial);
+
+        let mut gconf = tmc2209::reg::GCONF::default();
+        let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
+        vactual.set(10);
+        gconf.set_pdn_disable(true);
+
+        let STEPPER_ADDR = 1;
+
+        let req = tmc2209::write_request(STEPPER_ADDR, gconf);
+        stepper::tx(req.bytes()).await;
+        let req = tmc2209::write_request(STEPPER_ADDR, vactual);
+        stepper::tx(req.bytes()).await;
+
+        loop {}
 
         mission::begin().await;
     }
