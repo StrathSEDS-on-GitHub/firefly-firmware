@@ -111,7 +111,7 @@ impl<'a> Serial<'a> {
     }
 }
 
-pub fn setup_usb<'a>(
+pub fn setup_usb_serial<'a>(
     otg_fs_global: OTG_FS_GLOBAL,
     otg_fs_device: OTG_FS_DEVICE,
     otg_fs_powerclock: OTG_FS_PWRCLK,

@@ -11,14 +11,17 @@ use crate::bmp581::BMP581;
 use crate::hal::timer::TimerExt;
 use crate::mission::Role;
 use crate::radio::Radio;
+use crate::usb_msc::USB_DEVICE;
+use crate::usb_msc::USB_STORAGE;
+use crate::usb_msc::setup_usb_msc;
 use cassette::pin_mut;
 use cassette::Cassette;
-use f4_w25q::w25q::SectorAddress;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hio;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
+use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
@@ -32,7 +35,7 @@ use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
 use hal::spi;
 use hal::timer::CounterHz;
-use logger::setup_usb;
+use logger::setup_usb_serial;
 use smart_leds::SmartLedsWrite;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -60,6 +63,7 @@ mod logger;
 mod mission;
 mod radio;
 mod sdcard;
+mod usb_msc;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -125,14 +129,24 @@ async fn prog_main() {
         const LED_NUM: usize = 4;
         let neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
 
-        setup_usb(
-            dp.OTG_FS_GLOBAL,
-            dp.OTG_FS_DEVICE,
-            dp.OTG_FS_PWRCLK,
-            gpioa.pa11,
-            gpioa.pa12,
-            &clocks,
+        let gpiod = dp.GPIOD.split();
+
+        gpioe.pe3.into_floating_input();
+        gpioe.pe4.into_floating_input();
+
+        let qspi = Qspi::<Bank1>::new(
+            dp.QUADSPI,
+            (
+                gpiob.pb6, gpiod.pd11, gpiod.pd12, gpioe.pe2, gpioa.pa1, gpiob.pb1,
+            ),
+            QspiConfig::default()
+                .address_size(hal::qspi::AddressSize::Addr24Bit)
+                .flash_size(FlashSize::from_megabytes(16))
+                .clock_prescaler(0)
+                .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
+
+        let mut flash = W25Q::new(qspi).unwrap();
 
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
@@ -142,6 +156,28 @@ async fn prog_main() {
                 .borrow_mut()
                 .replace(dp.TIM5.counter_us(&clocks));
         });
+
+        setup_usb_msc(
+            dp.OTG_FS_GLOBAL,
+            dp.OTG_FS_DEVICE,
+            dp.OTG_FS_PWRCLK,
+            gpioa.pa11,
+            gpioa.pa12,
+            &clocks,
+            flash
+        );
+
+        loop {
+        }
+
+        setup_usb_serial(
+            dp.OTG_FS_GLOBAL,
+            dp.OTG_FS_DEVICE,
+            dp.OTG_FS_PWRCLK,
+            gpioa.pa11,
+            gpioa.pa12,
+            &clocks,
+        );
 
         let gps_serial = dp
             .USART1
@@ -225,24 +261,6 @@ async fn prog_main() {
         }
 
         Radio::init(lora, spi1, delay);
-        let gpiod = dp.GPIOD.split();
-
-        gpioe.pe3.into_floating_input();
-        gpioe.pe4.into_floating_input();
-
-        let qspi = Qspi::<Bank1>::new(
-            dp.QUADSPI,
-            (
-                gpiob.pb6, gpiod.pd11, gpiod.pd12, gpioe.pe2, gpioa.pa1, gpiob.pb1,
-            ),
-            QspiConfig::default()
-                .address_size(hal::qspi::AddressSize::Addr24Bit)
-                .flash_size(FlashSize::from_megabytes(16))
-                .clock_prescaler(0)
-                .sample_shift(hal::qspi::SampleShift::HalfACycle),
-        );
-
-        let mut flash = W25Q::new(qspi).unwrap();
         let mut board_id = [0];
         flash.read(0.into(), &mut board_id).unwrap();
 
@@ -324,9 +342,9 @@ async fn build_config() -> sx126x::conf::Config {
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    // if let Ok(mut stdout) = hio::hstdout() {
-    //     writeln!(stdout, "A panic occured:\n {}", info).ok();
-    // }
+    if let Ok(mut stdout) = hio::hstdout() {
+        writeln!(stdout, "A panic occured:\n {}", info).ok();
+    }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
     timer.start(4.Hz()).ok();
     cortex_m::interrupt::free(|cs| {

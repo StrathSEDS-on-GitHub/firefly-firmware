@@ -5,7 +5,6 @@ edition = "2021"
 
 # Minimise size of the binary
 [profile.dev]
-opt-level = "z"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,8 +31,10 @@ fugit = {version = "0.3.6", features = []}
 f4-w25q = {version = "0.1.0", path="f4-w25q"}
 serde = { version = "1.0", features = ["derive"], default-features = false }    
 serde-big-array = "0.5.1"
-postcard = "1.0"
 tmc2209 = "0.2.2"
+postcard = "1.0.4"
+usbd_mass_storage = "0.1.0"
+usbd_scsi = "0.1.0"
 
 [dependencies.stm32f4xx-hal]
 version = "0.16.0"
