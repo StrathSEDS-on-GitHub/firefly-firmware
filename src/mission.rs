@@ -1,8 +1,17 @@
-
+use core::{borrow::BorrowMut, fmt::Write};
+use fugit::RateExtU32;
 use futures::join;
+use heapless::String;
 use nmea0183::{ParseResult, GGA};
+use serde::__private::from_utf8_lossy;
 
-use crate::{logger::get_serial, gps, radio::{Message, self}};
+use crate::{
+    futures::YieldFuture,
+    gps,
+    logger::get_serial,
+    radio::{self, Message, QUEUED_PACKETS, RECEIVED_MESSAGE_QUEUE},
+    BUZZER, BUZZER_TIMER,
+};
 
 pub static mut ROLE: Role = Role::Cansat;
 
@@ -18,51 +27,82 @@ pub fn role() -> Role {
     unsafe { ROLE }
 }
 
-async fn usb_handler() {
+pub fn is_launched() -> bool {
+    return false;
+}
+
+async fn usb_handler() -> ! {
     let mut buf = [0u8; 256];
     loop {
-        get_serial().read(&mut buf).await;
+        let bytes = get_serial().read(&mut buf).await.unwrap();
+        if bytes.starts_with(b"disarm") {
+            for i in 0..10 {
+                radio::queue_packet(Message::Disarm);
+            }
+        }
+        writeln!(get_serial(), "Received: {:?}", core::str::from_utf8(bytes)).unwrap();
+        YieldFuture::new().await;
     }
 }
 
-async fn gps_handler() {
-    gps::poll_for_sentences().await;
+async fn gps_handler() -> ! {
+    gps::poll_for_sentences().await
 }
 
-async fn gps_broadcast() {
+async fn gps_broadcast() -> ! {
+    let mut counter = 0;
     loop {
         let mut latitudes = [0.0; 8];
         let mut longitudes = [0.0; 8];
         let mut altitudes = [0.0; 8];
 
-        for i in 0..8 {
+        let mut i = 0;
+        while i < 8 {
             let fix = gps::next_sentence().await;
-            // FIXME: This broadcasts even if there is no fix (useful for testing but not for real flights)
             if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
                 latitudes[i] = gga.latitude.as_f64() as f32;
                 longitudes[i] = gga.longitude.as_f64() as f32;
                 altitudes[i] = gga.altitude.meters;
+                i += 1;
             }
         }
         let message = Message::GpsBroadCast {
+            counter,
             latitudes,
             longitudes,
             altitudes,
         };
-        for i in 0..5 {
-            radio::queue_packet(message);
-        }
+
+        radio::queue_packet(message);
+        counter = counter.wrapping_add(1);
     }
+}
+
+async fn handle_incoming_packets() -> ! {
+    loop {
+        cortex_m::interrupt::free(|cs| {
+            if let Some(packet) = RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut().pop_front() {
+                writeln!(get_serial(), "Received: {:?}", packet).unwrap();
+            }
+        });
+        YieldFuture::new().await;
+    }
+}
+
+pub fn disarm() {
+    unsafe { BUZZER.as_mut().unwrap().set_high() }
+    unsafe { BUZZER_TIMER.as_mut().unwrap().start(1u32.Hz()).unwrap() };
+    unsafe { nb::block!(BUZZER_TIMER.as_mut().unwrap().wait()).unwrap() };
+    unsafe { BUZZER.as_mut().unwrap().set_low() };
 }
 
 pub async fn begin() {
     match unsafe { ROLE } {
         Role::Ground => {
-            radio::setup_ground_radio();
-            join!(usb_handler());
+            join!(usb_handler(), gps_handler(), handle_incoming_packets());
         }
         _ => {
-            join!(usb_handler(), gps_handler(), gps_broadcast());
+            join!(gps_handler(), gps_broadcast());
         }
     }
 }

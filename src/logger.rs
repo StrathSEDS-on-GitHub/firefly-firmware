@@ -1,10 +1,11 @@
 use core::cell::RefCell;
 
-use cortex_m::interrupt::Mutex;
+use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use stm32f4xx_hal::{
-    gpio::{Input, Pin, alt::otg_fs},
+    gpio::{alt::otg_fs, Input, Pin},
+    interrupt,
     otg_fs::{UsbBus, USB},
-    pac::{OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
+    pac::{self, OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     rcc::Clocks,
 };
 use usb_device::{
@@ -87,19 +88,18 @@ impl<'a> Serial<'a> {
         })
     }
 
-    pub async fn read(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
-        UsbFuture::new(
+    pub async fn read<'b>(&self, buffer: &'b mut [u8]) -> Result<&'b [u8], UsbError> {
+        let n = UsbFuture::new(
             || {
-                let s = cortex_m::interrupt::free(|cs| {
+                cortex_m::interrupt::free(|cs| {
                     let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
                     serial_port.read(buffer)
-                });
-                // unsafe { ERROR_LED.as_mut().unwrap().set_high() };
-                s
+                })
             },
             || self.poll(),
         )
-        .await
+        .await?;
+        Ok(&buffer[..n])
     }
 
     pub fn poll(&self) -> bool {
@@ -147,58 +147,10 @@ pub fn setup_usb_serial<'a>(
     .device_class(usbd_serial::USB_CLASS_CDC)
     .build();
 
-    unsafe { SERIAL = Some(Serial::new(serial, usb_dev)) };
-}
-
-/// Lets you format a string by providing your own buffer. Returns an error if the buffer is too small.
-pub mod write_to {
-    use core::cmp::min;
-    use core::fmt;
-
-    pub struct WriteTo<'a> {
-        buffer: &'a mut [u8],
-        // on write error (i.e. not enough space in buffer) this grows beyond
-        // `buffer.len()`.
-        used: usize,
-    }
-
-    impl<'a> WriteTo<'a> {
-        pub fn new(buffer: &'a mut [u8]) -> Self {
-            WriteTo { buffer, used: 0 }
-        }
-
-        pub fn as_str(self) -> Option<&'a str> {
-            if self.used <= self.buffer.len() {
-                unsafe { Some(core::str::from_utf8_unchecked(&self.buffer[..self.used])) }
-            } else {
-                None
-            }
-        }
-    }
-
-    impl<'a> fmt::Write for WriteTo<'a> {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            if self.used > self.buffer.len() {
-                return Err(fmt::Error);
-            }
-            let remaining_buf = &mut self.buffer[self.used..];
-            let raw_s = s.as_bytes();
-            let write_num = min(raw_s.len(), remaining_buf.len());
-            remaining_buf[..write_num].copy_from_slice(&raw_s[..write_num]);
-            self.used += raw_s.len();
-            if write_num < raw_s.len() {
-                Err(fmt::Error)
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    pub fn show<'a>(buffer: &'a mut [u8], args: fmt::Arguments) -> Result<&'a str, fmt::Error> {
-        let mut w = WriteTo::new(buffer);
-        fmt::write(&mut w, args)?;
-        w.as_str().ok_or(fmt::Error)
-    }
+    unsafe {
+        SERIAL = Some(Serial::new(serial, usb_dev));
+        NVIC::unmask(pac::Interrupt::OTG_FS);
+    };
 }
 
 impl core::fmt::Write for &Serial<'_> {
@@ -213,4 +165,10 @@ impl core::fmt::Write for &Serial<'_> {
         }
         Ok(())
     }
+}
+
+#[cfg(not(feature = "msc"))]
+#[interrupt]
+fn OTG_FS() {
+    get_serial().poll();
 }

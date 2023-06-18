@@ -23,7 +23,7 @@ use stm32f4xx_hal::{
     serial::{Rx, Tx},
 };
 
-use crate::{futures::YieldFuture, radio::update_timer, logger::get_serial};
+use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<

@@ -12,12 +12,14 @@ use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
 use cortex_m::peripheral::NVIC;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::spi::write;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
+use heapless::Deque;
 use heapless::Vec;
 use serde::Deserialize;
 use serde::Serialize;
@@ -33,6 +35,7 @@ use stm32f4xx_hal::timer::CounterUs;
 use stm32f4xx_hal::timer::Event;
 use stm32f4xx_hal::timer::SysDelay;
 use sx126x::op::IrqMask;
+use sx126x::op::IrqMaskBit;
 use sx126x::op::RxTxTimeout;
 
 const MAX_PAYLOAD_SIZE: usize = 255;
@@ -41,24 +44,50 @@ static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 #[interrupt]
 fn EXTI4() {
     let dio1_pin = unsafe { crate::DIO1_PIN.as_mut().unwrap() };
-    writeln!(get_serial(), "DIO1 interrupt").unwrap();
     if dio1_pin.check_interrupt() {
         dio1_pin.clear_interrupt_pending_bit();
-        writeln!(get_serial(), "Packet sent").unwrap();
-
-        cortex_m::interrupt::free(|cs| {
+        let should_recv = cortex_m::interrupt::free(|cs| {
             let mut radio = RADIO.borrow(cs).borrow_mut();
             if let Some(radio) = radio.as_mut() {
+                let irq_status = radio
+                    .radio
+                    .get_irq_status(&mut radio.spi, &mut radio.delay)
+                    .unwrap();
                 radio
                     .radio
-                    .clear_irq_status(&mut radio.spi, &mut radio.delay, IrqMask::all())
+                    .clear_irq_status(
+                        &mut radio.spi,
+                        &mut radio.delay,
+                        IrqMask::none()
+                            .combine(IrqMaskBit::Timeout)
+                            .combine(IrqMaskBit::RxDone)
+                            .combine(IrqMaskBit::TxDone),
+                    )
                     .unwrap();
                 radio.radio.wait_on_busy(&mut radio.delay).unwrap();
+                if let RadioState::Tx(transmitter) = RADIO_STATE.borrow(cs).get() {
+                    return transmitter != mission::role()
+                        && (transmitter == Role::Ground || mission::role() == Role::Ground);
+                }
             }
+
+            false
         });
 
+        if should_recv {
+            if mission::role() == Role::Ground {
+                cortex_m::interrupt::free(|cs| {
+                    writeln!(
+                        get_serial(),
+                        "Receiving message, {:?}",
+                        RADIO_STATE.borrow(cs).get()
+                    )
+                    .unwrap();
+                });
+            }
+            receive_message();
+        }
         TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
-
         set_radio();
     }
 }
@@ -66,10 +95,13 @@ fn EXTI4() {
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Message {
     GpsBroadCast {
+        counter: u32,
         latitudes: [f32; 8],
         longitudes: [f32; 8],
         altitudes: [f32; 8],
     },
+    Arm,
+    Disarm,
 }
 
 static RADIO: Mutex<
@@ -124,15 +156,15 @@ impl
     }
 }
 
-pub static QUEUED_PACKETS: Mutex<RefCell<Vec<Message, 32>>> = Mutex::new(RefCell::new(Vec::new()));
+pub static QUEUED_PACKETS: Mutex<RefCell<Deque<Message, 32>>> =
+    Mutex::new(RefCell::new(Deque::new()));
 
 pub fn queue_packet(msg: Message) {
     cortex_m::interrupt::free(|cs| {
         let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
-        if let Err(_) = queued_packets.push(msg) {
+        if let Err(_) = queued_packets.push_back(msg) {
             queued_packets.clear();
-            writeln!(get_serial(), "Packet queue overflow").unwrap();
-            let _ = queued_packets.push(msg);
+            let _ = queued_packets.push_back(msg);
         }
     });
 }
@@ -149,29 +181,20 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
     Mutex::new(Cell::new(RadioState::Buffer(Role::Avionics)));
 
 pub fn update_timer(secs: f32) {
-    // 0.0s                                                           0.5s
-    //  | <- 0.01s -> | <------------ 0.48s -----------> | <- 0.01s -> |
-    //  |     Idle    |            Radio1 Tx             |    Idle     |
-    // 0.5s                                                            1s
-    //  | <- 0.01s -> | <------------ 0.48s -----------> | <- 0.01s -> |
-    //  |     Idle    |            Radio2 Tx             |    Idle     |
-
     let time = secs % 2.0;
 
-    let (next_event, state) = match (time * 1000.0) as u32 % 2000 {
-        000..=49 => (0.50, RadioState::Buffer(Role::Avionics)),
-        50..=999 => (1.0, RadioState::Tx(Role::Avionics)),
-        1000..=1049 => (1.05, RadioState::Buffer(Role::Cansat)),
-        1050..=1999 => (2.0, RadioState::Tx(Role::Cansat)),
-        _ => unreachable!(),
-    };
+    let (state, remaining_time) =
+        get_current_state_and_remaining_time_from_offset((time * 1000.0) as u32);
 
     cortex_m::interrupt::free(|cs| {
         RADIO_STATE.borrow(cs).set(state);
         let mut timer_ref = TIMER.borrow(cs).borrow_mut();
         let timer = timer_ref.as_mut().unwrap();
-        if next_event - time > 0.03 {
-            timer.start((((next_event - time) * 1_000_000.0) as u32).micros());
+
+        // Avoid setting the timer if it's already set to the (approx) correct value.
+        // This prevents bouncing at the edge of the transmit window.
+        if remaining_time > 30 {
+            timer.start(remaining_time.millis());
             timer.listen(Event::Update);
             set_radio();
         }
@@ -180,6 +203,82 @@ pub fn update_timer(secs: f32) {
             NVIC::unpend(stm32f4xx_hal::interrupt::TIM5);
         }
     });
+}
+
+// Set to true when we have launched and before the config has been switched.
+static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
+
+// Prior to launch, we have a slot for the ground station to transmit
+// so it can send arm/disarm commands to the avionics.
+const PRE_LAUNCH_TDM_CONFIG: [(RadioState, u32); 6] = [
+    (RadioState::Buffer(Role::Ground), 100),
+    (RadioState::Tx(Role::Ground), 600),
+    (RadioState::Buffer(Role::Avionics), 50),
+    (RadioState::Tx(Role::Avionics), 600),
+    (RadioState::Buffer(Role::Cansat), 50),
+    (RadioState::Tx(Role::Cansat), 600),
+];
+
+// After launch, we don't need to transmit to the ground station anymore,
+// so we can use all the bandwidth for the avionics and cansat.
+const POST_LAUNCH_TDM_CONFIG: [(RadioState, u32); 4] = [
+    (RadioState::Buffer(Role::Avionics), 50),
+    (RadioState::Tx(Role::Avionics), 950),
+    (RadioState::Buffer(Role::Cansat), 50),
+    (RadioState::Tx(Role::Cansat), 950),
+];
+
+fn get_current_state_and_remaining_time_from_offset(offset: u32) -> (RadioState, u32) {
+    let mut time = offset;
+
+    let config: &[(RadioState, u32)] = if SWITCHED_CONFIGS.load(Ordering::Relaxed) {
+        &POST_LAUNCH_TDM_CONFIG
+    } else {
+        &PRE_LAUNCH_TDM_CONFIG
+    };
+
+    for (state, duration) in config.iter() {
+        if *duration > time {
+            return (*state, *duration - time);
+        }
+        time -= duration;
+    }
+    // Offset too big?
+    return PRE_LAUNCH_TDM_CONFIG[0];
+}
+
+// Determine the next state and how long it lasts for
+fn get_next_state_and_time(current: RadioState) -> (RadioState, u32) {
+    if SWITCHED_CONFIGS.swap(false, Ordering::Relaxed) {
+        // We just switched configs, so we need to do some maths to figure out
+        // where we are in the new config.
+
+        let mut time = 0;
+        for (state, duration) in PRE_LAUNCH_TDM_CONFIG.iter() {
+            time += duration;
+            if *state == current {
+                break;
+            }
+        }
+
+        return get_current_state_and_remaining_time_from_offset(time);
+    }
+
+    let launched = mission::is_launched();
+    let config: &[(RadioState, u32)] = if launched {
+        &POST_LAUNCH_TDM_CONFIG
+    } else {
+        &PRE_LAUNCH_TDM_CONFIG
+    };
+    for (i, (state, _)) in config.iter().enumerate() {
+        if *state == current {
+            return config[(i + 1) % config.len()];
+        }
+    }
+    // This _shouldn't_ ever happen, but let's not panic if it does
+    // The worst that can happen is we have a broken config
+    // until the GPS gives us the correct time.
+    config[0]
 }
 
 /// TDM (Time Division Multiplexing) timer
@@ -192,15 +291,7 @@ fn TIM5() {
         timer.clear_interrupt(Event::Update);
 
         let radio_state = RADIO_STATE.borrow(cs).get();
-        let (next_time, state) = match radio_state {
-            RadioState::Buffer(Role::Avionics) => (950, RadioState::Tx(Role::Avionics)),
-            RadioState::Tx(Role::Avionics) => (50, RadioState::Buffer(Role::Cansat)),
-            RadioState::Buffer(Role::Cansat) => (950, RadioState::Tx(Role::Cansat)),
-            RadioState::Tx(Role::Cansat) => (50, RadioState::Buffer(Role::Avionics)),
-            // The ground station doesn't transmit
-            _ => return,
-        };
-
+        let (state, next_time) = get_next_state_and_time(radio_state);
         timer.start(next_time.millis());
         timer.listen(Event::Update);
         RADIO_STATE.borrow(cs).set(state);
@@ -209,18 +300,54 @@ fn TIM5() {
     });
 }
 
-pub fn setup_ground_radio() {
+pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message, 64>>> =
+    Mutex::new(RefCell::new(Deque::new()));
+
+fn receive_message() {
     cortex_m::interrupt::free(|cs| {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
         let radio = radio_ref.as_mut().unwrap();
+        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let rx_buf_status = radio
+            .radio
+            .get_rx_buffer_status(&mut radio.spi, &mut radio.delay)
+            .unwrap();
+        let size = rx_buf_status.payload_length_rx() as usize;
+        let state = radio.radio.get_status(&mut radio.spi, &mut radio.delay).unwrap();
+        hprintln!(
+            "Radio state: {:?}. Start: {}, size: {}, state: {:?}",
+            RADIO_STATE.borrow(cs).get(),
+            rx_buf_status.rx_start_buffer_pointer(),
+            size,
+            state
+        );
         radio
             .radio
-            .set_rx(
+            .read_buffer(
                 &mut radio.spi,
                 &mut radio.delay,
-                RxTxTimeout::continuous_rx(),
+                rx_buf_status.rx_start_buffer_pointer(),
+                &mut buf[0usize..size],
             )
             .unwrap();
+
+        let message = postcard::from_bytes::<Message>(&buf[..size]).ok();
+        hprintln!("Received message: {:?}", message);
+        if let Some(message) = message {
+            if let Message::Disarm = message {
+                // Priority message, executed in interrupt handler
+                // Otherwise just add it to the queue
+                mission::disarm();
+            }
+            let mut msg_queue = RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut();
+            msg_queue
+                .push_back(message)
+                .or_else(|_| {
+                    msg_queue.pop_front();
+                    msg_queue.push_back(message)
+                })
+                .ok();
+        }
     });
 }
 
@@ -229,33 +356,6 @@ pub fn setup_ground_radio() {
 /// The radio interrupt fires when the radio is done transmitting a packet.
 fn set_radio() {
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
-    if matches!(mission::role(), Role::Ground) {
-        // We received a packet.
-        cortex_m::interrupt::free(|cs| {
-            let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-            let radio = radio_ref.as_mut().unwrap();
-            let mut buf = [0u8; MAX_PAYLOAD_SIZE];
-            let rx_buf_status = radio
-                .radio
-                .get_rx_buffer_status(&mut radio.spi, &mut radio.delay)
-                .unwrap();
-            radio
-                .radio
-                .read_buffer(
-                    &mut radio.spi,
-                    &mut radio.delay,
-                    rx_buf_status.rx_start_buffer_pointer(),
-                    &mut buf[0usize..rx_buf_status.payload_length_rx() as usize],
-                )
-                .unwrap();
-
-            if let Ok(msg) = postcard::from_bytes::<Message>(&buf) {
-                writeln!(get_serial(), "Received: {:?}", msg).unwrap();
-            }
-        });
-
-        return;
-    }
 
     match state {
         RadioState::Tx(role) if role == mission::role() => {
@@ -268,7 +368,7 @@ fn set_radio() {
                 let mut radio_ref = RADIO.borrow(cs).borrow_mut();
                 let radio = radio_ref.as_mut().unwrap();
                 let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
-                if let Some(msg) = queued_packets.pop() {
+                if let Some(msg) = queued_packets.pop_front() {
                     let mut buf = [0u8; MAX_PAYLOAD_SIZE];
                     let bytes = postcard::to_slice(&msg, &mut buf).unwrap();
                     radio
@@ -277,16 +377,36 @@ fn set_radio() {
                         .unwrap();
                     radio
                         .radio
-                        .set_tx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(300))
+                        .set_tx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(500))
                         .unwrap();
                     radio.radio.wait_on_busy(&mut radio.delay).unwrap();
 
                     TRANSMISSION_IN_PROGRESS.store(true, Ordering::Relaxed);
-                    writeln!(get_serial(), "Transmission started");
                 } else {
-                    // No packets to transmit, go back to idle
-
-/*
+                    // No packets to transmit, stay idle
+                }
+            });
+        }
+        RadioState::Tx(other) | RadioState::Buffer(other) => {
+            // Someone else is transmitting
+            if mission::role() == Role::Ground || other == Role::Ground {
+                // Either we're the ground station and should be listening,
+                // or the other station is the ground station and we should be listening.
+                cortex_m::interrupt::free(|cs| {
+                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                    let radio = radio_ref.as_mut().unwrap();
+                    radio
+                        .radio
+                        .set_rx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(5000))
+                        .unwrap();
+                    TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                });
+            } else {
+                // Not our turn to transmit
+                // Tell radio to shut up
+                cortex_m::interrupt::free(|cs| {
+                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                    let radio = radio_ref.as_mut().unwrap();
                     radio
                         .radio
                         .set_standby(
@@ -295,46 +415,26 @@ fn set_radio() {
                             sx126x::op::StandbyConfig::StbyRc,
                         )
                         .unwrap();
-                     radio.radio.wait_on_busy(&mut radio.delay).unwrap();*/
-                }
-            });
-        }
-        _ => {
-            // Not our turn to transmit
-            // Tell radio to shut up
-            /*
-            cortex_m::interrupt::free(|cs| {
-                let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-                let radio = radio_ref.as_mut().unwrap();
-                radio
-                    .radio
-                    .set_standby(
-                        &mut radio.spi,
-                        &mut radio.delay,
-                        sx126x::op::StandbyConfig::StbyRc,
-                    )
-                    .unwrap();
-            }); */ 
-            //TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
-
-            writeln!(get_serial(), "Not our turn to transmit");
+                    TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                });
+            }
         }
     }
     cortex_m::interrupt::free(|cs| {
         let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
 
         let r = match state {
-            RadioState::Buffer(_) => 255,
+            RadioState::Buffer(_) | RadioState::Tx(Role::Ground) => 55,
             _ => 0,
         };
 
         let g = match state {
-            RadioState::Tx(Role::Avionics) => 255,
+            RadioState::Tx(Role::Avionics) | RadioState::Tx(Role::Ground) => 55,
             _ => 0,
         };
 
         let b = match state {
-            RadioState::Tx(Role::Cansat) => 255,
+            RadioState::Tx(Role::Cansat) => 55,
             _ => 0,
         };
         neo_ref.as_mut().unwrap().write([[r, g, b]].into_iter());

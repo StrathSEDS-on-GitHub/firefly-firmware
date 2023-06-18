@@ -14,7 +14,7 @@ enum Register {
 #[derive(Debug)]
 pub enum Error<E> {
     I2c(E),
-    InvalidId
+    InvalidId,
 }
 
 impl<'a, I2C: i2c::WriteRead> BNO085<'a, I2C> {

@@ -16,6 +16,7 @@ use crate::usb_msc::USB_DEVICE;
 use crate::usb_msc::USB_STORAGE;
 use cassette::pin_mut;
 use cassette::Cassette;
+use hal::pac::TIM6;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hio;
@@ -27,6 +28,7 @@ use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
 use hal::gpio::Output;
 use hal::gpio::Pin;
+use hal::gpio::PushPull;
 use hal::i2c::I2c;
 use hal::pac::TIM2;
 use hal::pac::TIM9;
@@ -34,6 +36,9 @@ use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
 use hal::spi;
+use hal::timer::Channel;
+use hal::timer::Channel1;
+use hal::timer::Channel2;
 use hal::timer::CounterHz;
 use logger::setup_usb_serial;
 use smart_leds::SmartLedsWrite;
@@ -79,6 +84,8 @@ static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output
     Mutex::new(RefCell::new(None));
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
+static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
+static mut BUZZER_TIMER: Option<CounterHz<TIM6>> = None;
 
 #[entry]
 fn main() -> ! {
@@ -103,8 +110,6 @@ async fn prog_main() {
         let gpioc = dp.GPIOC.split();
         let gpioe = dp.GPIOE.split();
 
-        let _pin = gpioe.pe10.into_push_pull_output();
-
         dp.RCC
             .ahb3enr
             .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
@@ -119,8 +124,11 @@ async fn prog_main() {
             .require_pll48clk()
             .freeze();
 
+        // SAFETY: these are touched 
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
+            BUZZER.replace(gpioe.pe1.into_push_pull_output());
+            BUZZER_TIMER.replace(dp.TIM6.counter_hz(&clocks));
         }
 
         let mut delay = cp.SYST.delay(&clocks);
@@ -131,6 +139,15 @@ async fn prog_main() {
         let neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
 
         let gpiod = dp.GPIOD.split();
+
+        cortex_m::interrupt::free(|cs| {
+            CLOCKS.borrow(cs).borrow_mut().replace(clocks);
+            NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
+            radio::TIMER
+                .borrow(cs)
+                .borrow_mut()
+                .replace(dp.TIM5.counter_us(&clocks));
+        });
 
         gpioe.pe3.into_floating_input();
         gpioe.pe4.into_floating_input();
@@ -149,23 +166,55 @@ async fn prog_main() {
 
         let mut flash = W25Q::new(qspi).unwrap();
 
-        cortex_m::interrupt::free(|cs| {
-            CLOCKS.borrow(cs).borrow_mut().replace(clocks);
-            NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
-            radio::TIMER
-                .borrow(cs)
-                .borrow_mut()
-                .replace(dp.TIM5.counter_us(&clocks));
-        });
+        #[cfg(feature = "msc")]
+        {
+            setup_usb_msc(
+                dp.OTG_FS_GLOBAL,
+                dp.OTG_FS_DEVICE,
+                dp.OTG_FS_PWRCLK,
+                gpioa.pa11,
+                gpioa.pa12,
+                &clocks,
+                flash,
+            );
+            loop {}
+        }
+        #[cfg(not(feature = "msc"))]
+        {
+            setup_usb_serial(
+                dp.OTG_FS_GLOBAL,
+                dp.OTG_FS_DEVICE,
+                dp.OTG_FS_PWRCLK,
+                gpioa.pa11,
+                gpioa.pa12,
+                &clocks,
+            );
+        }
+        // let mut step = gpioc.pc3.into_push_pull_output();
+        // let mut dir = gpioc.pc2.into_push_pull_output();
+        // let mut tim7 = dp.TIM7.counter_hz(&clocks);
 
-        setup_usb_serial(
-            dp.OTG_FS_GLOBAL,
-            dp.OTG_FS_DEVICE,
-            dp.OTG_FS_PWRCLK,
-            gpioa.pa11,
-            gpioa.pa12,
-            &clocks,
-        );
+        // dir.set_low();
+
+        // loop {
+        //     step.toggle();
+        //     tim7.start(100.Hz());
+        //     nb::block!(tim7.wait()).unwrap();
+        // }
+
+        // let mut gconf = tmc2209::reg::GCONF::default();
+        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
+        // vactual.set(10);
+        // gconf.set_pdn_disable(true);
+
+        // let STEPPER_ADDR = 1;
+
+        // let req = tmc2209::write_request(STEPPER_ADDR, gconf);
+        // stepper::tx(req.bytes()).await;
+        // let req = tmc2209::write_request(STEPPER_ADDR, vactual);
+        // stepper::tx(req.bytes()).await;
+
+        // loop {}
 
         let gps_serial = dp
             .USART1
@@ -254,8 +303,8 @@ async fn prog_main() {
 
         let role = match board_id[0] {
             4 => Role::Avionics,
-            5 => Role::Cansat,
-            _ => Role::Ground,
+            5 => Role::Ground,
+            _ => Role::Cansat,
         };
 
         unsafe { mission::ROLE = role };
@@ -270,35 +319,6 @@ async fn prog_main() {
         //let mut ina = INA219::new(&mut i2c2).unwrap();
         //ina.calibrate(87).unwrap();
 
-        let stepper_serial = dp
-            .USART2
-            .serial(
-                (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
-                hal::serial::config::Config {
-                    baudrate: 9600.bps(),
-                    dma: hal::serial::config::DmaConfig::TxRx,
-                    ..Default::default()
-                },
-                &clocks,
-            )
-            .unwrap();
-
-        stepper::setup(dp.DMA1, stepper_serial);
-
-        let mut gconf = tmc2209::reg::GCONF::default();
-        let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        vactual.set(10);
-        gconf.set_pdn_disable(true);
-
-        let STEPPER_ADDR = 1;
-
-        let req = tmc2209::write_request(STEPPER_ADDR, gconf);
-        stepper::tx(req.bytes()).await;
-        let req = tmc2209::write_request(STEPPER_ADDR, vactual);
-        stepper::tx(req.bytes()).await;
-
-        loop {}
-
         mission::begin().await;
     }
 }
@@ -309,12 +329,10 @@ async fn build_config() -> sx126x::conf::Config {
         PacketType::LoRa,
     };
 
-    let spread_factor = 5;
-
     let mod_params = LoraModParams::default()
-        .set_spread_factor(spread_factor.into())
-        .set_bandwidth(LoRaBandWidth::BW125)
-        .set_coding_rate(LoraCodingRate::CR4_7)
+        .set_spread_factor(LoRaSpreadFactor::SF5)
+        .set_bandwidth(LoRaBandWidth::BW500)
+        .set_coding_rate(LoraCodingRate::CR4_8)
         .into();
 
     let tx_params = TxParams::default()
@@ -325,7 +343,7 @@ async fn build_config() -> sx126x::conf::Config {
         .set_pa_duty_cycle(0x04)
         .set_hp_max(0x07);
 
-    let dio1_irq_mask = IrqMask::all()
+    let dio1_irq_mask = IrqMask::none()
         .combine(IrqMaskBit::RxDone)
         .combine(IrqMaskBit::TxDone)
         .combine(IrqMaskBit::Timeout);

@@ -9,12 +9,11 @@ pub struct BMP581<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>>
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Register {
     ChipId = 0x01,
-    Status = 0x28
+    Status = 0x28,
 }
 
 impl<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> BMP581<'a, E, I2C> {
-    pub fn new(i2c: &'a mut I2C) -> Result<Self, E>
-    {
+    pub fn new(i2c: &'a mut I2C) -> Result<Self, E> {
         i2c.write(ADDR, &[0x37, 0b0000_0001]);
         let chip = BMP581 { com: i2c };
         Ok(chip)
@@ -39,9 +38,7 @@ impl<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> BMP581<'a, E
     pub fn pressure(&mut self) -> Result<u32, E> {
         let mut data: [u8; 3] = [0; 3];
         match self.com.write_read(ADDR, &[0x20], &mut data) {
-            Ok(_) => {
-                Ok((data[0] as u32) | (data[1] as u32) << 8 | (data[2] as u32) << 16)
-            }
+            Ok(_) => Ok((data[0] as u32) | (data[1] as u32) << 8 | (data[2] as u32) << 16),
             Err(e) => Err(e),
         }
     }
@@ -49,9 +46,7 @@ impl<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> BMP581<'a, E
     pub fn temperature(&mut self) -> Result<u32, E> {
         let mut data: [u8; 3] = [0; 3];
         match self.com.write_read(ADDR, &[0x1d], &mut data) {
-            Ok(_) => {
-                Ok((data[0] as u32) | (data[1] as u32) << 8 | (data[2] as u32) << 16)
-            }
+            Ok(_) => Ok((data[0] as u32) | (data[1] as u32) << 8 | (data[2] as u32) << 16),
             Err(e) => Err(e),
         }
     }

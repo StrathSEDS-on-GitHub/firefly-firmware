@@ -228,6 +228,7 @@ pub fn setup_usb_msc<'a>(
     }
 }
 
+#[cfg(feature = "msc")]
 #[interrupt]
 fn OTG_FS() {
     unsafe {

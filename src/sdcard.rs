@@ -113,9 +113,10 @@ impl SdLogger {
         let mut buf = FixedWriter(&mut buf, 0);
 
         let ((h, m, s), millis) = cortex_m::interrupt::free(|cs| ((1, 2, 3), 4));
-        
+
         // Can't do much about a failed write, so just ignore it
-        let _ = self.cont
+        let _ = self
+            .cont
             .write(&mut self.vol, &mut self.file, &buf.0[..buf.1])
             .and_then(|_| {
                 self.cont

@@ -55,10 +55,8 @@ impl<'a, E, I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>> INA219<'a, E
     }
 
     fn read(&mut self, register: Register) -> Result<u16, E> {
-
         let mut buf: [u8; 2] = [0x00; 2];
-        self.com
-            .write_read(ADDR, &[register as u8], &mut buf)?;
+        self.com.write_read(ADDR, &[register as u8], &mut buf)?;
         Ok(u16::from_be_bytes(buf))
     }
 }
