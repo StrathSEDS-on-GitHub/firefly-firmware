@@ -3,16 +3,17 @@ use core::cell::RefCell;
 
 use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
 
 use crate::logger::get_serial;
 use crate::mission;
+use crate::mission::MissionStage;
 use crate::mission::Role;
 use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
 use cortex_m::peripheral::NVIC;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
@@ -40,6 +41,7 @@ use sx126x::op::RxTxTimeout;
 
 const MAX_PAYLOAD_SIZE: usize = 255;
 static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static COUNTER: AtomicU16 = AtomicU16::new(0);
 
 #[interrupt]
 fn EXTI4() {
@@ -95,13 +97,28 @@ fn EXTI4() {
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Message {
     GpsBroadCast {
-        counter: u32,
-        latitudes: [f32; 8],
-        longitudes: [f32; 8],
-        altitudes: [f32; 8],
+        counter: u16,
+        stage: MissionStage,
+        role: Role,
+        time_of_first_packet: u32,
+        latitudes: [f32; 10],
+        longitudes: [f32; 10],
+        altitudes: [f32; 10],
+    },
+    PressureTempBroadCast {
+        counter: u16,
+        stage: MissionStage,
+        role: Role,
+        time_of_first_packet: u32,
+        pressures: [f32; 10],
+        temperatures: [f32; 10],
     },
     Arm,
     Disarm,
+}
+
+pub fn next_counter() -> u16 {
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 static RADIO: Mutex<
@@ -231,7 +248,7 @@ const POST_LAUNCH_TDM_CONFIG: [(RadioState, u32); 4] = [
 fn get_current_state_and_remaining_time_from_offset(offset: u32) -> (RadioState, u32) {
     let mut time = offset;
 
-    let config: &[(RadioState, u32)] = if SWITCHED_CONFIGS.load(Ordering::Relaxed) {
+    let config: &[(RadioState, u32)] = if mission::is_launched() {
         &POST_LAUNCH_TDM_CONFIG
     } else {
         &PRE_LAUNCH_TDM_CONFIG
@@ -314,13 +331,6 @@ fn receive_message() {
             .unwrap();
         let size = rx_buf_status.payload_length_rx() as usize;
         let state = radio.radio.get_status(&mut radio.spi, &mut radio.delay).unwrap();
-        hprintln!(
-            "Radio state: {:?}. Start: {}, size: {}, state: {:?}",
-            RADIO_STATE.borrow(cs).get(),
-            rx_buf_status.rx_start_buffer_pointer(),
-            size,
-            state
-        );
         radio
             .radio
             .read_buffer(
@@ -332,7 +342,6 @@ fn receive_message() {
             .unwrap();
 
         let message = postcard::from_bytes::<Message>(&buf[..size]).ok();
-        hprintln!("Received message: {:?}", message);
         if let Some(message) = message {
             if let Message::Disarm = message {
                 // Priority message, executed in interrupt handler

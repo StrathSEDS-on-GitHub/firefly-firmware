@@ -17,6 +17,7 @@ use crate::usb_msc::USB_STORAGE;
 use cassette::pin_mut;
 use cassette::Cassette;
 use hal::pac::TIM6;
+use hal::rtc::Rtc;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hio;
@@ -86,6 +87,7 @@ static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
 static mut BUZZER_TIMER: Option<CounterHz<TIM6>> = None;
+static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
@@ -124,6 +126,7 @@ async fn prog_main() {
             .require_pll48clk()
             .freeze();
 
+
         // SAFETY: these are touched 
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
@@ -136,9 +139,13 @@ async fn prog_main() {
         timer.start(7.MHz()).unwrap();
 
         const LED_NUM: usize = 4;
-        let neopixel = Ws2812::new(timer, gpioa.pa9.into_push_pull_output());
+        let mut pa9 = gpioa.pa9.into_push_pull_output();
+        pa9.set_speed(gpio::Speed::VeryHigh);
+        let mut neopixel = Ws2812::new(timer, pa9);
+        neopixel.write([[0,0,5]; 4].into_iter()).unwrap();
 
         let gpiod = dp.GPIOD.split();
+        let rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
 
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
@@ -147,6 +154,7 @@ async fn prog_main() {
                 .borrow(cs)
                 .borrow_mut()
                 .replace(dp.TIM5.counter_us(&clocks));
+            RTC.borrow(cs).borrow_mut().replace(rtc);
         });
 
         gpioe.pe3.into_floating_input();
@@ -250,8 +258,8 @@ async fn prog_main() {
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
         let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
-        //let mut bmp = BMP581::new(&mut i2c1).unwrap();
-        //bmp.enable_pressure().unwrap();
+        let mut bmp = BMP581::new(&mut i2c1).unwrap();
+        bmp.enable_pressure().unwrap();
 
         let lora_nreset = gpiob
             .pb0
@@ -319,7 +327,7 @@ async fn prog_main() {
         //let mut ina = INA219::new(&mut i2c2).unwrap();
         //ina.calibrate(87).unwrap();
 
-        mission::begin().await;
+        mission::begin(bmp).await;
     }
 }
 

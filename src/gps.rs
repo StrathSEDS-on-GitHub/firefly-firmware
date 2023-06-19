@@ -13,7 +13,7 @@ use hal::{
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::{ParseResult, GGA};
+use nmea0183::{ParseResult, GGA, datetime::Time};
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -23,7 +23,7 @@ use stm32f4xx_hal::{
     serial::{Rx, Tx},
 };
 
-use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer};
+use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -116,7 +116,7 @@ pub fn setup(dma2: pac::DMA2, gps: hal::serial::Serial<USART1>) {
 }
 
 pub async fn set_nmea_output() {
-    let msg = b"$PMTK314,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n";
+    let msg = b"$PMTK314,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n";
     tx(msg).await;
 }
 
@@ -229,6 +229,16 @@ fn DMA2_STREAM7() {
     });
 }
 
+fn set_rtc(time: Time) {
+    cortex_m::interrupt::free(|cs| {
+        let mut rtc_ref = RTC.borrow(cs).borrow_mut();
+        let rtc = rtc_ref.as_mut().unwrap();
+        rtc.set_hours(time.hours);
+        rtc.set_minutes(time.minutes);
+        rtc.set_seconds(time.seconds as u8);
+    });
+}
+
 // Runs as a background job and puts GPS frames into GPS_SENTENCE_BUFFER.
 // Call next_sentence() to get the next available sentence.
 pub async fn poll_for_sentences() -> ! {
@@ -237,6 +247,7 @@ pub async fn poll_for_sentences() -> ! {
     let mut start = 0;
 
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
+    let mut rtc_set = false;
 
     loop {
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
@@ -248,6 +259,10 @@ pub async fn poll_for_sentences() -> ! {
                 })) = parse_result.clone()
                 {
                     update_timer(time.seconds);
+                    if !rtc_set {
+                        set_rtc(time);
+                        rtc_set = true;
+                    }
                 }
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
