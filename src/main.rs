@@ -8,16 +8,18 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
+use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
+use crate::logger::get_serial;
+use crate::mission::usb_handler;
 use crate::mission::Role;
 use crate::radio::Radio;
 use crate::usb_msc::setup_usb_msc;
 use crate::usb_msc::USB_DEVICE;
 use crate::usb_msc::USB_STORAGE;
+use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
-use hal::pac::TIM6;
-use hal::rtc::Rtc;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hio;
@@ -32,15 +34,21 @@ use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::i2c::I2c;
 use hal::pac::TIM2;
+use hal::pac::TIM6;
 use hal::pac::TIM9;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
+use hal::rtc::Rtc;
 use hal::spi;
 use hal::timer::Channel;
 use hal::timer::Channel1;
 use hal::timer::Channel2;
 use hal::timer::CounterHz;
+use littlefs2::fs::Filesystem;
+use littlefs2::path;
+use littlefs2::path::Path;
+use littlefs2::path::PathBuf;
 use logger::setup_usb_serial;
 use smart_leds::SmartLedsWrite;
 use sx126x::op::CalibParam;
@@ -126,8 +134,7 @@ async fn prog_main() {
             .require_pll48clk()
             .freeze();
 
-
-        // SAFETY: these are touched 
+        // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
             BUZZER.replace(gpioe.pe1.into_push_pull_output());
@@ -142,7 +149,7 @@ async fn prog_main() {
         let mut pa9 = gpioa.pa9.into_push_pull_output();
         pa9.set_speed(gpio::Speed::VeryHigh);
         let mut neopixel = Ws2812::new(timer, pa9);
-        neopixel.write([[0,0,5]; 4].into_iter()).unwrap();
+        neopixel.write([[0, 0, 5]; 4].into_iter()).unwrap();
 
         let gpiod = dp.GPIOD.split();
         let rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
@@ -156,6 +163,56 @@ async fn prog_main() {
                 .replace(dp.TIM5.counter_us(&clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
         });
+
+        #[cfg(not(feature = "msc"))]
+        {
+            setup_usb_serial(
+                dp.OTG_FS_GLOBAL,
+                dp.OTG_FS_DEVICE,
+                dp.OTG_FS_PWRCLK,
+                gpioa.pa11,
+                gpioa.pa12,
+                &clocks,
+            );
+        }
+        let stepper_serial = dp
+            .USART2
+            .serial(
+                (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
+                hal::serial::config::Config {
+                    baudrate: 9600.bps(),
+                    dma: hal::serial::config::DmaConfig::TxRx,
+                    ..Default::default()
+                },
+                &clocks,
+            )
+            .unwrap();
+        stepper::setup(dp.DMA1, stepper_serial);
+        let mut gconf = tmc2209::reg::GCONF::default();
+        let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
+        vactual.set(10);
+        gconf.set_pdn_disable(true);
+
+        let STEPPER_ADDR = 1;
+
+        loop {
+            let req = tmc2209::write_request(STEPPER_ADDR, gconf);
+            stepper::tx(req.bytes()).await;
+            delay.delay_ms(500u32);
+            let req = tmc2209::write_request(STEPPER_ADDR, vactual);
+            stepper::tx(req.bytes()).await;
+            cortex_m::interrupt::free(|cs| {
+                NEOPIXEL
+                    .borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .write([[0, 20, 0]; 4].into_iter())
+                    .unwrap();
+            });
+            YieldFuture::new().await;
+            delay.delay_ms(1000u32);
+        }
 
         gpioe.pe3.into_floating_input();
         gpioe.pe4.into_floating_input();
@@ -173,6 +230,20 @@ async fn prog_main() {
         );
 
         let mut flash = W25Q::new(qspi).unwrap();
+        // let mut alloc = Filesystem::allocate();
+        // let mut fs = Filesystem::mount(&mut alloc, &mut flash).unwrap();
+        // fs.write(path!("/example.txt"), b"Hello, world").unwrap();
+        // fs.read_dir_and_then(path!("/"), |rd| {
+        //     for entry in rd {
+        //         let entry = entry.unwrap();
+        //         if entry.file_type() == littlefs2::fs::FileType::Dir {
+        //             continue;
+        //         }
+        //         hprintln!("{:?}", entry);
+        //         hprintln!("{:?}", fs.read::<24>(&PathBuf::from(b"/").join(entry.file_name())));
+        //     }
+        //     Ok(())
+        // });
 
         #[cfg(feature = "msc")]
         {
@@ -185,18 +256,8 @@ async fn prog_main() {
                 &clocks,
                 flash,
             );
-            loop {}
-        }
-        #[cfg(not(feature = "msc"))]
-        {
-            setup_usb_serial(
-                dp.OTG_FS_GLOBAL,
-                dp.OTG_FS_DEVICE,
-                dp.OTG_FS_PWRCLK,
-                gpioa.pa11,
-                gpioa.pa12,
-                &clocks,
-            );
+
+            use fugit::ExtU32;
         }
         // let mut step = gpioc.pc3.into_push_pull_output();
         // let mut dir = gpioc.pc2.into_push_pull_output();
@@ -209,20 +270,6 @@ async fn prog_main() {
         //     tim7.start(100.Hz());
         //     nb::block!(tim7.wait()).unwrap();
         // }
-
-        // let mut gconf = tmc2209::reg::GCONF::default();
-        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        // vactual.set(10);
-        // gconf.set_pdn_disable(true);
-
-        // let STEPPER_ADDR = 1;
-
-        // let req = tmc2209::write_request(STEPPER_ADDR, gconf);
-        // stepper::tx(req.bytes()).await;
-        // let req = tmc2209::write_request(STEPPER_ADDR, vactual);
-        // stepper::tx(req.bytes()).await;
-
-        // loop {}
 
         let gps_serial = dp
             .USART1

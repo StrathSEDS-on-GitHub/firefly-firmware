@@ -93,7 +93,7 @@ pub fn setup(dma2: pac::DMA1, gps: hal::serial::Serial<USART2>) {
             .transfer_complete_interrupt(true),
     );
     rx_transfer.start(|_rx| {});
-    tx_transfer.start(|_tx| {});
+    // tx_transfer.start(|_tx| {});
     cortex_m::interrupt::free(|cs| {
         // SAFETY: Mutex makes access of static mutable variable safe
         TX_TRANSFER.borrow(cs).borrow_mut().replace(tx_transfer);
@@ -201,7 +201,6 @@ async fn rx_complete() {
 }
 
 pub async fn tx(tx_buf: &[u8]) {
-    tx_complete().await;
     cortex_m::interrupt::free(|cs| {
         let mut tx_transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
         let tx_transfer = tx_transfer_ref.as_mut().unwrap();
@@ -211,9 +210,10 @@ pub async fn tx(tx_buf: &[u8]) {
             tx_transfer
                 .next_transfer_with(|buf, _| {
                     buf[..tx_buf.len()].copy_from_slice(&tx_buf);
-                    (buf, ())
+                    buf.split_at_mut(tx_buf.len())
                 })
                 .unwrap();
+            tx_transfer.start(|_tx| {});
         }
     });
     tx_complete().await;

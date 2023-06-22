@@ -45,7 +45,7 @@ impl Storage {
             for block in 0..8 {
                 if !unsafe { SECTOR_CACHED_BLOCKS[block] } {
                     // This block is not
-                    self.read_block(block as u32, &mut sector[block * 512..(block + 1) * 512])
+                    self.read_block(cached_addr/512 + block as u32, &mut sector[block * 512..(block + 1) * 512])
                         .unwrap();
                 }
             }

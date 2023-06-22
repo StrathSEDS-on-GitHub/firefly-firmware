@@ -107,7 +107,7 @@ pub fn current_stage() -> MissionStage {
     cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get())
 }
 
-async fn usb_handler() -> ! {
+pub async fn usb_handler() -> ! {
     let mut buf = [0u8; 256];
     loop {
         let bytes = get_serial().read(&mut buf).await.unwrap();
