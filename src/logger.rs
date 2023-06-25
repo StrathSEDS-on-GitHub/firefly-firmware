@@ -17,6 +17,11 @@ use usbd_serial::SerialPort;
 
 use crate::futures::UsbFuture;
 
+struct Logger {
+    serial: Option<Serial<'static>>,
+    
+}
+
 static mut SERIAL: Option<Serial> = None;
 pub static mut USB_BUS: Option<UsbBusAllocator<UsbBus<USB>>> = None;
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];

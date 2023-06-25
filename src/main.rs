@@ -8,12 +8,18 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
+use crate::futures::NbFuture;
 use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::logger::get_serial;
 use crate::mission::usb_handler;
 use crate::mission::Role;
+use crate::mission::PYRO_ADC;
+use crate::mission::PYRO_MEASURE_PIN;
 use crate::radio::Radio;
+use crate::sdio::get_logger;
+use crate::sdio::setup_logger;
+use crate::sdio::SdLogger;
 use crate::usb_msc::setup_usb_msc;
 use crate::usb_msc::USB_DEVICE;
 use crate::usb_msc::USB_STORAGE;
@@ -21,18 +27,25 @@ use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
 use core::fmt::Write;
+use cortex_m::delay::Delay;
 use cortex_m::interrupt::Mutex;
+use cortex_m_rt::exception;
+use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
+use hal::adc::config::AdcConfig;
+use hal::adc::Adc;
+use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
 use hal::gpio::Output;
 use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::i2c::I2c;
+use hal::interrupt;
 use hal::pac::TIM2;
 use hal::pac::TIM6;
 use hal::pac::TIM9;
@@ -40,11 +53,15 @@ use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
 use hal::rtc::Rtc;
+use hal::sdio::ClockFreq;
+use hal::sdio::SdCard;
+use hal::sdio::Sdio;
 use hal::spi;
 use hal::timer::Channel;
 use hal::timer::Channel1;
 use hal::timer::Channel2;
 use hal::timer::CounterHz;
+use littlefs2::fs::Allocation;
 use littlefs2::fs::Filesystem;
 use littlefs2::path;
 use littlefs2::path::Path;
@@ -76,7 +93,7 @@ mod ina219;
 mod logger;
 mod mission;
 mod radio;
-mod sdcard;
+mod sdio;
 mod stepper;
 mod usb_msc;
 
@@ -96,6 +113,8 @@ static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
 static mut BUZZER_TIMER: Option<CounterHz<TIM6>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
+static mut FS_ALLOC: Option<Allocation<W25Q<Bank1>>> = None;
+static mut FLASH: Option<W25Q<Bank1>> = None;
 
 #[entry]
 fn main() -> ! {
@@ -162,6 +181,10 @@ async fn prog_main() {
                 .borrow_mut()
                 .replace(dp.TIM5.counter_us(&clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
+            unsafe {
+                PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
+                PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
+            }
         });
 
         #[cfg(not(feature = "msc"))]
@@ -192,30 +215,44 @@ async fn prog_main() {
         let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
         vactual.set(10);
         gconf.set_pdn_disable(true);
+        gconf.set_internal_rsense(true);
 
         let STEPPER_ADDR = 1;
 
-        loop {
-            let req = tmc2209::write_request(STEPPER_ADDR, gconf);
-            stepper::tx(req.bytes()).await;
-            delay.delay_ms(500u32);
-            let req = tmc2209::write_request(STEPPER_ADDR, vactual);
-            stepper::tx(req.bytes()).await;
-            cortex_m::interrupt::free(|cs| {
-                NEOPIXEL
-                    .borrow(cs)
-                    .borrow_mut()
-                    .as_mut()
-                    .unwrap()
-                    .write([[0, 20, 0]; 4].into_iter())
-                    .unwrap();
-            });
-            YieldFuture::new().await;
-            delay.delay_ms(1000u32);
-        }
+        // loop {
+        //     let req = tmc2209::write_request(STEPPER_ADDR, gconf);
+        //     stepper::tx(req.bytes()).await;
+        //     delay.delay_ms(500u32);
+        //     let req = tmc2209::write_request(STEPPER_ADDR, vactual);
+        //     stepper::tx(req.bytes()).await;
+        //     cortex_m::interrupt::free(|cs| {
+        //         NEOPIXEL
+        //             .borrow(cs)
+        //             .borrow_mut()
+        //             .as_mut()
+        //             .unwrap()
+        //             .write([[0, 20, 0]; 4].into_iter())
+        //             .unwrap();
+        //     });
+        //     YieldFuture::new().await;
+        //     delay.delay_ms(1000u32);
+        // }
 
         gpioe.pe3.into_floating_input();
         gpioe.pe4.into_floating_input();
+
+        let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 1000u32.kHz(), &clocks);
+        let streams = StreamsTuple::new(unsafe { core::mem::transmute::<_, pac::DMA1>(()) });
+        let tx_stream = streams.1;
+        let rx_stream = streams.0;
+        let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
+        bmp.enable_pressure_temperature().unwrap();
+        bmp.setup_fifo().unwrap();
+
+        unsafe {
+            pac::NVIC::unmask(hal::interrupt::DMA1_STREAM1);
+            pac::NVIC::unmask(hal::interrupt::DMA1_STREAM0);
+        }
 
         let qspi = Qspi::<Bank1>::new(
             dp.QUADSPI,
@@ -229,21 +266,7 @@ async fn prog_main() {
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
-        let mut flash = W25Q::new(qspi).unwrap();
-        // let mut alloc = Filesystem::allocate();
-        // let mut fs = Filesystem::mount(&mut alloc, &mut flash).unwrap();
-        // fs.write(path!("/example.txt"), b"Hello, world").unwrap();
-        // fs.read_dir_and_then(path!("/"), |rd| {
-        //     for entry in rd {
-        //         let entry = entry.unwrap();
-        //         if entry.file_type() == littlefs2::fs::FileType::Dir {
-        //             continue;
-        //         }
-        //         hprintln!("{:?}", entry);
-        //         hprintln!("{:?}", fs.read::<24>(&PathBuf::from(b"/").join(entry.file_name())));
-        //     }
-        //     Ok(())
-        // });
+        let flash = W25Q::new(qspi).unwrap();
 
         #[cfg(feature = "msc")]
         {
@@ -256,9 +279,18 @@ async fn prog_main() {
                 &clocks,
                 flash,
             );
-
-            use fugit::ExtU32;
+            loop {}
         }
+
+        let alloc = Filesystem::allocate();
+        let (flash, alloc) = unsafe {
+            FS_ALLOC.replace(alloc);
+            FLASH.replace(flash);
+            (FLASH.as_mut().unwrap(), FS_ALLOC.as_mut().unwrap())
+        };
+        Filesystem::format(flash).unwrap();
+        let fs = Filesystem::mount(alloc, flash).unwrap();
+        fs.write(path!("board_id"), b"5").unwrap();
         // let mut step = gpioc.pc3.into_push_pull_output();
         // let mut dir = gpioc.pc2.into_push_pull_output();
         // let mut tim7 = dp.TIM7.counter_hz(&clocks);
@@ -303,10 +335,6 @@ async fn prog_main() {
         let spi1_pins = (spi1_sck, spi1_miso, spi1_mosi);
 
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
-
-        let mut i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
-        let mut bmp = BMP581::new(&mut i2c1).unwrap();
-        bmp.enable_pressure().unwrap();
 
         let lora_nreset = gpiob
             .pb0
@@ -353,16 +381,55 @@ async fn prog_main() {
         }
 
         Radio::init(lora, spi1, delay);
-        let mut board_id = [0];
-        flash.read(0.into(), &mut board_id).unwrap();
 
-        let role = match board_id[0] {
+        let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
+        let role = match board_id {
             4 => Role::Avionics,
-            5 => Role::Ground,
-            _ => Role::Cansat,
+            5 => Role::Cansat,
+            _ => Role::Ground,
         };
 
         unsafe { mission::ROLE = role };
+
+        if role != Role::Ground {
+            let clk = gpiob.pb15.into_alternate().internal_pull_up(false);
+            let cmd = gpiod.pd2.into_alternate().internal_pull_up(true);
+            let d0 = gpioc.pc8.into_alternate().internal_pull_up(true);
+            let d1 = gpioc.pc9.into_alternate().internal_pull_up(true);
+            let d2 = gpioc.pc10.into_alternate().internal_pull_up(true);
+            let d3 = gpioc.pc11.into_alternate().internal_pull_up(true);
+            let mut sdio: Sdio<SdCard> = Sdio::new(dp.SDIO, (clk, cmd, d0, d1, d2, d3), &clocks);
+
+            let mut tim11 = dp.TIM11.counter_hz(&clocks);
+
+            let mut color = [0u8, 50, 0];
+
+            // Wait for card to be ready
+            loop {
+                match sdio.init(ClockFreq::F1Mhz) {
+                    Ok(_) => break,
+                    Err(_err) => {
+                        tim11.start(1.Hz()).unwrap();
+                        NbFuture::new(|| tim11.wait()).await.unwrap();
+                        cortex_m::interrupt::free(|cs| {
+                            NEOPIXEL
+                                .borrow(cs)
+                                .borrow_mut()
+                                .as_mut()
+                                .and_then(|w| w.write([color; 3].into_iter()).ok())
+                                .unwrap();
+                        });
+
+                        color[0] = if color[0] == 0 { 255 } else { 0 };
+                    }
+                }
+            }
+
+            let nblocks = sdio.card().map(|c| c.block_count()).unwrap_or(0);
+            setup_logger(sdio, fs).unwrap();
+        }
+
+        get_logger().log_str("Hello, world!");
 
         let i2c2 = I2c::new(
             dp.I2C3,
@@ -462,4 +529,9 @@ impl<'dio1> embedded_hal::digital::v2::InputPin for Dio1PinRefMut<'dio1> {
     fn is_low(&self) -> Result<bool, Self::Error> {
         Ok(self.0.is_low())
     }
+}
+
+#[exception]
+unsafe fn HardFault(frame: &ExceptionFrame) -> ! {
+    panic!("HardFault {:?}", frame);
 }

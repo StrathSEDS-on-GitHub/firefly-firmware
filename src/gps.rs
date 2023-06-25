@@ -5,6 +5,7 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use hal::{
     dma::{Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
@@ -178,7 +179,6 @@ pub async fn change_baudrate(baudrate: u32) {
                 .transfer_complete_interrupt(true),
         );
         rx_transfer.start(|_rx| {});
-        tx_transfer.start(|_tx| {});
 
         RX_COMPLETE.store(false, Ordering::SeqCst);
         RX_BYTES_READ.store(0, Ordering::SeqCst);

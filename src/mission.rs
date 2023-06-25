@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprint;
+use embedded_hal::blocking::i2c::WriteRead;
 use embedded_hal::{blocking::i2c, prelude::_embedded_hal_blocking_i2c_WriteRead};
 use fugit::RateExtU32;
 use futures::join;
@@ -14,7 +16,11 @@ use serde::{Deserialize, Serialize, __private::from_utf8_lossy};
 use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
-    gpio::{Analog, Pin},
+    gpio::{Analog, Output, Pin, PushPull},
+    i2c::{
+        dma::{DMATransfer, Error},
+        Instance,
+    },
     pac::ADC1,
 };
 
@@ -24,12 +30,18 @@ use crate::{
     gps,
     logger::get_serial,
     radio::{self, Message, QUEUED_PACKETS, RECEIVED_MESSAGE_QUEUE},
+    sdio::get_logger,
     BUZZER, BUZZER_TIMER, NEOPIXEL, RTC,
 };
+use stm32f4xx_hal::i2c::dma::I2CMasterWriteReadDMA;
 
 pub static mut ROLE: Role = Role::Cansat;
 pub static mut PYRO_ADC: Option<Adc<ADC1>> = None;
 pub static mut PYRO_MEASURE_PIN: Option<Pin<'C', 0, Analog>> = None;
+pub static mut PYRO_ENABLE_PIN: Option<Pin<'D', 7, Output>> = None;
+pub static mut PYRO_FIRE2: Option<Pin<'D', 6, Output>> = None;
+pub static mut PYRO_FIRE1: Option<Pin<'D', 5, Output>> = None;
+
 static LAUNCHED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -142,16 +154,26 @@ async fn gps_broadcast() -> ! {
 
         let mut i = 0;
         let mut start_time = None;
-        while i < 10 {
+        while i < 20 {
             if i == 0 {
                 let time = current_rtc_time();
                 start_time = Some(time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32);
             }
             let fix = gps::next_sentence().await;
             if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
-                latitudes[i] = gga.latitude.as_f64() as f32;
-                longitudes[i] = gga.longitude.as_f64() as f32;
-                altitudes[i] = gga.altitude.meters;
+                if i % 2 == 0 {
+                    // Send every other fix (5Hz).
+                    latitudes[i / 2] = gga.latitude.as_f64() as f32;
+                    longitudes[i / 2] = gga.longitude.as_f64() as f32;
+                    altitudes[i / 2] = gga.altitude.meters;
+                }
+
+                get_logger().log(format_args!(
+                    "gps,{},{},{}",
+                    gga.latitude.as_f64(),
+                    gga.longitude.as_f64(),
+                    gga.altitude.meters
+                ));
                 i += 1;
             }
         }
@@ -166,29 +188,17 @@ async fn gps_broadcast() -> ! {
         };
 
         radio::queue_packet(message);
-
-        let time = current_rtc_time();
-        let mut time = time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32;
-        // GPS provides packets at 10Hz and we're targeting 5Hz so we need to wait 2 seconds.
-        while time - start_time.unwrap() < 2 {
-            gps::next_sentence().await;
-            let time_ = current_rtc_time();
-            time = time_.0 as u32 * 3600 + time_.1 as u32 * 60 + time_.2 as u32;
-        }
     }
 }
 
-async fn pressure_temp_broadcast<I2C, E>(mut sensor: BMP581<'_, E, I2C>)
-where
-    I2C: i2c::Write<u8, Error = E> + i2c::WriteRead<u8, Error = E>,
-{
+async fn pressure_temp_handler(mut sensor: BMP581) {
     loop {
         let mut pressures = [0.0; 10];
         let mut temperatures = [0.0; 10];
 
         let mut i = 0;
         let mut start_time = None;
-        while i < 10 {
+        while i < 20 {
             if i == 0 {
                 let time = current_rtc_time();
                 start_time = Some(time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32);
@@ -196,8 +206,14 @@ where
             let pressure = sensor.pressure();
             let temperature = sensor.temperature();
             if let (Ok(pressure), Ok(temperature)) = (pressure, temperature) {
-                pressures[i] = pressure as f32 / libm::powf(2.0, 6.0);
-                temperatures[i] = temperature as f32 / libm::powf(2.0, 16.0);
+                let pressure = pressure as f32 / libm::powf(2.0, 6.0);
+                let temperature = temperature as f32 / libm::powf(2.0, 16.0);
+                if i % 2 == 0 {
+                    pressures[i] = pressure;
+                    temperatures[i] = temperature;
+                }
+
+                get_logger().log(format_args!("pressure_temp,{},{}", pressure, temperature));
                 i += 1;
             }
         }
@@ -211,15 +227,6 @@ where
         };
 
         radio::queue_packet(message);
-
-        let time = current_rtc_time();
-        let mut time = time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32;
-        // GPS provides packets at 10Hz and we're targeting 5Hz so we need to wait 2 seconds.
-        while time - start_time.unwrap() < 2 {
-            YieldFuture::new().await;
-            let time_ = current_rtc_time();
-            time = time_.0 as u32 * 3600 + time_.1 as u32 * 60 + time_.2 as u32;
-        }
     }
 }
 
@@ -236,7 +243,20 @@ async fn handle_incoming_packets() -> ! {
 
 pub fn disarm() {
     unsafe { BUZZER.as_mut().unwrap().set_high() }
+    unsafe { BUZZER_TIMER.as_mut().unwrap().start(2u32.Hz()).unwrap() };
+
+    unsafe { PYRO_ENABLE_PIN.as_mut().unwrap().set_low() };
+
+    unsafe { nb::block!(BUZZER_TIMER.as_mut().unwrap().wait()).unwrap() };
+    unsafe { BUZZER.as_mut().unwrap().set_low() };
+}
+
+pub fn arm() {
+    unsafe { BUZZER.as_mut().unwrap().set_high() }
     unsafe { BUZZER_TIMER.as_mut().unwrap().start(1u32.Hz()).unwrap() };
+
+    unsafe { PYRO_ENABLE_PIN.as_mut().unwrap().set_high() };
+
     unsafe { nb::block!(BUZZER_TIMER.as_mut().unwrap().wait()).unwrap() };
     unsafe { BUZZER.as_mut().unwrap().set_low() };
 }
@@ -268,23 +288,20 @@ pub async fn test_launch() {
     });
 }
 
-pub async fn begin<E, I2C>(pressure_sensor: BMP581<'_, E, I2C>) -> !
-where
-    I2C: i2c::Write<u8, Error = E> + i2c::WriteRead<u8, Error = E>,
-{
+pub async fn begin(pressure_sensor: BMP581) -> ! {
     match unsafe { ROLE } {
         Role::Ground =>
         {
             #[allow(unreachable_code)]
             join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
         }
-        _ =>
-        {
+        _ => {
             #[allow(unreachable_code)]
             join!(
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_broadcast(pressure_sensor)
+                pressure_temp_handler(pressure_sensor),
+                handle_incoming_packets()
             )
             .0
         }

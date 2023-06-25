@@ -163,6 +163,8 @@ impl BlockDevice for Storage {
             SECTOR_CACHED_BLOCKS[(lba % 8) as usize] = true;
         }
 
+        self.flush_sector_cache();
+
         Ok(())
     }
 
