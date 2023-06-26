@@ -1,6 +1,6 @@
 use core::{cell::RefCell, marker::PhantomData, sync::atomic::AtomicBool};
 
-use cortex_m::interrupt::Mutex;
+use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use cortex_m_semihosting::hprintln;
 use embedded_hal::{blocking::i2c::Write, blocking::i2c::WriteRead};
 use stm32f4xx_hal::{
@@ -28,8 +28,8 @@ pub type I2c1Handle =
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PressureTemp {
-    pressure: u32,
-    temperature: u32,
+    pub pressure: u32,
+    pub temperature: u32,
 }
 
 pub struct BMP581 {
@@ -85,6 +85,7 @@ impl BMP581 {
     }
 
     pub fn setup_fifo(&mut self) -> Result<(), Error> {
+        unsafe { NVIC::unmask(interrupt::EXTI0) };
         nb::block!(self.com.write(ADDR, &[0x18, 0b_11]))?; // Fifo sel
         nb::block!(self.com.write(ADDR, &[0x16, 0]))?; // Streaming mode
         nb::block!(self.com.write(ADDR, &[0x14, 1 << 3]))?; // int enable
@@ -107,7 +108,7 @@ impl BMP581 {
         for (i, frame) in data
             .chunks(6)
             .map(|x| x.split_at(3))
-            .map(|(pres, temp)| PressureTemp {
+            .map(|(temp, pres)| PressureTemp {
                 pressure: (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
                 temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
             })

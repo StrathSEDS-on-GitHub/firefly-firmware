@@ -14,7 +14,7 @@ use hal::{
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::{ParseResult, GGA, datetime::Time};
+use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -23,6 +23,7 @@ use stm32f4xx_hal::{
     interrupt, pac,
     serial::{Rx, Tx},
 };
+use time::{PrimitiveDateTime, Date};
 
 use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer, RTC};
 use stm32f4xx_hal as hal;
@@ -233,9 +234,10 @@ fn set_rtc(time: Time) {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
-        rtc.set_hours(time.hours);
-        rtc.set_minutes(time.minutes);
-        rtc.set_seconds(time.seconds as u8);
+        rtc.set_datetime(&PrimitiveDateTime::new(
+            Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
+            time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
+        )).unwrap();
     });
 }
 

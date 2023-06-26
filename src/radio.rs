@@ -41,6 +41,7 @@ use sx126x::op::RxTxTimeout;
 
 const MAX_PAYLOAD_SIZE: usize = 255;
 static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static LISTEN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU16 = AtomicU16::new(0);
 
 #[interrupt]
@@ -77,16 +78,8 @@ fn EXTI4() {
         });
 
         if should_recv {
-            if mission::role() == Role::Ground {
-                cortex_m::interrupt::free(|cs| {
-                    writeln!(
-                        get_serial(),
-                        "Receiving message, {:?}",
-                        RADIO_STATE.borrow(cs).get()
-                    )
-                    .unwrap();
-                });
-            }
+            cortex_m::interrupt::free(|cs| {
+            });
             receive_message();
         }
         TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
@@ -110,11 +103,12 @@ pub enum Message {
         stage: MissionStage,
         role: Role,
         time_of_first_packet: u32,
-        pressures: [f32; 10],
-        temperatures: [f32; 10],
+        pressures: [f32; 8],
+        temperatures: [f32; 8],
     },
-    Arm,
-    Disarm,
+    Arm(Role),
+    Disarm(Role),
+    TestPyro(Role, u8, u32),
 }
 
 pub fn next_counter() -> u16 {
@@ -330,7 +324,10 @@ fn receive_message() {
             .get_rx_buffer_status(&mut radio.spi, &mut radio.delay)
             .unwrap();
         let size = rx_buf_status.payload_length_rx() as usize;
-        let state = radio.radio.get_status(&mut radio.spi, &mut radio.delay).unwrap();
+        let state = radio
+            .radio
+            .get_status(&mut radio.spi, &mut radio.delay)
+            .unwrap();
         radio
             .radio
             .read_buffer(
@@ -343,11 +340,6 @@ fn receive_message() {
 
         let message = postcard::from_bytes::<Message>(&buf[..size]).ok();
         if let Some(message) = message {
-            if let Message::Disarm = message {
-                // Priority message, executed in interrupt handler
-                // Otherwise just add it to the queue
-                mission::disarm();
-            }
             let mut msg_queue = RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut();
             msg_queue
                 .push_back(message)
@@ -365,70 +357,6 @@ fn receive_message() {
 /// The radio interrupt fires when the radio is done transmitting a packet.
 fn set_radio() {
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
-
-    match state {
-        RadioState::Tx(role) if role == mission::role() => {
-            if TRANSMISSION_IN_PROGRESS.load(Ordering::Relaxed) {
-                // writeln!(get_serial(), "Transmission in progress, skipping").unwrap();
-                return;
-            }
-            // Our turn to transmit
-            cortex_m::interrupt::free(|cs| {
-                let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-                let radio = radio_ref.as_mut().unwrap();
-                let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
-                if let Some(msg) = queued_packets.pop_front() {
-                    let mut buf = [0u8; MAX_PAYLOAD_SIZE];
-                    let bytes = postcard::to_slice(&msg, &mut buf).unwrap();
-                    radio
-                        .radio
-                        .write_buffer(&mut radio.spi, &mut radio.delay, 0, bytes)
-                        .unwrap();
-                    radio
-                        .radio
-                        .set_tx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(500))
-                        .unwrap();
-                    radio.radio.wait_on_busy(&mut radio.delay).unwrap();
-
-                    TRANSMISSION_IN_PROGRESS.store(true, Ordering::Relaxed);
-                } else {
-                    // No packets to transmit, stay idle
-                }
-            });
-        }
-        RadioState::Tx(other) | RadioState::Buffer(other) => {
-            // Someone else is transmitting
-            if mission::role() == Role::Ground || other == Role::Ground {
-                // Either we're the ground station and should be listening,
-                // or the other station is the ground station and we should be listening.
-                cortex_m::interrupt::free(|cs| {
-                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-                    let radio = radio_ref.as_mut().unwrap();
-                    radio
-                        .radio
-                        .set_rx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(5000))
-                        .unwrap();
-                    TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
-                });
-            } else {
-                // Not our turn to transmit
-                // Tell radio to shut up
-                cortex_m::interrupt::free(|cs| {
-                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-                    let radio = radio_ref.as_mut().unwrap();
-                    radio
-                        .radio
-                        .set_standby(
-                            &mut radio.spi,
-                            &mut radio.delay,
-                            sx126x::op::StandbyConfig::StbyRc,
-                        )
-                        .unwrap();
-                    TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
-                });
-            }
-        }
-    }
     cortex_m::interrupt::free(|cs| {
         let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
 
@@ -448,4 +376,73 @@ fn set_radio() {
         };
         neo_ref.as_mut().unwrap().write([[r, g, b]].into_iter());
     });
+
+    match state {
+        RadioState::Tx(role) if role == mission::role() => {
+            if TRANSMISSION_IN_PROGRESS.load(Ordering::Relaxed) {
+                return;
+            }
+            // Our turn to transmit
+            cortex_m::interrupt::free(|cs| {
+                let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                let radio = radio_ref.as_mut().unwrap();
+                let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
+                if let Some(msg) = queued_packets.pop_front() {
+                    let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+                    let bytes = postcard::to_slice(&msg, &mut buf).unwrap();
+                    radio
+                        .radio
+                        .write_buffer(&mut radio.spi, &mut radio.delay, 0, bytes)
+                        .unwrap();
+                    radio
+                        .radio
+                        .set_tx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(5000))
+                        .unwrap();
+                    radio.radio.wait_on_busy(&mut radio.delay).unwrap();
+
+                    TRANSMISSION_IN_PROGRESS.store(true, Ordering::Relaxed);
+                } else {
+                    // No packets to transmit, stay idle
+                }
+                LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
+            });
+        }
+        RadioState::Tx(other) | RadioState::Buffer(other) => {
+            // Someone else is transmitting
+            if mission::role() == Role::Ground || other == Role::Ground {
+                if LISTEN_IN_PROGRESS.load(Ordering::Relaxed) {
+                    return;
+                }
+                // Either we're the ground station and should be listening,
+                // or the other station is the ground station and we should be listening.
+                cortex_m::interrupt::free(|cs| {
+                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                    let radio = radio_ref.as_mut().unwrap();
+                    radio
+                        .radio
+                        .set_rx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(5000))
+                        .unwrap();
+                    TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                    LISTEN_IN_PROGRESS.store(true, Ordering::Relaxed);
+                });
+            } else {
+                // Not our turn to transmit
+                // Tell radio to shut up
+                // cortex_m::interrupt::free(|cs| {
+                //     let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                //     let radio = radio_ref.as_mut().unwrap();
+                //     radio
+                //         .radio
+                //         .set_standby(
+                //             &mut radio.spi,
+                //             &mut radio.delay,
+                //             sx126x::op::StandbyConfig::StbyRc,
+                //         )
+                //         .unwrap();
+                // });
+                TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
+            }
+        }
+    }
 }

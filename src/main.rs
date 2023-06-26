@@ -12,6 +12,10 @@ use crate::futures::NbFuture;
 use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::logger::get_serial;
+use crate::mission::PYRO_ENABLE_PIN;
+use crate::mission::PYRO_FIRE1;
+use crate::mission::PYRO_FIRE2;
+use crate::mission::role;
 use crate::mission::usb_handler;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
@@ -26,13 +30,14 @@ use crate::usb_msc::USB_STORAGE;
 use ::futures::join;
 use cassette::pin_mut;
 use cassette::Cassette;
+use hal::pac::TIM11;
+use hal::pac::TIM13;
 use core::fmt::Write;
 use cortex_m::delay::Delay;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use f4_w25q::w25q::SectorAddress;
 use f4_w25q::w25q::W25Q;
@@ -61,6 +66,7 @@ use hal::timer::Channel;
 use hal::timer::Channel1;
 use hal::timer::Channel2;
 use hal::timer::CounterHz;
+use hal::timer::CounterMs;
 use littlefs2::fs::Allocation;
 use littlefs2::fs::Filesystem;
 use littlefs2::path;
@@ -111,7 +117,7 @@ static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
-static mut BUZZER_TIMER: Option<CounterHz<TIM6>> = None;
+static mut BUZZER_TIMER: Option<CounterMs<TIM13>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 static mut FS_ALLOC: Option<Allocation<W25Q<Bank1>>> = None;
 static mut FLASH: Option<W25Q<Bank1>> = None;
@@ -157,7 +163,7 @@ async fn prog_main() {
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
             BUZZER.replace(gpioe.pe1.into_push_pull_output());
-            BUZZER_TIMER.replace(dp.TIM6.counter_hz(&clocks));
+            BUZZER_TIMER.replace(dp.TIM13.counter_ms(&clocks));
         }
 
         let mut delay = cp.SYST.delay(&clocks);
@@ -183,6 +189,9 @@ async fn prog_main() {
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
+                PYRO_ENABLE_PIN.replace(gpiod.pd7.into_push_pull_output_in_state(gpio::PinState::Low));
+                PYRO_FIRE2.replace(gpiod.pd6.into_push_pull_output());
+                PYRO_FIRE1.replace(gpiod.pd5.into_push_pull_output());
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });
@@ -245,9 +254,6 @@ async fn prog_main() {
         let streams = StreamsTuple::new(unsafe { core::mem::transmute::<_, pac::DMA1>(()) });
         let tx_stream = streams.1;
         let rx_stream = streams.0;
-        let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
-        bmp.enable_pressure_temperature().unwrap();
-        bmp.setup_fifo().unwrap();
 
         unsafe {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM1);
@@ -288,9 +294,7 @@ async fn prog_main() {
             FLASH.replace(flash);
             (FLASH.as_mut().unwrap(), FS_ALLOC.as_mut().unwrap())
         };
-        Filesystem::format(flash).unwrap();
         let fs = Filesystem::mount(alloc, flash).unwrap();
-        fs.write(path!("board_id"), b"5").unwrap();
         // let mut step = gpioc.pc3.into_push_pull_output();
         // let mut dir = gpioc.pc2.into_push_pull_output();
         // let mut tim7 = dp.TIM7.counter_hz(&clocks);
@@ -384,8 +388,8 @@ async fn prog_main() {
 
         let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
         let role = match board_id {
-            4 => Role::Avionics,
-            5 => Role::Cansat,
+            3 => Role::Avionics,
+            4 => Role::Cansat,
             _ => Role::Ground,
         };
 
@@ -406,7 +410,7 @@ async fn prog_main() {
 
             // Wait for card to be ready
             loop {
-                match sdio.init(ClockFreq::F1Mhz) {
+                match sdio.init(ClockFreq::F400Khz) {
                     Ok(_) => break,
                     Err(_err) => {
                         tim11.start(1.Hz()).unwrap();
@@ -424,12 +428,19 @@ async fn prog_main() {
                     }
                 }
             }
+            cortex_m::interrupt::free(|cs| {
+                NEOPIXEL
+                    .borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .and_then(|w| w.write([[0, 0, 5]; 4].into_iter()).ok())
+                    .unwrap();
+            });
 
             let nblocks = sdio.card().map(|c| c.block_count()).unwrap_or(0);
             setup_logger(sdio, fs).unwrap();
         }
 
-        get_logger().log_str("Hello, world!");
 
         let i2c2 = I2c::new(
             dp.I2C3,
@@ -440,8 +451,14 @@ async fn prog_main() {
 
         //let mut ina = INA219::new(&mut i2c2).unwrap();
         //ina.calibrate(87).unwrap();
+        let bmp = if mission::role() != Role::Ground {
+            let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
+            bmp.enable_pressure_temperature().unwrap();
+            bmp.setup_fifo().unwrap();
+            Some(bmp)
+        } else { None };
 
-        mission::begin(bmp).await;
+        mission::begin(bmp, dp.TIM12.counter_ms(&clocks)).await;
     }
 }
 
@@ -452,8 +469,8 @@ async fn build_config() -> sx126x::conf::Config {
     };
 
     let mod_params = LoraModParams::default()
-        .set_spread_factor(LoRaSpreadFactor::SF5)
-        .set_bandwidth(LoRaBandWidth::BW500)
+        .set_spread_factor(LoRaSpreadFactor::SF7)
+        .set_bandwidth(LoRaBandWidth::BW250)
         .set_coding_rate(LoraCodingRate::CR4_8)
         .into();
 

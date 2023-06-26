@@ -169,7 +169,6 @@ impl Logger<'_> {
         writeln!(buf, "[{:02}:{:02}:{:02}.{:03}] {}", h, m, s, millis, msg).unwrap();
         match &mut self.sd_logger {
             Some(sd_logger) => {
-                sd_logger.log_str(unsafe { core::str::from_utf8_unchecked(&buf.0[..buf.1]) })
             }
             None => {
                 get_serial()
