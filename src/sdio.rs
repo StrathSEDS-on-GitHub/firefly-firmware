@@ -2,17 +2,16 @@ use core::cell::RefCell;
 use core::fmt::{self, Write};
 
 use cortex_m::interrupt::Mutex;
-use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume}; 
-use f4_w25q::w25q::W25Q;
+use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
+use f4_w25q::fs::W25QWrapper;
 use hal::qspi::Bank1;
 use littlefs2::fs::Filesystem;
-use littlefs2::path;
-use littlefs2::path::Path;
+use littlefs2::path::PathBuf;
 use stm32f4xx_hal::sdio::{SdCard, Sdio};
 
 use stm32f4xx_hal as hal;
 
-use crate::RTC;
+use crate::{OurFsInfo, RTC, LOG_FILE};
 
 static mut LOGGER: Option<Logger> = Some(Logger {
     sd_logger: None,
@@ -20,7 +19,7 @@ static mut LOGGER: Option<Logger> = Some(Logger {
 });
 
 pub fn setup_logger<'a>(
-    flash: Filesystem<'static, W25Q<Bank1>>,
+    flash: Filesystem<'static, W25QWrapper<OurFsInfo, Bank1>>,
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     unsafe {
         LOGGER.replace(Logger {
@@ -107,7 +106,7 @@ impl BlockDevice for SdWrapper {
 
 pub struct Logger<'a> {
     sd_logger: Option<SdLogger>,
-    flash: Option<Filesystem<'a, f4_w25q::w25q::W25Q<Bank1>>>,
+    flash: Option<Filesystem<'a, W25QWrapper<OurFsInfo, Bank1>>>,
 }
 
 impl Logger<'_> {
@@ -119,40 +118,31 @@ impl Logger<'_> {
     }
 
     pub fn log_str(&mut self, msg: &str) {
-        static BUF: Mutex<RefCell<[u8; 2048]>> = Mutex::new(RefCell::new([0u8; 2048]));
+        static BUF: Mutex<RefCell<[u8; 2048 * 4]>> = Mutex::new(RefCell::new([0u8; 2048 * 4]));
         static OFFSET: Mutex<RefCell<usize>> = Mutex::new(RefCell::new(0));
         cortex_m::interrupt::free(|cs| {
+            if *OFFSET.borrow(cs).borrow() > 8000 {
+                self.flash.as_mut().map(|f| {
+                    f.open_file_with_options_and_then(
+                        |o| o.append(true).create(true),
+                        &PathBuf::from(unsafe { LOG_FILE.as_ref().unwrap().as_bytes() }),
+                        |f| f.write(&BUF.borrow(cs).borrow()[..*OFFSET.borrow(cs).borrow()]),
+                    )
+                });
+                *OFFSET.borrow(cs).borrow_mut() = 0;
+            }
             let mut buf = BUF.borrow(cs).borrow_mut();
-            let mut buf_writer = FixedWriter(
-                buf.as_mut(),
-                *OFFSET.borrow(cs).borrow(),
-            );
+            let mut buf_writer = FixedWriter(buf.as_mut(), *OFFSET.borrow(cs).borrow());
 
             let mut borrow = RTC.borrow(cs).borrow_mut();
             let (h, m, s, millis) = borrow.as_mut().unwrap().get_datetime().as_hms_milli();
-            match writeln!(
+            writeln!(
                 buf_writer,
                 "[{:02}:{:02}:{:02}.{:03}] {}",
                 h, m, s, millis, msg
-            ) {
-                Ok(_) => {
-                    *OFFSET.borrow(cs).borrow_mut() = buf_writer.1;
-                }
-                Err(_) => {
-                    // Flush buffer
-                    self.flash
-                        .as_mut()
-                        .unwrap()
-                        .open_file_with_options_and_then(
-                            |o| o.append(true).create(true),
-                            path!("log.txt"),
-                            |f| f.write(&buf_writer.0[..buf_writer.1]),
-                        )
-                        .ok();
-
-                    *OFFSET.borrow(cs).borrow_mut() = 0;
-                }
-            }
+            )
+            .ok();
+            *OFFSET.borrow(cs).borrow_mut() = buf_writer.1;
         });
     }
 }

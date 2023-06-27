@@ -129,7 +129,6 @@ impl BlockDevice for Storage {
             .host
             .read((lba * Self::BLOCK_BYTES as u32).into(), block)
             .map_err(|x| {
-                hprintln!("{:?}", x);
                 usbd_scsi::BlockDeviceError::HardwareError
             });
         cortex_m::interrupt::free(|cs| {
@@ -230,6 +229,8 @@ pub fn setup_usb_msc<'a>(
     }
 }
 
+#[cfg(feature = "msc")]
+use stm32f4xx_hal::interrupt;
 #[cfg(feature = "msc")]
 #[interrupt]
 fn OTG_FS() {

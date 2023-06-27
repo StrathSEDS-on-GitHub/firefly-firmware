@@ -19,7 +19,7 @@ const ADDR: u8 = 0x46;
 pub type I2c1Handle =
     I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct PressureTemp {
     pub pressure: u32,
     pub temperature: u32,

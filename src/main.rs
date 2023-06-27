@@ -10,23 +10,25 @@
 use crate::bmp581::BMP581;
 use crate::hal::timer::TimerExt;
 use crate::ina219::INA219;
+use crate::mission::Role;
+use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
-use crate::mission::Role;
-use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_MEASURE_PIN;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use cassette::pin_mut;
 use cassette::Cassette;
-use hal::pac::TIM13;
 use core::fmt::Write;
+use core::str::FromStr;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
+use f4_w25q::fs::FSInfo;
+use f4_w25q::fs::W25QWrapper;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
@@ -37,6 +39,8 @@ use hal::gpio::Output;
 use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::i2c::I2c;
+use hal::pac::TIM13;
+use hal::pac::TIM14;
 use hal::pac::TIM2;
 use hal::pac::TIM9;
 use hal::qspi::FlashSize;
@@ -46,6 +50,7 @@ use hal::rtc::Rtc;
 use hal::spi;
 use hal::timer::CounterHz;
 use hal::timer::CounterMs;
+use heapless::String;
 use littlefs2::fs::Allocation;
 use littlefs2::fs::Filesystem;
 use littlefs2::path;
@@ -95,9 +100,17 @@ static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
 static mut BUZZER_TIMER: Option<CounterMs<TIM13>> = None;
+static mut PYRO_TIMER: Option<CounterMs<TIM14>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
-static mut FS_ALLOC: Option<Allocation<W25Q<Bank1>>> = None;
-static mut FLASH: Option<W25Q<Bank1>> = None;
+static mut FS_ALLOC: Option<Allocation<W25QWrapper<OurFsInfo, Bank1>>> = None;
+static mut FLASH: Option<W25QWrapper<OurFsInfo, Bank1>> = None;
+
+pub static mut LOG_FILE: Option<String<128>> = None;
+
+pub struct OurFsInfo;
+impl FSInfo for OurFsInfo {
+    const BLOCK_COUNT: usize = 4096;
+}
 
 #[entry]
 fn main() -> ! {
@@ -141,6 +154,7 @@ async fn prog_main() {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
             BUZZER.replace(gpioe.pe1.into_push_pull_output());
             BUZZER_TIMER.replace(dp.TIM13.counter_ms(&clocks));
+            PYRO_TIMER.replace(dp.TIM14.counter_ms(&clocks));
         }
 
         let mut delay = cp.SYST.delay(&clocks);
@@ -151,7 +165,7 @@ async fn prog_main() {
         let mut pa9 = gpioa.pa9.into_push_pull_output();
         pa9.set_speed(gpio::Speed::VeryHigh);
         let mut neopixel = Ws2812::new(timer, pa9);
-        neopixel.write([[0, 0, 5]; 4].into_iter()).unwrap();
+        neopixel.write([[0, 5, 0]; 4].into_iter()).unwrap();
 
         let gpiod = dp.GPIOD.split();
         let rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
@@ -166,7 +180,11 @@ async fn prog_main() {
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
-                PYRO_ENABLE_PIN.replace(gpiod.pd7.into_push_pull_output_in_state(gpio::PinState::Low));
+                PYRO_ENABLE_PIN.replace(
+                    gpiod
+                        .pd7
+                        .into_push_pull_output_in_state(gpio::PinState::Low),
+                );
                 PYRO_FIRE2.replace(gpiod.pd6.into_push_pull_output());
                 PYRO_FIRE1.replace(gpiod.pd5.into_push_pull_output());
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
@@ -184,24 +202,24 @@ async fn prog_main() {
                 &clocks,
             );
         }
-        let stepper_serial = dp
-            .USART2
-            .serial(
-                (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
-                hal::serial::config::Config {
-                    baudrate: 9600.bps(),
-                    dma: hal::serial::config::DmaConfig::TxRx,
-                    ..Default::default()
-                },
-                &clocks,
-            )
-            .unwrap();
-        stepper::setup(dp.DMA1, stepper_serial);
-        let mut gconf = tmc2209::reg::GCONF::default();
-        let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        vactual.set(10);
-        gconf.set_pdn_disable(true);
-        gconf.set_internal_rsense(true);
+        // let stepper_serial = dp
+        //     .USART2
+        //     .serial(
+        //         (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
+        //         hal::serial::config::Config {
+        //             baudrate: 9600.bps(),
+        //             dma: hal::serial::config::DmaConfig::TxRx,
+        //             ..Default::default()
+        //         },
+        //         &clocks,
+        //     )
+        //     .unwrap();
+        // stepper::setup(dp.DMA1, stepper_serial);
+        // let mut gconf = tmc2209::reg::GCONF::default();
+        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
+        // vactual.set(10);
+        // gconf.set_pdn_disable(true);
+        // gconf.set_internal_rsense(true);
 
         // let STEPPER_ADDR = 1;
 
@@ -227,8 +245,8 @@ async fn prog_main() {
         gpioe.pe3.into_floating_input();
         gpioe.pe4.into_floating_input();
 
-        let i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 1000u32.kHz(), &clocks);
-        let streams = StreamsTuple::new(unsafe { core::mem::transmute::<_, pac::DMA1>(()) });
+        let i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
+        let streams = StreamsTuple::new(dp.DMA1);
         let tx_stream = streams.1;
         let rx_stream = streams.0;
 
@@ -253,7 +271,7 @@ async fn prog_main() {
 
         #[cfg(feature = "msc")]
         {
-            setup_usb_msc(
+            crate::usb_msc::setup_usb_msc(
                 dp.OTG_FS_GLOBAL,
                 dp.OTG_FS_DEVICE,
                 dp.OTG_FS_PWRCLK,
@@ -266,12 +284,48 @@ async fn prog_main() {
         }
 
         let alloc = Filesystem::allocate();
+        let wrapper = W25QWrapper::new(flash);
         let (flash, alloc) = unsafe {
             FS_ALLOC.replace(alloc);
-            FLASH.replace(flash);
+            FLASH.replace(wrapper);
             (FLASH.as_mut().unwrap(), FS_ALLOC.as_mut().unwrap())
         };
         let fs = Filesystem::mount(alloc, flash).unwrap();
+
+        if let Err(_) = fs.read_dir_and_then(path!("/"), |f| {
+            let mut last = 0;
+            for entry in f {
+                let entry = entry?;
+                if entry
+                    .file_name()
+                    .as_str_ref_with_trailing_nul()
+                    .starts_with("log")
+                {
+                    let num = entry
+                        .file_name()
+                        .as_str_ref_with_trailing_nul()
+                        .chars()
+                        .nth(3)
+                        .unwrap_or('0');
+                    let num = num.to_digit(16).unwrap_or(0);
+                    if num > last {
+                        last = num;
+                    }
+                }
+            }
+            let mut string = String::<128>::new();
+            string
+                .write_fmt(format_args!("log{:x}.txt", last + 1))
+                .unwrap();
+
+            unsafe {
+                LOG_FILE.replace(string);
+            }
+            Ok(())
+        }) {
+            unsafe { LOG_FILE.replace(String::<128>::from_str("log0.txt").unwrap()); }
+        };
+
         // let mut step = gpioc.pc3.into_push_pull_output();
         // let mut dir = gpioc.pc2.into_push_pull_output();
         // let mut tim7 = dp.TIM7.counter_hz(&clocks);
@@ -365,9 +419,9 @@ async fn prog_main() {
 
         let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
         let role = match board_id {
-            3 => Role::Avionics,
-            4 => Role::Cansat,
-            _ => Role::Ground,
+            5 => Role::Ground,
+            4 => Role::Avionics,
+            _ => Role::Cansat,
         };
 
         unsafe { mission::ROLE = role };
@@ -376,7 +430,6 @@ async fn prog_main() {
             setup_logger(fs).unwrap();
         }
 
-
         let mut i2c2 = I2c::new(
             dp.I2C3,
             (gpioa.pa8.into_input(), gpiob.pb4.into_input()),
@@ -384,16 +437,31 @@ async fn prog_main() {
             &clocks,
         );
 
-        let mut ina = INA219::new(&mut i2c2).unwrap();
-        ina.calibrate(87).unwrap();
+        let ina = if mission::role() == Role::Cansat {
+            let mut ina = INA219::new(&mut i2c2).unwrap();
+            ina.calibrate(87).unwrap();
+            Some(ina)
+        } else {
+            None
+        };
+        // let mut ina = INA219::new(&mut i2c2).unwrap();
+        // ina.calibrate(87).unwrap();
         let bmp = if mission::role() != Role::Ground {
             let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
             bmp.enable_pressure_temperature().unwrap();
             bmp.setup_fifo().unwrap();
             Some(bmp)
-        } else { None };
+        } else {
+            None
+        };
 
-        mission::begin(bmp, dp.TIM12.counter_ms(&clocks)).await;
+        mission::begin(
+            bmp,
+            ina,
+            dp.TIM12.counter_ms(&clocks),
+            dp.TIM4.counter_ms(&clocks),
+        )
+        .await;
     }
 }
 

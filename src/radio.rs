@@ -98,9 +98,18 @@ pub enum Message {
         pressures: [f32; 8],
         temperatures: [f32; 8],
     },
+    CurrentSensorBroadcast {
+        counter: u16,
+        stage: MissionStage,
+        role: Role,
+        time_of_first_packet: u32,
+        currents: [i16; 8],
+        voltages: [u16; 8],
+    },
     Arm(Role, u8),
     Disarm(Role, u8),
     TestPyro(Role, PyroPin, u32),
+    SetStage(Role, MissionStage, u8)
 }
 
 pub fn next_counter() -> u16 {
@@ -194,10 +203,19 @@ pub fn update_timer(secs: f32) {
         let mut timer_ref = TIMER.borrow(cs).borrow_mut();
         let timer = timer_ref.as_mut().unwrap();
 
-        timer.cancel().unwrap();
-        timer.clear_interrupt(Event::Update);
-        timer.start(remaining_time.millis()).unwrap();
-        timer.listen(Event::Update);
+        let config: &[(RadioState, u32)] = if mission::is_launched() {
+            &POST_LAUNCH_TDM_CONFIG
+        } else {
+            &PRE_LAUNCH_TDM_CONFIG
+        };
+        let total_time = config.iter().find(|(s, _)| *s == state).unwrap().1;
+
+        if remaining_time > 30 || total_time - remaining_time > 30 {
+            timer.cancel().ok();
+            timer.clear_interrupt(Event::Update);
+            timer.start(remaining_time.millis()).unwrap();
+            timer.listen(Event::Update);
+        }
         set_radio();
         // set_radio();
         unsafe {
@@ -361,7 +379,11 @@ fn set_radio() {
             RadioState::Tx(Role::Cansat) => 55,
             _ => 0,
         };
-        neo_ref.as_mut().unwrap().write([[r, g, b]].into_iter()).unwrap();
+        neo_ref
+            .as_mut()
+            .unwrap()
+            .write([[r, g, b]].into_iter())
+            .unwrap();
     });
 
     match state {
@@ -415,18 +437,18 @@ fn set_radio() {
             } else {
                 // Not our turn to transmit
                 // Tell radio to shut up
-                // cortex_m::interrupt::free(|cs| {
-                //     let mut radio_ref = RADIO.borrow(cs).borrow_mut();
-                //     let radio = radio_ref.as_mut().unwrap();
-                //     radio
-                //         .radio
-                //         .set_standby(
-                //             &mut radio.spi,
-                //             &mut radio.delay,
-                //             sx126x::op::StandbyConfig::StbyRc,
-                //         )
-                //         .unwrap();
-                // });
+                cortex_m::interrupt::free(|cs| {
+                    let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+                    let radio = radio_ref.as_mut().unwrap();
+                    radio
+                        .radio
+                        .set_standby(
+                            &mut radio.spi,
+                            &mut radio.delay,
+                            sx126x::op::StandbyConfig::StbyRc,
+                        )
+                        .unwrap();
+                });
                 TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
                 LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
             }
@@ -434,11 +456,14 @@ fn set_radio() {
     }
 }
 
-
 pub fn get_rssi() -> f32 {
     cortex_m::interrupt::free(|cs| {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
         let radio = radio_ref.as_mut().unwrap();
-        radio.radio.get_packet_status(&mut radio.spi, &mut radio.delay).unwrap().rssi_pkt()
+        radio
+            .radio
+            .get_packet_status(&mut radio.spi, &mut radio.delay)
+            .unwrap()
+            .rssi_pkt()
     })
 }
