@@ -5,7 +5,6 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use hal::{
     dma::{Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
@@ -25,7 +24,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, logger::get_serial, radio::update_timer, RTC};
+use crate::{futures::YieldFuture, radio::update_timer, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -155,7 +154,7 @@ pub async fn change_baudrate(baudrate: u32) {
         };
         let (tx, mut rx) = serial.split();
         rx.listen_idle();
-        let mut tx_transfer = Transfer::init_memory_to_peripheral(
+        let tx_transfer = Transfer::init_memory_to_peripheral(
             tx_stream,
             tx,
             tx_buf as &mut [u8],
@@ -256,7 +255,7 @@ pub async fn poll_for_sentences() -> ! {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
                 if let ParseResult::GGA(Some(GGA {
                     time,
-                    fix: Some(fix),
+                    fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
                     ..
                 })) = parse_result.clone()
                 {

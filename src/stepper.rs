@@ -68,7 +68,7 @@ pub fn setup(dma2: pac::DMA1, gps: hal::serial::Serial<USART2>) {
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let (tx, mut rx) = gps.split();
 
-    let mut tx_transfer = Transfer::init_memory_to_peripheral(
+    let tx_transfer = Transfer::init_memory_to_peripheral(
         tx_stream,
         tx,
         tx_buf_gps as &mut [u8],

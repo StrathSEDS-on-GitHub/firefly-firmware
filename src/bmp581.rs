@@ -1,25 +1,18 @@
-use core::{cell::RefCell, marker::PhantomData, sync::atomic::AtomicBool};
-
-use cortex_m::{interrupt::Mutex, peripheral::NVIC};
-use cortex_m_semihosting::hprintln;
-use embedded_hal::{blocking::i2c::Write, blocking::i2c::WriteRead};
+use cortex_m::peripheral::NVIC;
 use stm32f4xx_hal::{
     dma::{
-        traits::{Channel, DMASet, Stream},
-        ChannelX, MemoryToPeripheral, PeripheralToMemory, Stream0, Stream1,
+        Stream0, Stream1,
     },
     i2c::{
         dma::{
-            DMATransfer, I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, Rx, RxDMA, Tx,
+            I2CMasterDma, I2CMasterHandleIT, RxDMA,
             TxDMA,
         },
-        Error, I2c, Instance,
+        Error,
     },
     interrupt,
     pac::{DMA1, I2C1},
 };
-
-use crate::futures::YieldFuture;
 
 const ADDR: u8 = 0x46;
 
@@ -96,12 +89,12 @@ impl BMP581 {
         self.com.handle_dma_interrupt();
     }
 
-    pub fn read_fifo(&mut self) -> Result<[PressureTemp; 16], Error> {
-        let mut data = [0u8; 16 * 6];
+    pub fn read_fifo(&mut self) -> Result<[PressureTemp; 15], Error> {
+        let mut data = [0u8; 15 * 6];
         let mut frames = [PressureTemp {
             pressure: 0,
             temperature: 0,
-        }; 16];
+        }; 15];
 
         nb::block!(self.com.write_read(ADDR, &[0x29], &mut data)).unwrap();
 

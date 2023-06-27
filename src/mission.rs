@@ -1,41 +1,31 @@
 use core::{
-    borrow::BorrowMut,
-    cell::{Cell, RefCell},
+    cell::{Cell},
     convert::Infallible,
     fmt::Write,
-    sync::atomic::{AtomicBool, Ordering},
 };
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
-use embedded_hal::{blocking::i2c, prelude::_embedded_hal_blocking_i2c_WriteRead};
-use embedded_hal::{blocking::i2c::WriteRead, digital::v2::OutputPin};
-use fugit::{ExtU32, RateExtU32};
+use embedded_hal::digital::v2::OutputPin;
+use fugit::{ExtU32};
 use futures::join;
-use heapless::{String, Vec};
+use heapless::{Vec};
 use nmea0183::{ParseResult, GGA};
-use serde::{Deserialize, Serialize, __private::from_utf8_lossy};
-use smart_leds::SmartLedsWrite;
+use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
-    gpio::{Analog, Output, Pin, PushPull},
-    i2c::{
-        dma::{DMATransfer, Error},
-        Instance,
-    },
+    gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12},
     timer::{CounterMs, Event},
 };
 
 use crate::{
-    bmp581::BMP581,
+    bmp581::{PressureTemp, BMP581},
     futures::{NbFuture, YieldFuture},
     gps,
     logger::get_serial,
-    radio::{self, Message, QUEUED_PACKETS, RECEIVED_MESSAGE_QUEUE},
+    radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
     sdio::get_logger,
-    BUZZER, BUZZER_TIMER, NEOPIXEL, RTC,
+    BUZZER, BUZZER_TIMER, RTC,
 };
-use stm32f4xx_hal::i2c::dma::I2CMasterWriteReadDMA;
 
 pub static mut ROLE: Role = Role::Cansat;
 pub static mut PYRO_ADC: Option<Adc<ADC1>> = None;
@@ -43,8 +33,6 @@ pub static mut PYRO_MEASURE_PIN: Option<Pin<'C', 0, Analog>> = None;
 pub static mut PYRO_ENABLE_PIN: Option<Pin<'D', 7, Output>> = None;
 pub static mut PYRO_FIRE2: Option<Pin<'D', 6, Output>> = None;
 pub static mut PYRO_FIRE1: Option<Pin<'D', 5, Output>> = None;
-
-static LAUNCHED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Role {
@@ -65,8 +53,7 @@ pub enum PyroState {
 pub enum MissionStage {
     Disarmed(PyroState),
     Armed(PyroState),
-    Accelerating(PyroState),
-    Coast(PyroState),
+    Ascent(PyroState),
     DescentDrogue(PyroState),
     DescentMain(PyroState),
     Landed(PyroState),
@@ -81,7 +68,11 @@ pub fn role() -> Role {
 }
 
 pub fn is_launched() -> bool {
-    return LAUNCHED.load(Ordering::Relaxed);
+    match current_stage() {
+        MissionStage::Disarmed(_) => false,
+        MissionStage::Armed(_) => false,
+        _ => true,
+    }
 }
 
 fn modify_pyro_state(state: PyroState) {
@@ -90,8 +81,7 @@ fn modify_pyro_state(state: PyroState) {
         STAGE.borrow(cs).set(match stage {
             MissionStage::Disarmed(_) => MissionStage::Disarmed(state),
             MissionStage::Armed(_) => MissionStage::Armed(state),
-            MissionStage::Accelerating(_) => MissionStage::Accelerating(state),
-            MissionStage::Coast(_) => MissionStage::Coast(state),
+            MissionStage::Ascent(_) => MissionStage::Ascent(state),
             MissionStage::DescentDrogue(_) => MissionStage::DescentDrogue(state),
             MissionStage::DescentMain(_) => MissionStage::DescentMain(state),
             MissionStage::Landed(_) => MissionStage::Landed(state),
@@ -104,23 +94,119 @@ pub fn update_pyro_state() {
         // Need to disarm pyro to read voltage correctly
         let pyro_enable = PYRO_ENABLE_PIN.as_mut().unwrap();
         pyro_enable.set_low();
+
         let pyro = PYRO_MEASURE_PIN.as_mut().unwrap();
         let adc = PYRO_ADC.as_mut().unwrap();
         let sample = adc.convert(pyro, SampleTime::Cycles_56);
-        pyro_enable.set_high();
         adc.sample_to_millivolts(sample)
     };
     match mv {
-        0..=2550 => {
-            modify_pyro_state(PyroState::NoneFired)
-        }
-        2551..=2950 => {
-            modify_pyro_state(PyroState::OneFired)
-        }
-        _ => {
-            modify_pyro_state(PyroState::BothFired)
+        0..=2550 => modify_pyro_state(PyroState::NoneFired),
+        2551..=2950 => modify_pyro_state(PyroState::OneFired),
+        _ => modify_pyro_state(PyroState::BothFired),
+    }
+}
+
+pub async fn update_stage(frames: [PressureTemp; 15]) {
+    static mut START_ALTITUDE: f32 = 0.0;
+    static mut SEA_LEVEL_PRESSURE: f32 = 0.0;
+
+    if unsafe { SEA_LEVEL_PRESSURE } == 0.0 {
+        unsafe {
+            SEA_LEVEL_PRESSURE = frames
+                .map(|frame| {
+                    let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
+                    pressure
+                })
+                .iter()
+                .sum::<f32>()
+                / frames.len() as f32;
         }
     }
+
+    let stage = current_stage();
+    let altitudes = frames.map(|frame| {
+        let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
+        let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
+
+        let altitude = (libm::powf(unsafe { SEA_LEVEL_PRESSURE } / pressure, 1.0 / 5.257) - 1.0)
+            * (temperature + 273.15)
+            / 0.0065;
+        altitude
+    });
+
+    if unsafe { START_ALTITUDE } == 0.0 {
+        // If we don't have a start pressure, we can't do anything
+        unsafe {
+            START_ALTITUDE = altitudes.clone().iter().sum::<f32>() / altitudes.len() as f32;
+        }
+        return;
+    }
+
+    let new_stage = match stage {
+        MissionStage::Disarmed(s) => {
+            /* Nothing to update, just wait for arm command */
+            MissionStage::Disarmed(s)
+        }
+        MissionStage::Armed(s) => {
+            // If we're above 15m, we must be ascending
+            if altitudes
+                .iter()
+                .all(|a| *a > 15.0 + unsafe { START_ALTITUDE })
+            {
+                MissionStage::Ascent(s)
+            } else {
+                MissionStage::Armed(s)
+            }
+        }
+        MissionStage::Ascent(s) => {
+            // If our velocity is negative, we must be descending
+            let velocities = altitudes.windows(3).map(|w| w[2] - w[0]);
+
+            if velocities.filter(|v| *v < 0.05).count() > 10 {
+                if role() == Role::Avionics {
+                    // If we're the avionics, fire the pyro
+                    fire_pyro(PyroPin::One, 1000).await;
+                }
+                MissionStage::DescentDrogue(s)
+            } else {
+                MissionStage::Ascent(s)
+            }
+        }
+        MissionStage::DescentDrogue(s) => {
+            // At 300m, fire main
+            if altitudes.iter().all(|a| *a < 320.0) {
+                if role() == Role::Avionics {
+                    // If we're the avionics, fire the pyro
+                    fire_pyro(PyroPin::Two, 1000).await;
+                }
+                MissionStage::DescentMain(s)
+            } else {
+                MissionStage::DescentDrogue(s)
+            }
+        }
+        MissionStage::DescentMain(s) => {
+            // If our average velocity is less than 1m/s, we must have landed
+            let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
+            if velocities_abs.clone().sum::<f32>() / (velocities_abs.len() as f32) < 0.01 {
+                if role() == Role::Avionics {
+                    // If we're the avionics, fire the pyro
+                    fire_pyro(PyroPin::One, 1000).await;
+                    fire_pyro(PyroPin::Two, 1000).await;
+                }
+
+                MissionStage::Landed(s)
+            } else {
+                MissionStage::DescentMain(s)
+            }
+        }
+        MissionStage::Landed(s) => {
+            // Nothing to do
+            MissionStage::Landed(s)
+        }
+    };
+
+    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(new_stage));
 }
 
 pub fn current_stage() -> MissionStage {
@@ -142,6 +228,7 @@ fn parse_role(s: &[u8]) -> Option<Role> {
 
 pub async fn usb_handler() -> ! {
     let mut buf = [0u8; 256];
+    let mut idempotency_counter = 0;
     loop {
         let bytes = get_serial().read(&mut buf).await.unwrap();
 
@@ -149,25 +236,36 @@ pub async fn usb_handler() -> ! {
         if split.len() > 1 && split[0].starts_with(b"disarm") {
             match parse_role(split[1]) {
                 Some(role) => {
-                    radio::queue_packet(Message::Disarm(role));
+                    cortex_m::interrupt::free(|cs| {
+                        STAGE
+                            .borrow(cs)
+                            .set(MissionStage::Disarmed(PyroState::NoneFired));
+                    });
+                    for _ in 0..5 {
+                        radio::queue_packet(Message::Disarm(role, idempotency_counter));
+                    }
+                    idempotency_counter += 1;
                 }
                 None => writeln!(get_serial(), "Invalid disarm role").unwrap(),
             }
         } else if split.len() > 1 && split[0].starts_with(b"arm") {
             match parse_role(split[1]) {
                 Some(role) => {
-                    radio::queue_packet(Message::Arm(role));
+                    for _ in 0..5 {
+                        radio::queue_packet(Message::Arm(role, idempotency_counter));
+                    }
+                    idempotency_counter += 1;
                 }
                 None => writeln!(get_serial(), "Invalid arm role").unwrap(),
             }
-        } else if split.len() > 3 && split[0].starts_with(b"test-pyro") {
+        } else if split.len() > 3 && split[0].starts_with(b"fire") {
             if let Some(role) = parse_role(split[1]) {
                 let pin = if split[2].starts_with(b"1") {
-                    1
+                    PyroPin::One
                 } else if split[2].starts_with(b"2") {
-                    2
-                } else if split[2].starts_with(b"3") {
-                    3
+                    PyroPin::Two
+                } else if split[2].starts_with(b"both") {
+                    PyroPin::Both
                 } else {
                     writeln!(get_serial(), "Invalid test-pyro pin").unwrap();
                     continue;
@@ -185,6 +283,16 @@ pub async fn usb_handler() -> ! {
             } else {
                 writeln!(get_serial(), "Invalid test-pyro role").unwrap();
             }
+        } else if split.len() > 1 && split[0].starts_with(b"launch") {
+            let new_state = if split[1].starts_with(b"true") {
+                MissionStage::Ascent(PyroState::NoneFired)
+            } else {
+                MissionStage::Disarmed(PyroState::NoneFired)
+            };
+
+            cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(new_state));
+        } else {
+            writeln!(get_serial(), "Invalid command").unwrap();
         }
 
         writeln!(get_serial(), "Received: {:?}", core::str::from_utf8(bytes)).unwrap();
@@ -196,12 +304,12 @@ async fn gps_handler() -> ! {
     gps::poll_for_sentences().await
 }
 
-fn current_rtc_time() -> (u8, u8, u8) {
+fn current_rtc_time() -> (u8, u8, u8, u16) {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
         let date_time = rtc.get_datetime();
-        date_time.as_hms()
+        date_time.as_hms_milli()
     })
 }
 
@@ -216,7 +324,12 @@ async fn gps_broadcast() -> ! {
         while i < 20 {
             if i == 0 {
                 let time = current_rtc_time();
-                start_time = Some(time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32);
+                start_time = Some(
+                    time.0 as u32 * 3_600_000
+                        + time.1 as u32 * 60_000
+                        + time.2 as u32 * 1000
+                        + time.3 as u32,
+                );
             }
             let fix = gps::next_sentence().await;
             if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
@@ -251,12 +364,19 @@ async fn gps_broadcast() -> ! {
 }
 
 async fn pressure_temp_handler(mut sensor: BMP581, mut timer: CounterMs<TIM12>) {
+    // Wait for FIFO to fill up.
+    timer.clear_interrupt(Event::Update);
+    timer.start(550.millis()).unwrap();
+    NbFuture::new(|| timer.wait()).await.unwrap();
     loop {
         let mut pressures = [0.0; 8];
         let mut temperatures = [0.0; 8];
 
         let time = current_rtc_time();
-        let start_time = Some(time.0 as u32 * 3600 + time.1 as u32 * 60 + time.2 as u32);
+        let start_time = time.0 as u32 * 3_600_000
+            + time.1 as u32 * 60_000
+            + time.2 as u32 * 1000
+            + time.3 as u32;
 
         let mut i = 0;
 
@@ -267,7 +387,7 @@ async fn pressure_temp_handler(mut sensor: BMP581, mut timer: CounterMs<TIM12>) 
                     let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
                     // Send every fourth frame (10Hz).
-                    if i % 4 == 0 {
+                    if i % 4 == 0 && i < 4 * 8 {
                         pressures[i / 4] = pressure;
                         temperatures[i / 4] = temperature;
                     }
@@ -276,10 +396,11 @@ async fn pressure_temp_handler(mut sensor: BMP581, mut timer: CounterMs<TIM12>) 
 
                     i += 1;
                 }
+                update_stage(frames).await;
             } else {
             }
             timer.clear_interrupt(Event::Update);
-            timer.start(100.millis()).unwrap();
+            timer.start(350.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
 
@@ -287,7 +408,7 @@ async fn pressure_temp_handler(mut sensor: BMP581, mut timer: CounterMs<TIM12>) 
             counter: radio::next_counter(),
             stage: current_stage(),
             role: role(),
-            time_of_first_packet: start_time.unwrap(),
+            time_of_first_packet: start_time,
             pressures,
             temperatures,
         };
@@ -299,17 +420,75 @@ async fn pressure_temp_handler(mut sensor: BMP581, mut timer: CounterMs<TIM12>) 
 }
 
 async fn handle_incoming_packets() -> ! {
+    let mut idempotency_counter = 0;
     loop {
         if let Some(packet) = cortex_m::interrupt::free(|cs| {
             RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut().pop_front()
         }) {
             match role() {
-                Role::Ground => {
-                    writeln!(get_serial(), "Received: {:?}", packet).unwrap();
-                }
+                Role::Ground => match packet {
+                    Message::GpsBroadCast {
+                        counter,
+                        stage,
+                        role,
+                        time_of_first_packet,
+                        latitudes,
+                        longitudes,
+                        altitudes,
+                    } => {
+                        writeln!(
+                            get_serial(),
+                            "gps,{:?},{:?},{},{:?},{:?},{:?},{:?}",
+                            role,
+                            stage,
+                            counter,
+                            time_of_first_packet,
+                            latitudes,
+                            longitudes,
+                            altitudes
+                        )
+                        .unwrap();
+
+                        let rssi = radio::get_rssi();
+
+                        writeln!(get_serial(), "rssi,{}", rssi).unwrap();
+                    }
+                    Message::PressureTempBroadCast {
+                        counter,
+                        stage,
+                        role,
+                        time_of_first_packet,
+                        pressures,
+                        temperatures,
+                    } => {
+                        writeln!(
+                            get_serial(),
+                            "pressuretemp,{:?},{:?},{},{:?},{:?},{:?}",
+                            role,
+                            stage,
+                            counter,
+                            time_of_first_packet,
+                            pressures,
+                            temperatures
+                        )
+                        .unwrap();
+                        let rssi = radio::get_rssi();
+
+                        writeln!(get_serial(), "rssi,{}", rssi).unwrap();
+                    }
+                    Message::Arm(..) => {}
+                    Message::Disarm(..) => {}
+                    Message::TestPyro(..) => {}
+                },
                 _ => match packet {
-                    Message::Disarm(r) if r == role() => disarm().await,
-                    Message::Arm(r) if r == role() => arm().await,
+                    Message::Disarm(r, i) if r == role() && i > idempotency_counter => {
+                        idempotency_counter += 1;
+                        disarm().await;
+                    }
+                    Message::Arm(r, i) if r == role() && i > idempotency_counter => {
+                        idempotency_counter += 1;
+                        arm().await;
+                    }
                     Message::TestPyro(r, pin, duration) if r == role() => {
                         fire_pyro(pin, duration).await;
                     }
@@ -321,24 +500,32 @@ async fn handle_incoming_packets() -> ! {
         YieldFuture::new().await;
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PyroPin {
+    One,
+    Two,
+    Both,
+}
 
-pub async fn fire_pyro(pin: u8, duration: u32) {
+pub async fn fire_pyro(pin: PyroPin, duration: u32) {
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+    trait Pin: OutputPin<Error = Infallible> + core::fmt::Debug {}
+    impl<T: OutputPin<Error = Infallible> + core::fmt::Debug> Pin for T {}
+
     let mut pyro_fires = {
-        let mut vec: Vec<&mut dyn OutputPin<Error = Infallible>, 2> = Vec::new();
+        let mut vec: Vec<&mut dyn Pin, 2> = Vec::new();
         let _ = match pin {
-            1 => {
-                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() });
+            PyroPin::One => {
+                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() }).unwrap();
             }
-            2 => {
-                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() });
+            PyroPin::Two => {
+                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() }).unwrap();
             }
-            3 => {
-                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() });
-                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() });
+            PyroPin::Both => {
+                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() }).unwrap();
+                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() }).unwrap();
             }
-            _ => return,
         };
         vec
     };
@@ -346,26 +533,26 @@ pub async fn fire_pyro(pin: u8, duration: u32) {
     let mut time = 200i32;
     while time > 0 {
         buzz.set_high();
-        timer.start(200u32.millis());
-        nb::block!(timer.wait());
+        timer.start(200u32.millis()).unwrap();
+        NbFuture::new(||timer.wait()).await.unwrap();
         buzz.set_low();
-        timer.start((time as u32).millis());
-        nb::block!(timer.wait());
+        timer.start((time as u32).millis()).unwrap();
+        NbFuture::new(||timer.wait()).await.unwrap();
         time = (time as f32 * 0.8 - 5.0) as i32;
     }
 
     buzz.set_high();
 
-    timer.start(1000u32.millis());
-    nb::block!(timer.wait());
+    timer.start(500u32.millis()).unwrap();
+    NbFuture::new(||timer.wait()).await.unwrap();
     buzz.set_low();
     for fire in &mut pyro_fires {
-        fire.set_high();
+        fire.set_high().unwrap();
     }
-    timer.start(duration.millis());
-    nb::block!(timer.wait());
+    timer.start(duration.millis()).unwrap();
+    NbFuture::new(||timer.wait()).await.unwrap();
     for fire in &mut pyro_fires {
-        fire.set_low();
+        fire.set_low().unwrap();
     }
 }
 
@@ -404,37 +591,6 @@ pub async fn arm() {
     timer.start(300u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low()
-}
-
-pub async fn test_launch() {
-    let mut count = 0;
-    unsafe {
-        BUZZER_TIMER
-            .as_mut()
-            .unwrap()
-            .start(1000u32.millis())
-            .unwrap();
-    }
-
-    while count < 10 {
-        unsafe {
-            NbFuture::new(|| BUZZER_TIMER.as_mut().unwrap().wait())
-                .await
-                .unwrap()
-        };
-        count += 1;
-    }
-
-    LAUNCHED.store(true, Ordering::Relaxed);
-    cortex_m::interrupt::free(|cs| {
-        NEOPIXEL
-            .borrow(cs)
-            .borrow_mut()
-            .as_mut()
-            .unwrap()
-            .write([[0, 50, 0]; 2].into_iter())
-            .unwrap();
-    });
 }
 
 pub async fn begin(pressure_sensor: Option<BMP581>, pr_timer: CounterMs<TIM12>) -> ! {

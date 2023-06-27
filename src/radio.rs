@@ -1,14 +1,13 @@
 use core::cell::Cell;
 use core::cell::RefCell;
 
-use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
 
-use crate::logger::get_serial;
 use crate::mission;
 use crate::mission::MissionStage;
+use crate::mission::PyroPin;
 use crate::mission::Role;
 use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
@@ -17,11 +16,9 @@ use cortex_m::peripheral::NVIC;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
-use embedded_hal::blocking::spi::write;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
 use heapless::Deque;
-use heapless::Vec;
 use serde::Deserialize;
 use serde::Serialize;
 use smart_leds::SmartLedsWrite;
@@ -52,10 +49,6 @@ fn EXTI4() {
         let should_recv = cortex_m::interrupt::free(|cs| {
             let mut radio = RADIO.borrow(cs).borrow_mut();
             if let Some(radio) = radio.as_mut() {
-                let irq_status = radio
-                    .radio
-                    .get_irq_status(&mut radio.spi, &mut radio.delay)
-                    .unwrap();
                 radio
                     .radio
                     .clear_irq_status(
@@ -78,11 +71,10 @@ fn EXTI4() {
         });
 
         if should_recv {
-            cortex_m::interrupt::free(|cs| {
-            });
             receive_message();
         }
         TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
+        LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
         set_radio();
     }
 }
@@ -106,9 +98,9 @@ pub enum Message {
         pressures: [f32; 8],
         temperatures: [f32; 8],
     },
-    Arm(Role),
-    Disarm(Role),
-    TestPyro(Role, u8, u32),
+    Arm(Role, u8),
+    Disarm(Role, u8),
+    TestPyro(Role, PyroPin, u32),
 }
 
 pub fn next_counter() -> u16 {
@@ -202,13 +194,12 @@ pub fn update_timer(secs: f32) {
         let mut timer_ref = TIMER.borrow(cs).borrow_mut();
         let timer = timer_ref.as_mut().unwrap();
 
-        // Avoid setting the timer if it's already set to the (approx) correct value.
-        // This prevents bouncing at the edge of the transmit window.
-        if remaining_time > 30 {
-            timer.start(remaining_time.millis());
-            timer.listen(Event::Update);
-            set_radio();
-        }
+        timer.cancel().unwrap();
+        timer.clear_interrupt(Event::Update);
+        timer.start(remaining_time.millis()).unwrap();
+        timer.listen(Event::Update);
+        set_radio();
+        // set_radio();
         unsafe {
             NVIC::unmask(stm32f4xx_hal::interrupt::TIM5);
             NVIC::unpend(stm32f4xx_hal::interrupt::TIM5);
@@ -303,7 +294,7 @@ fn TIM5() {
 
         let radio_state = RADIO_STATE.borrow(cs).get();
         let (state, next_time) = get_next_state_and_time(radio_state);
-        timer.start(next_time.millis());
+        timer.start(next_time.millis()).unwrap();
         timer.listen(Event::Update);
         RADIO_STATE.borrow(cs).set(state);
 
@@ -324,10 +315,6 @@ fn receive_message() {
             .get_rx_buffer_status(&mut radio.spi, &mut radio.delay)
             .unwrap();
         let size = rx_buf_status.payload_length_rx() as usize;
-        let state = radio
-            .radio
-            .get_status(&mut radio.spi, &mut radio.delay)
-            .unwrap();
         radio
             .radio
             .read_buffer(
@@ -374,7 +361,7 @@ fn set_radio() {
             RadioState::Tx(Role::Cansat) => 55,
             _ => 0,
         };
-        neo_ref.as_mut().unwrap().write([[r, g, b]].into_iter());
+        neo_ref.as_mut().unwrap().write([[r, g, b]].into_iter()).unwrap();
     });
 
     match state {
@@ -445,4 +432,13 @@ fn set_radio() {
             }
         }
     }
+}
+
+
+pub fn get_rssi() -> f32 {
+    cortex_m::interrupt::free(|cs| {
+        let mut radio_ref = RADIO.borrow(cs).borrow_mut();
+        let radio = radio_ref.as_mut().unwrap();
+        radio.radio.get_packet_status(&mut radio.spi, &mut radio.delay).unwrap().rssi_pkt()
+    })
 }

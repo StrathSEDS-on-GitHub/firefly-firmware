@@ -13,7 +13,7 @@ use stm32f4xx_hal::{
     qspi::Bank1,
     rcc::Clocks,
 };
-use stm32f4xx_hal::{interrupt, pac};
+use stm32f4xx_hal::{pac};
 use usb_device::prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 use usbd_scsi::{BlockDevice, Scsi};
 
@@ -78,7 +78,7 @@ impl Storage {
             self.host
                 .program_page((addr + (i as u32) * 256).into(), chunk)
                 .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
-            self.host.wait_on_busy();
+            self.host.wait_on_busy().unwrap();
         }
 
         cortex_m::interrupt::free(|cs| {

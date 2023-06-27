@@ -859,13 +859,12 @@ dependencies = [
 
 [[package]]
 name = "stm32f4xx-hal"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "bare-metal 1.0.0",
  "bitflags 2.3.1",
  "cortex-m 0.7.7",
  "cortex-m-rt",
- "cortex-m-semihosting",
  "embedded-dma",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0-alpha.8",
