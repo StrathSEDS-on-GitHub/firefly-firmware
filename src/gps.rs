@@ -14,6 +14,7 @@ use hal::{
 };
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
+use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -22,9 +23,9 @@ use stm32f4xx_hal::{
     interrupt, pac,
     serial::{Rx, Tx},
 };
-use time::{PrimitiveDateTime, Date};
+use time::{Date, PrimitiveDateTime};
 
-use crate::{futures::YieldFuture, radio::update_timer, RTC};
+use crate::{futures::YieldFuture, radio::update_timer, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -235,8 +236,15 @@ fn set_rtc(time: Time) {
         let rtc = rtc_ref.as_mut().unwrap();
         rtc.set_datetime(&PrimitiveDateTime::new(
             Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
-            time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
-        )).unwrap();
+            time::Time::from_hms_milli(
+                time.hours,
+                time.minutes,
+                time.seconds as u8,
+                (time.seconds * 1000.0) as u16 % 1000,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
     });
 }
 
@@ -259,10 +267,19 @@ pub async fn poll_for_sentences() -> ! {
                     ..
                 })) = parse_result.clone()
                 {
-                    update_timer(time.seconds);
+                    // update_timer(time.seconds);
                     if !rtc_set {
                         set_rtc(time);
                         rtc_set = true;
+                        cortex_m::interrupt::free(|cs| {
+                            NEOPIXEL
+                                .borrow(cs)
+                                .borrow_mut()
+                                .as_mut()
+                                .unwrap()
+                                .write([[0, 0, 255]; 4].into_iter())
+                                .unwrap();
+                        });
                     }
                 }
                 cortex_m::interrupt::free(|cs| {

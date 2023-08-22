@@ -8,6 +8,7 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
+use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::ina219::INA219;
 use crate::mission::Role;
@@ -176,7 +177,11 @@ async fn prog_main() {
             radio::TIMER
                 .borrow(cs)
                 .borrow_mut()
-                .replace(dp.TIM5.counter_us(&clocks));
+                .replace(dp.TIM5.counter_ms(&clocks));
+            radio::TIMER2
+                .borrow(cs)
+                .borrow_mut()
+                .replace(dp.TIM6.counter_ms(&clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
@@ -202,6 +207,8 @@ async fn prog_main() {
                 &clocks,
             );
         }
+        let stepper_addr = 1;
+
         // let stepper_serial = dp
         //     .USART2
         //     .serial(
@@ -217,29 +224,46 @@ async fn prog_main() {
         // stepper::setup(dp.DMA1, stepper_serial);
         // let mut gconf = tmc2209::reg::GCONF::default();
         // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        // vactual.set(10);
+        // vactual.set(100);
         // gconf.set_pdn_disable(true);
         // gconf.set_internal_rsense(true);
+        // let req = tmc2209::write_request(0, gconf);
+        // stepper::tx(req.bytes()).await;
+        // let req = tmc2209::write_request(1, gconf);
+        // stepper::tx(req.bytes()).await;
+        // delay.delay_ms(500u32);
 
-        // let STEPPER_ADDR = 1;
+        // enum Sequence {
+        //     Motor1Positive(u8, i32),
+        //     Motor2Positive(u8, i32),
+        //     Motor1Negative(u8, i32),
+        //     Motor2Negative(u8, i32),
+        // }
+
+        // let mut sequence = Sequence::Motor1Positive(1, 100);
 
         // loop {
-        //     let req = tmc2209::write_request(STEPPER_ADDR, gconf);
+        //     let (addr, velocity) = match sequence {
+        //         Sequence::Motor1Positive(a, v) => (a, v),
+        //         Sequence::Motor2Positive(a, v) => (a, v),
+        //         Sequence::Motor1Negative(a, v) => (a, v),
+        //         Sequence::Motor2Negative(a, v) => (a, v),
+        //     };
+        //     vactual.set(velocity);
+        //     let req = tmc2209::write_request(addr, vactual);
+        //     vactual.set(0);
         //     stepper::tx(req.bytes()).await;
-        //     delay.delay_ms(500u32);
-        //     let req = tmc2209::write_request(STEPPER_ADDR, vactual);
+        //     let req = tmc2209::write_request(if addr == 0 { 1 } else { 0 }, vactual);
         //     stepper::tx(req.bytes()).await;
-        //     cortex_m::interrupt::free(|cs| {
-        //         NEOPIXEL
-        //             .borrow(cs)
-        //             .borrow_mut()
-        //             .as_mut()
-        //             .unwrap()
-        //             .write([[0, 20, 0]; 4].into_iter())
-        //             .unwrap();
-        //     });
         //     YieldFuture::new().await;
         //     delay.delay_ms(1000u32);
+
+        //     sequence = match sequence {
+        //         Sequence::Motor1Positive(a, v) => Sequence::Motor2Positive(1, v),
+        //         Sequence::Motor2Positive(a, v) => Sequence::Motor1Negative(0, -v),
+        //         Sequence::Motor1Negative(a, v) => Sequence::Motor2Negative(1, v),
+        //         Sequence::Motor2Negative(a, v) => Sequence::Motor1Positive(0, -v),
+        //     }
         // }
 
         gpioe.pe3.into_floating_input();
@@ -323,20 +347,10 @@ async fn prog_main() {
             }
             Ok(())
         }) {
-            unsafe { LOG_FILE.replace(String::<128>::from_str("log0.txt").unwrap()); }
+            unsafe {
+                LOG_FILE.replace(String::<128>::from_str("log0.txt").unwrap());
+            }
         };
-
-        // let mut step = gpioc.pc3.into_push_pull_output();
-        // let mut dir = gpioc.pc2.into_push_pull_output();
-        // let mut tim7 = dp.TIM7.counter_hz(&clocks);
-
-        // dir.set_low();
-
-        // loop {
-        //     step.toggle();
-        //     tim7.start(100.Hz());
-        //     nb::block!(tim7.wait()).unwrap();
-        // }
 
         let gps_serial = dp
             .USART1
@@ -419,8 +433,8 @@ async fn prog_main() {
 
         let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
         let role = match board_id {
-            5 => Role::Ground,
-            4 => Role::Avionics,
+            4 => Role::Ground,
+            3 => Role::Avionics,
             _ => Role::Cansat,
         };
 
