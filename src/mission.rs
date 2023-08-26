@@ -707,10 +707,10 @@ async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-    // buzz.set_high();
-    // timer.start(1000u32.millis()).unwrap();
-    // NbFuture::new(|| timer.wait()).await.unwrap();
-    // buzz.set_low();
+    buzz.set_high();
+    timer.start(1000u32.millis()).unwrap();
+    NbFuture::new(|| timer.wait()).await.unwrap();
+    buzz.set_low();
 
     drop(timer);
     drop(buzz);

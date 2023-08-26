@@ -433,8 +433,8 @@ async fn prog_main() {
 
         let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
         let role = match board_id {
-            4 => Role::Ground,
-            3 => Role::Avionics,
+            5 => Role::Ground,
+            3 | 4 => Role::Avionics,
             _ => Role::Cansat,
         };
 
