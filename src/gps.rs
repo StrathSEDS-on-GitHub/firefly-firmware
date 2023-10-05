@@ -18,14 +18,13 @@ use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     dma::{
         self,
-        traits::{Stream, StreamISR},
     },
     interrupt, pac,
     serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{futures::YieldFuture, radio::update_timer, NEOPIXEL, RTC};
+use crate::{futures::YieldFuture, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -219,12 +218,12 @@ fn DMA2_STREAM7() {
         let transfer = transfer_ref.as_mut().unwrap();
 
         // Its important to clear fifo errors as the transfer is paused until it is cleared
-        if Stream7::<pac::DMA2>::get_fifo_error_flag() {
-            transfer.clear_fifo_error_interrupt();
+        if transfer.is_fifo_error() {
+            transfer.clear_fifo_error();
         }
 
-        if Stream7::<pac::DMA2>::get_transfer_complete_flag() {
-            transfer.clear_transfer_complete_interrupt();
+        if transfer.is_transfer_complete() {
+            transfer.clear_transfer_complete();
             TX_COMPLETE.store(true, Ordering::Relaxed);
         }
     });
@@ -317,11 +316,11 @@ fn DMA2_STREAM2() {
         let transfer = transfer_ref.as_mut().unwrap();
 
         // Its important to clear fifo errors as the transfer is paused until it is cleared
-        if Stream2::<pac::DMA2>::get_fifo_error_flag() {
-            transfer.clear_fifo_error_interrupt();
+        if transfer.is_fifo_error() {
+            transfer.clear_fifo_error();
         }
-        if Stream2::<pac::DMA2>::get_transfer_complete_flag() {
-            transfer.clear_transfer_complete_interrupt();
+        if transfer.is_transfer_complete() {
+            transfer.clear_transfer_complete();
             let mut rx_buf = RX_BUFFER.borrow(cs).borrow_mut().take().unwrap();
             rx_buf = transfer
                 .next_transfer(rx_buf)
@@ -342,7 +341,7 @@ fn USART1() {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
 
-        let bytes = RX_BUFFER_SIZE as u16 - Stream2::<pac::DMA2>::get_number_of_transfers();
+        let bytes = RX_BUFFER_SIZE as u16 - transfer.number_of_transfers();
         transfer.pause(|rx| {
             rx.clear_idle_interrupt();
         });

@@ -115,12 +115,12 @@ fn DMA1_STREAM6() {
         let transfer = transfer_ref.as_mut().unwrap();
 
         // Its important to clear fifo errors as the transfer is paused until it is cleared
-        if Stream6::<pac::DMA1>::get_fifo_error_flag() {
-            transfer.clear_fifo_error_interrupt();
+        if transfer.is_fifo_error() {
+            transfer.clear_fifo_error();
         }
 
-        if Stream6::<pac::DMA1>::get_transfer_complete_flag() {
-            transfer.clear_transfer_complete_interrupt();
+        if transfer.is_transfer_complete() {
+            transfer.clear_transfer_complete();
             TX_COMPLETE.store(true, Ordering::Relaxed);
         }
     });
@@ -134,11 +134,11 @@ fn DMA1_STREAM5() {
         let transfer = transfer_ref.as_mut().unwrap();
 
         // Its important to clear fifo errors as the transfer is paused until it is cleared
-        if Stream5::<pac::DMA1>::get_fifo_error_flag() {
-            transfer.clear_fifo_error_interrupt();
+        if transfer.is_fifo_error() {
+            transfer.clear_fifo_error();
         }
-        if Stream5::<pac::DMA1>::get_transfer_complete_flag() {
-            transfer.clear_transfer_complete_interrupt();
+        if transfer.is_transfer_complete() {
+            transfer.clear_transfer_complete();
             let mut rx_buf = RX_BUFFER.borrow(cs).borrow_mut().take().unwrap();
             rx_buf = transfer
                 .next_transfer(rx_buf)
@@ -159,7 +159,7 @@ fn USART2() {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
 
-        let bytes = RX_BUFFER_SIZE as u16 - Stream5::<pac::DMA1>::get_number_of_transfers();
+        let bytes = RX_BUFFER_SIZE as u16 - transfer.number_of_transfers();
         transfer.pause(|rx| {
             rx.clear_idle_interrupt();
         });

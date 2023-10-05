@@ -1,6 +1,6 @@
 // Sets up a usb mass storage device.
 
-use core::sync::atomic::AtomicU32;
+use core::{sync::atomic::AtomicU32, cell::{UnsafeCell, RefCell}};
 
 use cortex_m::peripheral::NVIC;
 use cortex_m_semihosting::hprintln;
@@ -32,7 +32,7 @@ static mut SECTOR_CACHE_ADDR: Option<u32> = None;
 static mut SECTOR_CACHED_BLOCKS: [bool; 8] = [false; 8];
 
 pub struct Storage {
-    host: W25Q<Bank1>,
+    host: RefCell<W25Q<Bank1>>,
 }
 impl Storage {
     fn flush_sector_cache(&mut self) {
@@ -71,14 +71,16 @@ impl Storage {
         });
 
         self.host
+            .borrow_mut()
             .erase_sector(SectorAddress::from_address(addr))
             .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
 
         for (i, chunk) in sector.chunks(256).enumerate() {
             self.host
+                .borrow_mut()
                 .program_page((addr + (i as u32) * 256).into(), chunk)
                 .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
-            self.host.wait_on_busy().unwrap();
+            self.host.borrow_mut().wait_on_busy().unwrap();
         }
 
         cortex_m::interrupt::free(|cs| {
@@ -125,8 +127,9 @@ impl BlockDevice for Storage {
                 .unwrap()
         });
 
-        let res = unsafe { &mut *(self as *const Self as *mut Self) }
+        let res = self
             .host
+            .borrow_mut()
             .read((lba * Self::BLOCK_BYTES as u32).into(), block)
             .map_err(|x| {
                 usbd_scsi::BlockDeviceError::HardwareError
@@ -198,7 +201,7 @@ pub fn setup_usb_msc<'a>(
     unsafe {
         crate::logger::USB_BUS = Some(usb_bus);
     }
-    let storage = Storage { host: w25q };
+    let storage = Storage { host: RefCell::new(w25q) };
 
     let scsi = unsafe {
         Scsi::new(

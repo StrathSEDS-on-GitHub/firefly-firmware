@@ -44,6 +44,6 @@ time = {version = "0.3.20", default-features=false }
 thingbuf = { version="0.1.0", default-features=false, features=["static"] }
 
 [dependencies.stm32f4xx-hal]
-version = "0.16.0"
+version = "0.17.1"
 path="stm32f4xx-hal"
 features = ["rt", "stm32f412", "usb_fs", "sdio", "sdio-host"] # replace the model of your microcontroller here
