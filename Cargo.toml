@@ -42,6 +42,7 @@ usbd_scsi = {version = "0.1.0"}
 littlefs2 = "0.4.0"
 time = {version = "0.3.20", default-features=false }
 thingbuf = { version="0.1.0", default-features=false, features=["static"] }
+serde-json-core = "0.5.1"
 
 [dependencies.stm32f4xx-hal]
 version = "0.17.1"

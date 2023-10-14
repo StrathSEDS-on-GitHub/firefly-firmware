@@ -8,6 +8,7 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
+use crate::config::Config;
 use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::ina219::INA219;
@@ -85,6 +86,7 @@ mod radio;
 mod sdio;
 mod stepper;
 mod usb_msc;
+mod config;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -351,7 +353,8 @@ async fn prog_main() {
                 LOG_FILE.replace(String::<128>::from_str("log0.txt").unwrap());
             }
         };
-
+        let config = fs.read(path!("config.json"));
+        Config::build(config.unwrap());
         let gps_serial = dp
             .USART1
             .serial(

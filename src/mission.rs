@@ -1,5 +1,6 @@
 use core::{borrow::BorrowMut, cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use embedded_hal::blocking::i2c::WriteRead;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
@@ -21,6 +22,7 @@ use crate::{
     gps,
     ina219::INA219,
     logger::get_serial,
+    config::Config,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
     sdio::get_logger,
     BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
@@ -102,6 +104,11 @@ pub fn update_pyro_state() {
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 15]>) {
+    let config = Config::get();
+
+    hprintln!("{:?}", config);
+
+    let main_deployment_height = config.main_deployment_height;
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
 
@@ -178,14 +185,10 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 15]>) {
             }
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
-                if altitudes.iter().filter(|a| **a < 320.0).count() > 12 {
+                if altitudes.iter().filter(|a| **a < main_deployment_height).count() > 12 {
                     get_logger().log_str("stage,detected main");
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing main!");
-                        // If we're the avionics, fire the pyro
-                        fire_pyro(PyroPin::Two, 1000).await;
-                    } else if role() == Role::Cansat {
-                        get_logger().log_str("stage,firing pyro1!");
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::Two, 1000).await;
                     }
@@ -711,9 +714,6 @@ async fn buzzer_controller() -> ! {
     timer.start(1000u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low();
-
-    drop(timer);
-    drop(buzz);
 
     while !matches!(
         cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get()),
