@@ -9,7 +9,6 @@
 
 use crate::bmp581::BMP581;
 use crate::config::Config;
-use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::ina219::INA219;
 use crate::mission::Role;
@@ -209,7 +208,7 @@ async fn prog_main() {
                 &clocks,
             );
         }
-        let stepper_addr = 1;
+        // let stepper_addr = 1;
 
         // let stepper_serial = dp
         //     .USART2

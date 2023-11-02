@@ -5,6 +5,7 @@ use embedded_hal::blocking::i2c::WriteRead;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
 use futures::join;
+use crate::config::Triggers;
 use heapless::Vec;
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
@@ -104,11 +105,6 @@ pub fn update_pyro_state() {
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 15]>) {
-    let config = Config::get();
-
-    hprintln!("{:?}", config);
-
-    let main_deployment_height = config.main_deployment_height;
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
 
@@ -185,7 +181,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 15]>) {
             }
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
-                if altitudes.iter().filter(|a| **a < main_deployment_height).count() > 12 {
+                if altitudes.iter().filter(|a| **a < 720.0).count() > 12 {
                     get_logger().log_str("stage,detected main");
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing main!");
@@ -784,3 +780,24 @@ where
         }
     }
 }
+
+pub async fn trigger_task(pressure_channel: StaticReceiver<f32>) {
+    let config = Config::get();
+
+    let triggers = &config.stage[0].triggers;
+
+    loop {
+        pressure_channel.recv().await;
+
+        // check that pressure reading is for pressure
+
+        for trigger in triggers {
+            match trigger {
+                Triggers::GreaterThan(sensor, fixed) => {
+                    // increment the counter for the triggers_needed to move onto the next stage
+                    hprintln!("Sensor data is greater than fixed data from config");
+                }
+            }
+        }
+    }
+}   
