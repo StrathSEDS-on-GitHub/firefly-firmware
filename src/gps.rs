@@ -23,7 +23,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, radio::update_timer, RTC};
+use crate::{futures::YieldFuture, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -258,7 +258,7 @@ pub async fn poll_for_sentences() -> ! {
                     ..
                 })) = parse_result.clone()
                 {
-                    update_timer(time.seconds);
+                    // update_timer(time.seconds);
                     if !rtc_set {
                         set_rtc(time);
                         rtc_set = true;

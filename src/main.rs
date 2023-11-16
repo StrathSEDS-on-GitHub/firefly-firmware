@@ -175,10 +175,6 @@ async fn prog_main() {
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
             NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
-            radio::TIMER
-                .borrow(cs)
-                .borrow_mut()
-                .replace(dp.TIM5.counter_us(&clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
