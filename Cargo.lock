@@ -594,6 +594,8 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 [[package]]
 name = "littlefs2"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95c72bdf63e7ad35f391e60c48e4c32560038f1d3a0dd97f90a2891ce09160bf"
 dependencies = [
  "bitflags",
  "cstr_core",
