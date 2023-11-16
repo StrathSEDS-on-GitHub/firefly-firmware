@@ -5,13 +5,13 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
+use fugit::ExtU32;
 use hal::{
     dma::{traits::StreamISR, Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
-    pac::USART1,
+    pac::{NVIC, USART1},
     prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxISR, RxListen, SerialExt},
-};
+    serial::{RxISR, RxListen, SerialExt}};
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
 use smart_leds::SmartLedsWrite;
@@ -22,7 +22,7 @@ use stm32f4xx_hal::{
     interrupt, pac,
     serial::{Rx, Tx},
 };
-use time::{Date, PrimitiveDateTime};
+use time::{PrimitiveDateTime, Date};
 
 use crate::{futures::YieldFuture, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
@@ -235,15 +235,21 @@ fn set_rtc(time: Time) {
         let rtc = rtc_ref.as_mut().unwrap();
         rtc.set_datetime(&PrimitiveDateTime::new(
             Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
-            time::Time::from_hms_milli(
-                time.hours,
-                time.minutes,
-                time.seconds as u8,
-                (time.seconds * 1000.0) as u16 % 1000,
-            )
-            .unwrap(),
-        ))
-        .unwrap();
+            time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
+        )).unwrap();
+        rtc.enable_wakeup(50u32.millis().into());
+
+        NVIC::unpend(pac::Interrupt::RTC_WKUP);
+        unsafe { NVIC::unmask(pac::Interrupt::RTC_WKUP); }
+
+        cortex_m::interrupt::free(|cs| {
+            let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
+            neo_ref
+                .as_mut()
+                .unwrap()
+                .write([[0, 0, 255]].into_iter())
+                .unwrap();
+        });
     });
 }
 
@@ -270,15 +276,6 @@ pub async fn poll_for_sentences() -> ! {
                     if !rtc_set {
                         set_rtc(time);
                         rtc_set = true;
-                        cortex_m::interrupt::free(|cs| {
-                            NEOPIXEL
-                                .borrow(cs)
-                                .borrow_mut()
-                                .as_mut()
-                                .unwrap()
-                                .write([[0, 0, 255]; 4].into_iter())
-                                .unwrap();
-                        });
                     }
                 }
                 cortex_m::interrupt::free(|cs| {

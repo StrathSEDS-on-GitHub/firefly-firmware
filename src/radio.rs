@@ -1,6 +1,7 @@
 use core::cell::Cell;
 use core::cell::RefCell;
 
+use core::ops::DerefMut;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
@@ -26,10 +27,10 @@ use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
+use stm32f4xx_hal::pac::RTC;
 use stm32f4xx_hal::pac::SPI1;
-use stm32f4xx_hal::pac::TIM5;
-use stm32f4xx_hal::pac::TIM6;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
+use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::timer;
 use stm32f4xx_hal::timer::CounterMs;
@@ -116,7 +117,7 @@ pub enum Message {
     Arm(Role, u8),
     Disarm(Role, u8),
     TestPyro(Role, PyroPin, u32),
-    SetStage(Role, MissionStage, u8),
+    SetStage(Role, MissionStage, u8)
 }
 
 pub fn next_counter() -> u16 {
@@ -195,122 +196,54 @@ enum RadioState {
     Buffer(Role),
 }
 
-pub(crate) static TIMER: Mutex<RefCell<Option<CounterMs<TIM5>>>> = Mutex::new(RefCell::new(None));
-pub(crate) static TIMER2: Mutex<RefCell<Option<CounterMs<TIM6>>>> = Mutex::new(RefCell::new(None));
 static RADIO_STATE: Mutex<Cell<RadioState>> =
     Mutex::new(Cell::new(RadioState::Buffer(Role::Avionics)));
 
-pub fn update_timer(secs: f32) {
-    let time = secs % 2.0;
-
-    let (state, remaining_time) =
-        get_current_state_and_remaining_time_from_offset((time * 1000.0) as u32);
-
-    cortex_m::interrupt::free(|cs| {
-        RADIO_STATE.borrow(cs).set(state);
-        let mut timer_ref = TIMER.borrow(cs).borrow_mut();
-        let timer = timer_ref.as_mut().unwrap();
-
-        let config: &[(RadioState, u32)] = &POST_LAUNCH_TDM_CONFIG;
-        let total_time = config.iter().find(|(s, _)| *s == state).unwrap().1;
-
-        if remaining_time > 30 || total_time - remaining_time > 30 {
-            timer.cancel().ok();
-            timer.clear_flags(timer::Flag::Update);
-            timer.start(remaining_time.millis()).unwrap();
-            timer.listen(Event::Update);
-        }
-        set_radio();
-        unsafe {
-            NVIC::unmask(stm32f4xx_hal::interrupt::TIM5);
-            NVIC::unpend(stm32f4xx_hal::interrupt::TIM5);
-        }
-    });
-}
-
 // Set to true when we have launched and before the config has been switched.
-// static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
+static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-// const PRE_LAUNCH_TDM_CONFIG: [(RadioState, u32); 6] = [
-//     (RadioState::Buffer(Role::Ground), 100),
-//     (RadioState::Tx(Role::Ground), 600),
-//     (RadioState::Buffer(Role::Avionics), 50),
-//     (RadioState::Tx(Role::Avionics), 600),
-//     (RadioState::Buffer(Role::Cansat), 50),
-//     (RadioState::Tx(Role::Cansat), 600),
-// ];
-
-// After launch, we don't need to transmit to the ground station anymore,
-// so we can use all the bandwidth for the avionics and cansat.
-const POST_LAUNCH_TDM_CONFIG: [(RadioState, u32); 1] = [(RadioState::Tx(Role::Avionics), 1000)];
-
-fn get_current_state_and_remaining_time_from_offset(offset: u32) -> (RadioState, u32) {
-    let mut time = offset;
-
-    let config: &[(RadioState, u32)] = &POST_LAUNCH_TDM_CONFIG;
-    for (state, duration) in config.iter() {
-        if *duration > time {
-            return (*state, *duration - time);
-        }
-        time -= duration;
-    }
-    // Offset too big?
-    return POST_LAUNCH_TDM_CONFIG[0];
-}
-
-// Determine the next state and how long it lasts for
-fn get_next_state_and_time(current: RadioState) -> (RadioState, u32) {
-    // if SWITCHED_CONFIGS.swap(false, Ordering::Relaxed) {
-    //     // We just switched configs, so we need to do some maths to figure out
-    //     // where we are in the new config.
-
-    //     let mut time = 0;
-    //     for (state, duration) in PRE_LAUNCH_TDM_CONFIG.iter() {
-    //         time += duration;
-    //         if *state == current {
-    //             break;
-    //         }
-    //     }
-
-    //     return get_current_state_and_remaining_time_from_offset(time);
-    // }
-
-    let launched = mission::is_launched();
-    let config: &[(RadioState, u32)] = &POST_LAUNCH_TDM_CONFIG;
-    for (i, (state, _)) in config.iter().enumerate() {
-        if *state == current {
-            return config[(i + 1) % config.len()];
-        }
-    }
-    // This _shouldn't_ ever happen, but let's not panic if it does
-    // The worst that can happen is we have a broken config
-    // until the GPS gives us the correct time.
-    config[0]
-}
-
-/// TDM (Time Division Multiplexing) timer
-/// We use this timer to schedule the radio transmissions
-#[interrupt]
-fn TIM5() {
-    cortex_m::interrupt::free(|cs| {
-        let mut timer_ref = TIMER.borrow(cs).borrow_mut();
-        let timer = timer_ref.as_mut().unwrap();
-        timer.clear_flags(timer::Flag::Update);
-
-        let radio_state = RADIO_STATE.borrow(cs).get();
-        let (state, next_time) = get_next_state_and_time(radio_state);
-        timer.start(next_time.millis()).unwrap();
-        timer.listen(Event::Update);
-        RADIO_STATE.borrow(cs).set(state);
-
-        set_radio();
-    });
-}
+const TDM_CONFIG: [(RadioState, u32); 6] = [
+    (RadioState::Buffer(Role::Ground), 100),
+    (RadioState::Tx(Role::Ground), 600),
+    (RadioState::Buffer(Role::Avionics), 50),
+    (RadioState::Tx(Role::Avionics), 600),
+    (RadioState::Buffer(Role::Cansat), 50),
+    (RadioState::Tx(Role::Cansat), 600),
+];
 
 pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message, 64>>> =
     Mutex::new(RefCell::new(Deque::new()));
+
+
+#[interrupt]
+fn RTC_WKUP() {
+    cortex_m::interrupt::free(|cs| {
+        let mut rtc_ref = crate::RTC.borrow(cs).borrow_mut();
+        if let Some(rtc) = rtc_ref.deref_mut() {
+            if rtc.is_pending(rtc::Event::Wakeup) {
+                rtc.clear_interrupt(rtc::Event::Wakeup);
+            }
+
+            let time = rtc.get_datetime();
+
+            let (_,_,s,millis) = time.as_hms_milli();
+            let t_secs = (s as u32 * 1000 + millis as u32) % 2000;
+
+            let mut offset = 0;
+            for (state, duration) in TDM_CONFIG.iter() {
+                if t_secs < offset + *duration {
+                    RADIO_STATE.borrow(cs).set(*state);
+                    break;
+                }
+                offset += *duration;
+            }
+
+            set_radio();
+        }
+    });
+}
 
 fn receive_message() {
     cortex_m::interrupt::free(|cs| {
@@ -349,7 +282,7 @@ fn receive_message() {
 /// Sets the radio in the correct state.
 /// Called from timer interrupt and when the radio interrupt fires.
 /// The radio interrupt fires when the radio is done transmitting a packet.
-pub(crate) fn set_radio() {
+fn set_radio() {
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
     cortex_m::interrupt::free(|cs| {
         let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
@@ -380,7 +313,6 @@ pub(crate) fn set_radio() {
             if TRANSMISSION_IN_PROGRESS.load(Ordering::Relaxed) {
                 return;
             }
-
             // Our turn to transmit
             cortex_m::interrupt::free(|cs| {
                 let mut radio_ref = RADIO.borrow(cs).borrow_mut();
@@ -393,13 +325,6 @@ pub(crate) fn set_radio() {
                         .radio
                         .write_buffer(&mut radio.spi, &mut radio.delay, 0, bytes)
                         .unwrap();
-                    let params = LoRaPacketParams::default()
-                        .set_preamble_len(0x12)
-                        .set_payload_len(bytes.len() as u8)
-                        .set_crc_type(sx126x::op::packet::lora::LoRaCrcType::CrcOff)
-                        .into();
-
-                    radio.radio.set_packet_params(&mut radio.spi, &mut radio.delay, params).unwrap();
                     radio
                         .radio
                         .set_tx(&mut radio.spi, &mut radio.delay, RxTxTimeout::from_ms(5000))

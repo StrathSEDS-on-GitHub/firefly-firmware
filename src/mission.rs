@@ -17,7 +17,7 @@ use stm32f4xx_hal::{
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
-    bmp581::{read_fifo_dma, PressureTemp, BMP581}, config::Config, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
+    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -45,7 +45,7 @@ pub enum MissionStage {
     Landed(u16),
 }
 
-static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Armed(0)));
+static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed(0)));
 
 pub fn role() -> Role {
     // SAFETY: Role is mutated once by main prior to mission begin.
@@ -95,14 +95,10 @@ pub fn update_pyro_state() {
     get_logger().log(format_args!("pyro,{}", mv));
 }
 
-    let config = Config::get();
-
-    hprintln!("{:?}", config);
-
-    let main_deployment_height = config.main_deployment_height;
 pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
+    const MAIN_DEPLOYMENT_HEIGHT: f32 = 3000.0;
 
     loop {
         let frames = channel.recv().await;
@@ -177,7 +173,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
             }
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
-                if altitudes.iter().filter(|a| **a < main_deployment_height).count() > 12 {
+                if altitudes.iter().filter(|a| **a < MAIN_DEPLOYMENT_HEIGHT).count() > 12 {
                     get_logger().log_str("stage,detected main");
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing main!");
@@ -738,7 +734,6 @@ where
     I2C: WriteRead<Error = E> + embedded_hal::blocking::i2c::Write<Error = E>,
     E: core::fmt::Debug,
 {
-    radio::update_timer(0.0);
     match unsafe { ROLE } {
         Role::Ground =>
         {
