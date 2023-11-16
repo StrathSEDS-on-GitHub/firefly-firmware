@@ -178,11 +178,7 @@ async fn prog_main() {
             radio::TIMER
                 .borrow(cs)
                 .borrow_mut()
-                .replace(dp.TIM5.counter_ms(&clocks));
-            radio::TIMER2
-                .borrow(cs)
-                .borrow_mut()
-                .replace(dp.TIM6.counter_ms(&clocks));
+                .replace(dp.TIM5.counter_us(&clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
@@ -225,46 +221,29 @@ async fn prog_main() {
         // stepper::setup(dp.DMA1, stepper_serial);
         // let mut gconf = tmc2209::reg::GCONF::default();
         // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        // vactual.set(100);
+        // vactual.set(10);
         // gconf.set_pdn_disable(true);
         // gconf.set_internal_rsense(true);
-        // let req = tmc2209::write_request(0, gconf);
-        // stepper::tx(req.bytes()).await;
-        // let req = tmc2209::write_request(1, gconf);
-        // stepper::tx(req.bytes()).await;
-        // delay.delay_ms(500u32);
 
-        // enum Sequence {
-        //     Motor1Positive(u8, i32),
-        //     Motor2Positive(u8, i32),
-        //     Motor1Negative(u8, i32),
-        //     Motor2Negative(u8, i32),
-        // }
-
-        // let mut sequence = Sequence::Motor1Positive(1, 100);
+        // let STEPPER_ADDR = 1;
 
         // loop {
-        //     let (addr, velocity) = match sequence {
-        //         Sequence::Motor1Positive(a, v) => (a, v),
-        //         Sequence::Motor2Positive(a, v) => (a, v),
-        //         Sequence::Motor1Negative(a, v) => (a, v),
-        //         Sequence::Motor2Negative(a, v) => (a, v),
-        //     };
-        //     vactual.set(velocity);
-        //     let req = tmc2209::write_request(addr, vactual);
-        //     vactual.set(0);
+        //     let req = tmc2209::write_request(STEPPER_ADDR, gconf);
         //     stepper::tx(req.bytes()).await;
-        //     let req = tmc2209::write_request(if addr == 0 { 1 } else { 0 }, vactual);
+        //     delay.delay_ms(500u32);
+        //     let req = tmc2209::write_request(STEPPER_ADDR, vactual);
         //     stepper::tx(req.bytes()).await;
+        //     cortex_m::interrupt::free(|cs| {
+        //         NEOPIXEL
+        //             .borrow(cs)
+        //             .borrow_mut()
+        //             .as_mut()
+        //             .unwrap()
+        //             .write([[0, 20, 0]; 4].into_iter())
+        //             .unwrap();
+        //     });
         //     YieldFuture::new().await;
         //     delay.delay_ms(1000u32);
-
-        //     sequence = match sequence {
-        //         Sequence::Motor1Positive(a, v) => Sequence::Motor2Positive(1, v),
-        //         Sequence::Motor2Positive(a, v) => Sequence::Motor1Negative(0, -v),
-        //         Sequence::Motor1Negative(a, v) => Sequence::Motor2Negative(1, v),
-        //         Sequence::Motor2Negative(a, v) => Sequence::Motor1Positive(0, -v),
-        //     }
         // }
 
         gpioe.pe3.into_floating_input();
@@ -347,12 +326,7 @@ async fn prog_main() {
                 LOG_FILE.replace(string);
             }
             Ok(())
-        }) {
-            unsafe {
-                LOG_FILE.replace(String::<128>::from_str("log0.txt").unwrap());
-            }
-        };
-        let config = fs.read(path!("config.json"));
+        })         let config = fs.read(path!("config.json"));
         Config::build(config.unwrap());
         let gps_serial = dp
             .USART1

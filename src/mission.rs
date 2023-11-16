@@ -54,7 +54,7 @@ pub enum MissionStage {
     Landed(u16),
 }
 
-static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Armed(0)));
+static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed(0)));
 
 pub fn role() -> Role {
     // SAFETY: Role is mutated once by main prior to mission begin.
@@ -742,7 +742,6 @@ where
     I2C: WriteRead<Error = E> + embedded_hal::blocking::i2c::Write<Error = E>,
     E: core::fmt::Debug,
 {
-    radio::update_timer(0.0);
     match unsafe { ROLE } {
         Role::Ground =>
         {
