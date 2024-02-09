@@ -1,4 +1,4 @@
-use core::{borrow::BorrowMut, cell::Cell, convert::Infallible, fmt::Write};
+use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use cortex_m_semihosting::hprintln;
 use embedded_hal::blocking::i2c::WriteRead;
@@ -103,12 +103,12 @@ pub fn update_pyro_state() {
     get_logger().log(format_args!("pyro,{}", mv));
 }
 
-pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 15]>) {
     let config = Config::get();
 
     hprintln!("{:?}", config);
 
     let main_deployment_height = config.main_deployment_height;
+pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
 
@@ -634,7 +634,7 @@ pub async fn disarm() {
         update_pyro_state();
     });
 
-    timer.clear_interrupt(Event::Update);
+    timer.clear_flags(timer::Flag::Update);
     timer.start(300u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low();
@@ -650,7 +650,7 @@ pub async fn arm() {
         STAGE.borrow(cs).replace(MissionStage::Armed(0));
         update_pyro_state();
     });
-    timer.clear_interrupt(Event::Update);
+    timer.clear_flags(timer::Flag::Update);
     timer.start(300u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low()
@@ -662,7 +662,7 @@ where
     E: core::fmt::Debug,
 {
     // Wait for FIFO to fill up.
-    timer.clear_interrupt(Event::Update);
+    timer.clear_flags(timer::Flag::Update);
     timer.start(550.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     let mut voltages = [0; 8];
@@ -700,7 +700,7 @@ where
 
             radio::queue_packet(message);
         }
-        timer.clear_interrupt(Event::Update);
+        timer.clear_flags(timer::Flag::Update);
         timer.start(1000.millis()).unwrap();
         NbFuture::new(|| timer.wait()).await.unwrap();
     }

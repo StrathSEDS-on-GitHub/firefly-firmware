@@ -98,7 +98,7 @@ impl BlockDevice for SdWrapper {
             self.sdio
                 .borrow()
                 .card()
-                .map(|c| c.block_count())
+                .map(|c| c.block_count() as u32)
                 .unwrap_or(0),
         ))
     }

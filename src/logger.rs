@@ -146,9 +146,6 @@ pub fn setup_usb_serial<'a>(
         unsafe { &USB_BUS.as_ref().unwrap() },
         UsbVidPid(0x16c0, 0x27dd),
     )
-    .manufacturer("Fake company")
-    .product("Serial port")
-    .serial_number("TEST")
     .device_class(usbd_serial::USB_CLASS_CDC)
     .build();
 

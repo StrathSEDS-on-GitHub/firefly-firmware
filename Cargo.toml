@@ -17,8 +17,8 @@ embedded-hal="0.2"
 nb = "1"
 cortex-m = {version = "0.7.3", features=["critical-section-single-core"]}
 cortex-m-rt = "0.7"
-usb-device="0.2"
-usbd-serial = "0.1"
+usb-device="0.3.1"
+usbd-serial = "0.2"
 
 smart-leds = "0.3"
 ws2812-timer-delay = "0.3"
@@ -37,14 +37,14 @@ serde = { version = "1.0", features = ["derive"], default-features = false }
 serde-big-array = "0.5.1"
 tmc2209 = "0.2.2"
 postcard = "1.0.4"
-usbd_mass_storage = "0.1.0"
-usbd_scsi = {version = "0.1.0"}
-littlefs2 = "0.4.0"
+usbd_mass_storage = { version="0.1.0", path="stm32-usb.rs/firmware/usbd_mass_storage" }
+usbd_scsi = {version = "0.1.0", path="stm32-usb.rs/firmware/usbd_scsi"}
+littlefs2 = { version="0.4.0" }
 time = {version = "0.3.20", default-features=false }
 thingbuf = { version="0.1.0", default-features=false, features=["static"] }
 serde-json-core = "0.5.1"
 
 [dependencies.stm32f4xx-hal]
-version = "0.17.1"
+version = "0.20"
 path="stm32f4xx-hal"
-features = ["rt", "stm32f412", "usb_fs", "sdio", "sdio-host"] # replace the model of your microcontroller here
+features = ["stm32f412", "usb_fs", "sdio", "sdio-host"] # replace the model of your microcontroller here

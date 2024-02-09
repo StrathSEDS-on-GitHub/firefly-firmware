@@ -100,7 +100,7 @@ impl Storage {
 impl BlockDevice for Storage {
     const BLOCK_BYTES: usize = 512;
 
-    fn read_block(&self, lba: u32, block: &mut [u8]) -> Result<(), usbd_scsi::BlockDeviceError> {
+    fn read_block(&mut self, lba: u32, block: &mut [u8]) -> Result<(), usbd_scsi::BlockDeviceError> {
         if let Some(cached_addr) = unsafe { SECTOR_CACHE_ADDR } {
             // If our sector is cached
             if cached_addr == (lba / 8 * 4096) {
@@ -218,9 +218,6 @@ pub fn setup_usb_msc<'a>(
         unsafe { &crate::logger::USB_BUS.as_ref().unwrap() },
         UsbVidPid(0x16c0, 0x27dd),
     )
-    .manufacturer("Fake company")
-    .product("Serial port")
-    .serial_number("TEST")
     .device_class(usbd_mass_storage::USB_CLASS_MSC)
     .self_powered(true)
     .build();

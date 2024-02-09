@@ -31,10 +31,13 @@ use stm32f4xx_hal::pac::TIM5;
 use stm32f4xx_hal::pac::TIM6;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::spi::Spi;
+use stm32f4xx_hal::timer;
 use stm32f4xx_hal::timer::CounterMs;
 use stm32f4xx_hal::timer::CounterUs;
 use stm32f4xx_hal::timer::Event;
 use stm32f4xx_hal::timer::SysDelay;
+use stm32f4xx_hal::ClearFlags;
+use stm32f4xx_hal::Listen;
 use sx126x::op::packet::lora::LoRaPacketParams;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
@@ -213,7 +216,7 @@ pub fn update_timer(secs: f32) {
 
         if remaining_time > 30 || total_time - remaining_time > 30 {
             timer.cancel().ok();
-            timer.clear_interrupt(Event::Update);
+            timer.clear_flags(timer::Flag::Update);
             timer.start(remaining_time.millis()).unwrap();
             timer.listen(Event::Update);
         }
@@ -294,7 +297,7 @@ fn TIM5() {
     cortex_m::interrupt::free(|cs| {
         let mut timer_ref = TIMER.borrow(cs).borrow_mut();
         let timer = timer_ref.as_mut().unwrap();
-        timer.clear_interrupt(Event::Update);
+        timer.clear_flags(timer::Flag::Update);
 
         let radio_state = RADIO_STATE.borrow(cs).get();
         let (state, next_time) = get_next_state_and_time(radio_state);

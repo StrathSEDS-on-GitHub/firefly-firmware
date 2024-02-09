@@ -10,3 +10,6 @@
 [submodule "nmea0183"]
 	path = nmea0183
 	url = https://github.com/nsforth/nmea0183/
+[submodule "stm32-usb.rs"]
+	path = stm32-usb.rs
+	url = https://github.com/cs2dsb/stm32-usb.rs

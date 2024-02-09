@@ -6,7 +6,7 @@ use core::{
 
 use cortex_m::interrupt::Mutex;
 use hal::{
-    dma::{Stream2, Stream7, StreamsTuple, Transfer},
+    dma::{traits::StreamISR, Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
     pac::USART1,
     prelude::_stm32f4xx_hal_time_U32Ext,
