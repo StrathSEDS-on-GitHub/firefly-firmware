@@ -12,20 +12,12 @@ use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12, TIM4},
-    timer::{CounterMs, Event},
+    timer::{self, CounterMs, Event}, ClearFlags,
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
-    bmp581::{PressureTemp, BMP581},
-    futures::{NbFuture, YieldFuture},
-    gps,
-    ina219::INA219,
-    logger::get_serial,
-    config::Config,
-    radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
-    sdio::get_logger,
-    BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
+    bmp581::{read_fifo_dma, PressureTemp, BMP581}, config::Config, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -399,10 +391,10 @@ async fn gps_broadcast() -> ! {
 async fn pressure_temp_handler(
     mut sensor: BMP581,
     mut timer: CounterMs<TIM12>,
-    pressure_sender: StaticSender<[PressureTemp; 15]>,
+    pressure_sender: StaticSender<[PressureTemp; 16]>,
 ) {
     // Wait for FIFO to fill up.
-    timer.clear_interrupt(Event::Update);
+    timer.clear_flags(timer::Flag::Update);
     timer.start(550.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     loop {
@@ -418,24 +410,24 @@ async fn pressure_temp_handler(
         let mut i = 0;
 
         while i < 4 * 8 {
-            if let Ok(frames) = sensor.read_fifo() {
-                for frame in frames {
-                    let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
-                    let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
+            let frames;
+            (frames, sensor) = read_fifo_dma(sensor).await;
+            for frame in frames {
+                let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
+                let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
-                    // Send every fourth frame (10Hz).
-                    if i % 4 == 0 && i < 4 * 8 {
-                        pressures[i / 4] = pressure;
-                        temperatures[i / 4] = temperature;
-                    }
-
-                    get_logger().log(format_args!("pressure,{},{}", pressure, temperature));
-
-                    i += 1;
+                // Send every fourth frame (10Hz).
+                if i % 4 == 0 && i < 4 * 8 {
+                    pressures[i / 4] = pressure;
+                    temperatures[i / 4] = temperature;
                 }
-                pressure_sender.send(frames).await.unwrap();
+
+                get_logger().log(format_args!("pressure,{},{}", pressure, temperature));
+
+                i += 1;
             }
-            timer.clear_interrupt(Event::Update);
+            pressure_sender.send(frames).await.unwrap();
+            timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
@@ -754,7 +746,7 @@ where
             join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
         }
         Role::Avionics => {
-            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 15], 10> = StaticChannel::new();
+            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 16], 10> = StaticChannel::new();
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(
@@ -768,7 +760,7 @@ where
             .0
         }
         Role::Cansat => {
-            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 15], 10> = StaticChannel::new();
+            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 16], 10> = StaticChannel::new();
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(

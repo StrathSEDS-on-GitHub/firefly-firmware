@@ -1,18 +1,18 @@
-use cortex_m::peripheral::NVIC;
+use core::{cell::RefCell, sync::atomic::AtomicBool};
+
+use cortex_m::{interrupt::Mutex, peripheral::NVIC};
+use heapless::Vec;
 use stm32f4xx_hal::{
-    dma::{
-        Stream0, Stream1,
-    },
+    dma::{Stream0, Stream1},
     i2c::{
-        dma::{
-            I2CMasterDma, I2CMasterHandleIT, RxDMA,
-            TxDMA,
-        },
+        dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
         Error,
     },
     interrupt,
     pac::{DMA1, I2C1},
 };
+
+use crate::futures::YieldFuture;
 
 const ADDR: u8 = 0x46;
 
@@ -114,7 +114,8 @@ impl BMP581 {
     }
 }
 
-/*`
+static BMP: Mutex<RefCell<Option<BMP581>>> = Mutex::new(RefCell::new(None));
+
 #[interrupt]
 fn DMA1_STREAM1() {
     cortex_m::interrupt::free(|cs| {
@@ -131,18 +132,16 @@ fn DMA1_STREAM0() {
     });
 }
 
-pub async fn read_fifo_dma() -> [PressureTemp; 16] {
-    static mut data: [u8; 16 * 6] = [0u8; 16 * 6];
-    static mut frames: [PressureTemp; 16] = [PressureTemp {
-        pressure: 0,
-        temperature: 0,
-    }; 16];
+pub async fn read_fifo_dma(bmp: BMP581) -> ([PressureTemp; 16], BMP581) {
+    // SAFETY: As this takes exclusive access to the BMP581, it can be assumed that
+    // this function is not called concurrently, so static mut is safe.
+    static mut DATA: [u8; 16 * 6] = [0u8; 16 * 6];
 
-    static done: AtomicBool = AtomicBool::new(false);
-    hprintln!("DMA start");
+    static DONE: AtomicBool = AtomicBool::new(false);
 
     unsafe {
         cortex_m::interrupt::free(|cs| {
+            BMP.borrow(cs).replace(Some(bmp));
             nb::block!(BMP
                 .borrow(cs)
                 .borrow_mut()
@@ -152,33 +151,33 @@ pub async fn read_fifo_dma() -> [PressureTemp; 16] {
                 .write_read_dma(
                     ADDR,
                     &[0x29],
-                    &mut data,
+                    &mut DATA,
                     Some(|_| {
-                        hprintln!("DMA callback");
-                        done.store(true, core::sync::atomic::Ordering::Release);
+                        DONE.store(true, core::sync::atomic::Ordering::Release);
                     }),
                 ))
             .unwrap();
         });
     }
 
-    while !done.load(core::sync::atomic::Ordering::Acquire) {
+    while !DONE.load(core::sync::atomic::Ordering::Acquire) {
         YieldFuture::new().await;
     }
-    for (i, frame) in unsafe { data }
+
+    DONE.store(false, core::sync::atomic::Ordering::Release);
+
+    let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
+
+    let frames: [PressureTemp; 16] = unsafe { DATA }
         .chunks(6)
         .map(|x| x.split_at(3))
         .map(|(pres, temp)| PressureTemp {
             pressure: (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
             temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
         })
-        .enumerate()
-    {
-        unsafe {
-            frames[i] = frame;
-        }
-    }
+        .collect::<Vec<_, 16>>()
+        .into_array()
+        .unwrap();
 
-    unsafe { frames }
+    (frames, bmp)
 }
- `*/
