@@ -16,8 +16,11 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
-use cassette::Cassette;
 use hal::timer::Counter;
+use embassy_executor::Executor;
+use embassy_executor::Spawner;
+use embassy_futures::block_on;
+
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
@@ -103,19 +106,6 @@ static mut FLASH: Option<W25QWrapper<Bank1, CAPACITY>> = None;
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
-#[entry]
-fn main() -> ! {
-    let x = prog_main();
-    let x = core::pin::pin!(x);
-    let mut cm = Cassette::new(x);
-    loop {
-        if let Some(_) = cm.poll_on() {
-            break;
-        }
-    }
-    loop {}
-}
-
 fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
     channel: &mut PwmHz<TIM3, P>,
     delay: &mut DELAY,
@@ -130,7 +120,8 @@ fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
     channel.disable(hal::timer::Channel::C2);
 }
 
-async fn prog_main() {
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
     if let (Some(mut dp), Some(cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
@@ -254,7 +245,6 @@ async fn prog_main() {
             );
             loop {}
         }
-
         let gps_serial = dp
             .USART1
             .serial(
@@ -349,9 +339,9 @@ async fn prog_main() {
         )
         .await;
 
-        hprintln!("{:?}", board_id);
-
-        let role = match 3 {
+        let board_id = 3; // TODO : dont
+                          // fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
+        let role = match board_id {
             5 => Role::Ground,
             3 | 4 => Role::Avionics,
             _ => Role::Cansat,

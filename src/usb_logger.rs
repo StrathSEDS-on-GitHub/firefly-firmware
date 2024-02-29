@@ -1,6 +1,5 @@
 use core::{cell::RefCell, ptr::addr_of_mut};
 
-use cassette::block_on;
 use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use stm32f4xx_hal::{
     gpio::{alt::otg_fs, Input, Pin},
@@ -17,6 +16,8 @@ use usb_device::{
 use usbd_serial::SerialPort;
 
 use crate::futures::UsbFuture;
+
+use embassy_futures::block_on;
 
 struct Logger {
     serial: Option<Serial<'static>>,

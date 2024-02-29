@@ -16,11 +16,14 @@ where
 
     fn poll(
         mut self: pin::Pin<&mut Self>,
-        _cx: &mut core::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         match (self.function)() {
             Ok(value) => core::task::Poll::Ready(Ok(value)),
-            Err(nb::Error::WouldBlock) => core::task::Poll::Pending,
+            Err(nb::Error::WouldBlock) => {
+                cx.waker().wake_by_ref();
+                core::task::Poll::Pending
+            },
             Err(nb::Error::Other(e)) => core::task::Poll::Ready(Err(e)),
         }
     }
@@ -45,12 +48,13 @@ impl Future for YieldFuture {
 
     fn poll(
         mut self: pin::Pin<&mut Self>,
-        _cx: &mut core::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         match self.yielded {
             true => core::task::Poll::Ready(()),
             false => {
                 self.yielded = true;
+                cx.waker().wake_by_ref();
                 core::task::Poll::Pending
             }
         }
@@ -81,12 +85,13 @@ where
 
     fn poll(
         mut self: pin::Pin<&mut Self>,
-        _cx: &mut core::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         let s = match (self.function)() {
             Ok(value) => core::task::Poll::Ready(Ok(value)),
             Err(UsbError::WouldBlock) => {
                 (self.poll)();
+                cx.waker().wake_by_ref();
                 core::task::Poll::Pending
             }
             Err(e) => core::task::Poll::Ready(Err(e)),
