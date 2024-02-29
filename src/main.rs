@@ -21,6 +21,7 @@ use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use cassette::pin_mut;
 use cassette::Cassette;
+use hal::rtc;
 use core::fmt::Write;
 use core::str::FromStr;
 use cortex_m::interrupt::Mutex;
@@ -142,6 +143,7 @@ async fn prog_main() {
             .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
         let rcc = dp.RCC.constrain();
 
+
         let clocks = rcc
             .cfgr
             .sysclk(48.MHz())
@@ -170,7 +172,8 @@ async fn prog_main() {
         neopixel.write([[0, 5, 0]; 4].into_iter()).unwrap();
 
         let gpiod = dp.GPIOD.split();
-        let rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
+        let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
+        rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
@@ -325,8 +328,8 @@ async fn prog_main() {
         })         {
             panic!("Failed to read log dir");
         }
-        let config = fs.read(path!("config.json"));
-        Config::build(config.unwrap());
+        // let config = fs.read(path!("config.json"));
+        // Config::build(config.unwrap());
         let gps_serial = dp
             .USART1
             .serial(
@@ -406,7 +409,7 @@ async fn prog_main() {
 
         Radio::init(lora, spi1, delay);
 
-        let board_id = fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
+        let board_id = 3;
         let role = match board_id {
             5 => Role::Ground,
             3 | 4 => Role::Avionics,

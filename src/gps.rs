@@ -5,15 +5,13 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
+use fugit::ExtU32;
 use hal::{
-    dma::{Stream2, Stream7, StreamsTuple, Transfer},
-    gpio::{self, Input},
-    pac::USART1,
-    prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxISR, RxListen, SerialExt},
+    dma::{Stream2, Stream7, StreamsTuple, Transfer}, gpio::{self, Input}, pac::{NVIC, USART1}, prelude::_stm32f4xx_hal_time_U32Ext, rtc, serial::{RxISR, RxListen, SerialExt}
 };
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
+use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -23,7 +21,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, RTC};
+use crate::{futures::YieldFuture, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -236,6 +234,19 @@ fn set_rtc(time: Time) {
             Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
             time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
         )).unwrap();
+        rtc.enable_wakeup(1000u32.millis());    
+
+        NVIC::unpend(pac::Interrupt::RTC_WKUP);
+        unsafe { NVIC::unmask(pac::Interrupt::RTC_WKUP); }
+
+        cortex_m::interrupt::free(|cs| {
+            let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
+            neo_ref
+                .as_mut()
+                .unwrap()
+                .write([[0, 0, 255]].into_iter())
+                .unwrap();
+        });
     });
 }
 

@@ -14,6 +14,7 @@ use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
 use cortex_m::peripheral::NVIC;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
@@ -193,9 +194,6 @@ enum RadioState {
 static RADIO_STATE: Mutex<Cell<RadioState>> =
     Mutex::new(Cell::new(RadioState::Buffer(Role::Avionics)));
 
-// Set to true when we have launched and before the config has been switched.
-static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
-
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
 const TDM_CONFIG: [(RadioState, u32); 6] = [
@@ -219,6 +217,22 @@ fn RTC_WKUP() {
             if rtc.is_pending(rtc::Event::Wakeup) {
                 rtc.clear_interrupt(rtc::Event::Wakeup);
             }
+
+            let time = rtc.get_datetime();
+
+            let (_,_,s,millis) = time.as_hms_milli();
+            let t_secs = (s as u32 * 1000 + millis as u32) % 2000;
+
+            let mut offset = 0;
+            for (state, duration) in TDM_CONFIG.iter() {
+                if t_secs < offset + *duration {
+                    RADIO_STATE.borrow(cs).set(*state);
+                    break;
+                }
+                offset += *duration;
+            }
+
+            set_radio();
         }
     });
 }
