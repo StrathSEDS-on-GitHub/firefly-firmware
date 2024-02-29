@@ -322,7 +322,10 @@ async fn prog_main() {
                 LOG_FILE.replace(string);
             }
             Ok(())
-        })         let config = fs.read(path!("config.json"));
+        })         {
+            panic!("Failed to read log dir");
+        }
+        let config = fs.read(path!("config.json"));
         Config::build(config.unwrap());
         let gps_serial = dp
             .USART1

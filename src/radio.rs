@@ -1,6 +1,7 @@
 use core::cell::Cell;
 use core::cell::RefCell;
 
+use core::ops::DerefMut;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
@@ -25,8 +26,10 @@ use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
+use stm32f4xx_hal::pac::RTC;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
+use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::timer::CounterUs;
 use stm32f4xx_hal::timer::Event;
@@ -213,8 +216,8 @@ fn RTC_WKUP() {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = crate::RTC.borrow(cs).borrow_mut();
         if let Some(rtc) = rtc_ref.deref_mut() {
-            if rtc.is_pending(Event::Wakeup) {
-                rtc.clear_interrupt(Event::Wakeup);
+            if rtc.is_pending(rtc::Event::Wakeup) {
+                rtc.clear_interrupt(rtc::Event::Wakeup);
             }
         }
     });
