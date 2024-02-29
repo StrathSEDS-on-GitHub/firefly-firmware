@@ -20,8 +20,9 @@ use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
-use cassette::pin_mut;
-use cassette::Cassette;
+// TODO: use cassette::pin_mut;
+// TODO: use cassette::Cassette;
+use embassy_executor::Executor;
 use core::fmt::Write;
 use core::str::FromStr;
 use cortex_m::interrupt::Mutex;
@@ -118,8 +119,8 @@ impl FSInfo for OurFsInfo {
 #[entry]
 fn main() -> ! {
     let x = prog_main();
-    pin_mut!(x);
-    let mut cm = Cassette::new(x);
+    ::futures::pin_mut!(x);
+    let mut cm = Executor::new(x);
     loop {
         if let Some(_) = cm.poll_on() {
             break;

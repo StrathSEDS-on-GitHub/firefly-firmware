@@ -95,11 +95,6 @@ pub fn update_pyro_state() {
     get_logger().log(format_args!("pyro,{}", mv));
 }
 
-    let config = Config::get();
-
-    hprintln!("{:?}", config);
-
-    let main_deployment_height = config.main_deployment_height;
 pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
@@ -177,7 +172,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
             }
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
-                if altitudes.iter().filter(|a| **a < main_deployment_height).count() > 12 {
+                if altitudes.iter().filter(|a| **a < 123.123f32).count() > 12 {
                     get_logger().log_str("stage,detected main");
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing main!");
