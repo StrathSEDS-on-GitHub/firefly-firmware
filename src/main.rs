@@ -87,6 +87,7 @@ mod radio;
 mod sdio;
 mod stepper;
 mod usb_msc;
+mod neopixel;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -169,7 +170,10 @@ async fn prog_main() {
         let mut pa9 = gpioa.pa9.into_push_pull_output();
         pa9.set_speed(gpio::Speed::VeryHigh);
         let mut neopixel = Ws2812::new(timer, pa9);
-        neopixel.write([[0, 5, 0]; 4].into_iter()).unwrap();
+
+        let neopixel = neopixel::new_neopixel(neopixel, timer, pa9);
+        neopixel::update_pixel(0, [0, 5, 0]);
+        
 
         let gpiod = dp.GPIOD.split();
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
