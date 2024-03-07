@@ -78,6 +78,7 @@ mod sdio;
 mod stepper;
 mod usb_logger;
 mod usb_msc;
+mod neopixel;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -162,19 +163,14 @@ async fn main(_spawner: Spawner) {
         let mut timer = dp.TIM2.counter_hz(&clocks);
         timer.start(7.MHz()).unwrap();
 
-        const LED_NUM: usize = 3;
-        let neopixel_spi = Spi::new(
-            neopixel_spi!(dp),
-            (NoPin::new(), NoPin::new(), {
-                let mut pin = neopixel_pin!(gpio).into_alternate();
-                pin.set_speed(gpio::Speed::VeryHigh);
-                pin
-            }),
-            MODE,
-            3.MHz(),
-            &clocks,
-        );
-        let neopixel = Ws2812::new(neopixel_spi);
+        const LED_NUM: usize = 4;
+        let mut pa9 = gpioa.pa9.into_push_pull_output();
+        pa9.set_speed(gpio::Speed::VeryHigh);
+        let mut neopixel = Ws2812::new(timer, pa9);
+
+        let neopixel = neopixel::new_neopixel(neopixel, timer, pa9);
+        neopixel::update_pixel(0, [0, 5, 0]);
+        
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.enable_wakeup(1000u32.millis().into());
