@@ -20,9 +20,10 @@ use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
-// TODO: use cassette::pin_mut;
-// TODO: use cassette::Cassette;
 use embassy_executor::Executor;
+use embassy_executor::Spawner;
+use embassy_futures::block_on;
+
 use core::fmt::Write;
 use core::str::FromStr;
 use cortex_m::interrupt::Mutex;
@@ -116,20 +117,8 @@ impl FSInfo for OurFsInfo {
     const BLOCK_COUNT: usize = 4096;
 }
 
-#[entry]
-fn main() -> ! {
-    let x = prog_main();
-    ::futures::pin_mut!(x);
-    let mut cm = Executor::new(x);
-    loop {
-        if let Some(_) = cm.poll_on() {
-            break;
-        }
-    }
-    loop {}
-}
-
-async fn prog_main() {
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
     if let (Some(mut dp), Some(cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
@@ -153,10 +142,14 @@ async fn prog_main() {
             .require_pll48clk()
             .freeze();
 
+        // TODO: fix this
+        let mut buzzer = gpioe.pe1.into_push_pull_output();
+        buzzer.set_high();
+
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
-            BUZZER.replace(gpioe.pe1.into_push_pull_output());
+            BUZZER.replace(buzzer);
             BUZZER_TIMER.replace(dp.TIM13.counter_ms(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter_ms(&clocks));
         }

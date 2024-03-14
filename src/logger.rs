@@ -17,6 +17,8 @@ use usbd_serial::SerialPort;
 
 use crate::futures::UsbFuture;
 
+use embassy_futures::block_on;
+
 struct Logger {
     serial: Option<Serial<'static>>,
     
@@ -158,6 +160,10 @@ pub fn setup_usb_serial<'a>(
 impl core::fmt::Write for &Serial<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let future = self.log(s);
+        block_on(future);
+        Ok(())
+        /*
+        let future = self.log(s);
         cassette::pin_mut!(future);
         let mut cm = cassette::Cassette::new(future);
         loop {
@@ -166,6 +172,7 @@ impl core::fmt::Write for &Serial<'_> {
             }
         }
         Ok(())
+        */
     }
 }
 
