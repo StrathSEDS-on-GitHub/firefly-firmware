@@ -3,10 +3,6 @@ name = "cansat"
 version = "0.1.0"
 edition = "2021"
 
-# Minimise size of the binary
-[profile.dev]
-opt-level = "z"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
@@ -21,7 +17,7 @@ usb-device="0.3.1"
 usbd-serial = "0.2"
 
 smart-leds = "0.3"
-ws2812-timer-delay = "0.3"
+ws2812-spi = "0.3"
 cassette = "0.2"
 futures = { version = "0.3", default-features = false, features= ["async-await"] }
 cortex-m-semihosting = "0.5.0"
@@ -32,17 +28,18 @@ dummy-pin = "0.1.1"
 libm = "0.2.6"
 embedded-sdmmc = "0.4.0"
 fugit = {version = "0.3.6", features = []}
-f4-w25q = {version = "0.1.0", path="f4-w25q"}
+f4-w25q = {version = "0.1.0", path="f4-w25q", features=["embedded-storage"]}
 serde = { version = "1.0", features = ["derive"], default-features = false }    
 serde-big-array = "0.5.1"
 tmc2209 = "0.2.2"
 postcard = "1.0.4"
 usbd_mass_storage = { version="0.1.0", path="stm32-usb.rs/firmware/usbd_mass_storage" }
 usbd_scsi = {version = "0.1.0", path="stm32-usb.rs/firmware/usbd_scsi"}
-littlefs2 = { version="0.4.0" }
-time = {version = "0.3.20", default-features=false }
+time = {version = "0.3.20", default-features=false, features=["macros"] }
 thingbuf = { version="0.1.0", default-features=false, features=["static"] }
 serde-json-core = "0.5.1"
+sequential-storage = { version= "1.0.0" }
+storage-types = { version="0.1.0", path="storage-types" }
 
 [dependencies.stm32f4xx-hal]
 version = "0.20"
