@@ -1,6 +1,6 @@
 // Sets up a usb mass storage device.
 
-use core::{sync::atomic::AtomicU32, cell::{UnsafeCell, RefCell}};
+use core::{cell::RefCell, cmp::min, ptr::addr_of_mut, sync::atomic::AtomicU32};
 
 use cortex_m::peripheral::NVIC;
 use cortex_m_semihosting::hprintln;
@@ -17,7 +17,7 @@ use stm32f4xx_hal::{pac};
 use usb_device::prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 use usbd_scsi::{BlockDevice, Scsi};
 
-use crate::{logger::USB_BUS, EP_MEMORY, NEOPIXEL};
+use crate::{usb_logger::USB_BUS, EP_MEMORY, NEOPIXEL};
 
 pub static mut USB_STORAGE: Option<Scsi<UsbBusType, Storage>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<UsbBusType>> = None;
@@ -41,7 +41,7 @@ impl Storage {
         // and merge them with the cached blocks
 
         if let Some(cached_addr) = unsafe { SECTOR_CACHE_ADDR } {
-            let sector = unsafe { &mut SECTOR_CACHE };
+            let sector = unsafe { &mut *addr_of_mut!(SECTOR_CACHE) };
             for block in 0..8 {
                 if !unsafe { SECTOR_CACHED_BLOCKS[block] } {
                     // This block is not
@@ -116,7 +116,6 @@ impl BlockDevice for Storage {
             }
         }
 
-        //hprintln!("read {:x}", lba);
         cortex_m::interrupt::free(|cs| {
             NEOPIXEL
                 .borrow(cs)
@@ -131,7 +130,7 @@ impl BlockDevice for Storage {
             .host
             .borrow_mut()
             .read((lba * Self::BLOCK_BYTES as u32).into(), block)
-            .map_err(|x| {
+            .map_err(|_| {
                 usbd_scsi::BlockDeviceError::HardwareError
             });
         cortex_m::interrupt::free(|cs| {
@@ -148,6 +147,33 @@ impl BlockDevice for Storage {
     }
 
     fn write_block(&mut self, lba: u32, block: &[u8]) -> Result<(), usbd_scsi::BlockDeviceError> {
+        if lba == 0x34 && block.len() > 366 && &block[361..366] == &[0x42, 0x42, 0x42, 0x42, 0x42] {
+            // Magic value to trigger a chip erase
+            cortex_m::interrupt::free(|cs| {
+                NEOPIXEL
+                    .borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .write([[128, 128, 0u8]].into_iter())
+                    .unwrap()
+            });
+            self.host
+                .borrow_mut()
+                .chip_erase()
+                .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
+
+            cortex_m::interrupt::free(|cs| {
+                NEOPIXEL
+                    .borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .write([[0, 0, 0u8]].into_iter())
+                    .unwrap()
+            });
+            return Ok(());
+        }
         if let Some(cached_addr) = unsafe { SECTOR_CACHE_ADDR } {
             if cached_addr != lba / 8 * 4096 {
                 // This is a different sector, flush the cache
@@ -195,11 +221,11 @@ pub fn setup_usb_msc<'a>(
         hclk: clocks.hclk(),
     };
 
-    let usb_bus = UsbBus::new(usb, unsafe { &mut EP_MEMORY });
+    let usb_bus = UsbBus::new(usb, unsafe { &mut * addr_of_mut!(EP_MEMORY) });
     // SAFETY: This function is the only access of USB_BUS and it is only called once at init.
     // As a result we can use static mut.
     unsafe {
-        crate::logger::USB_BUS = Some(usb_bus);
+        crate::usb_logger::USB_BUS = Some(usb_bus);
     }
     let storage = Storage { host: RefCell::new(w25q) };
 
@@ -215,7 +241,7 @@ pub fn setup_usb_msc<'a>(
     };
 
     let usb_dev = UsbDeviceBuilder::new(
-        unsafe { &crate::logger::USB_BUS.as_ref().unwrap() },
+        unsafe { &crate::usb_logger::USB_BUS.as_ref().unwrap() },
         UsbVidPid(0x16c0, 0x27dd),
     )
     .device_class(usbd_mass_storage::USB_CLASS_MSC)

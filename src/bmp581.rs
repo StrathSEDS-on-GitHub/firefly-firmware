@@ -1,4 +1,4 @@
-use core::{cell::RefCell, sync::atomic::AtomicBool};
+use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 
 use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use heapless::Vec;
@@ -151,7 +151,7 @@ pub async fn read_fifo_dma(bmp: BMP581) -> ([PressureTemp; 16], BMP581) {
                 .write_read_dma(
                     ADDR,
                     &[0x29],
-                    &mut DATA,
+                    &mut *addr_of_mut!(DATA),
                     Some(|_| {
                         DONE.store(true, core::sync::atomic::Ordering::Release);
                     }),

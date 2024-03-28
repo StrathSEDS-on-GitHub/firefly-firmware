@@ -13,7 +13,7 @@ use hal::{
 use stm32f4xx_hal::{
     dma::{
         self,
-        traits::{Stream, StreamISR},
+        traits::StreamISR,
     },
     interrupt, pac,
     serial::{Rx, Tx},

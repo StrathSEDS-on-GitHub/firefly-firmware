@@ -8,7 +8,6 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
-use crate::futures::YieldFuture;
 use crate::hal::timer::TimerExt;
 use crate::ina219::INA219;
 use crate::mission::Role;
@@ -19,47 +18,58 @@ use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
-use cassette::pin_mut;
 use cassette::Cassette;
-use hal::pac::NVIC;
-use hal::rtc;
+use core::convert::Infallible;
 use core::fmt::Write;
-use core::str::FromStr;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
+use cortex_m_semihosting::hprint;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
-use f4_w25q::fs::FSInfo;
-use f4_w25q::fs::W25QWrapper;
+use embedded_hal::blocking::delay::DelayMs;
+use f4_w25q::embedded_storage::W25QWrapper;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
 use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
+use hal::gpio::NoPin;
 use hal::gpio::Output;
 use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::i2c::I2c;
+use hal::pac::SPI2;
+use hal::pac::SPI3;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM2;
+use hal::pac::TIM3;
 use hal::pac::TIM9;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
+use hal::rtc;
 use hal::rtc::Rtc;
 use hal::spi;
+use hal::spi::Spi;
+use hal::timer::Channel2;
 use hal::timer::CounterHz;
 use hal::timer::CounterMs;
-use heapless::String;
-use littlefs2::fs::Allocation;
-use littlefs2::fs::Filesystem;
-use littlefs2::path;
-use littlefs2::path::Path;
-use logger::setup_usb_serial;
+use hal::timer::Pwm;
+use hal::timer::PwmHz;
+use hal::timer::C2;
+use sequential_storage::cache::NoCache;
+use sequential_storage::map;
+use sequential_storage::queue;
+use smart_leds::gamma;
+use smart_leds::hsv::hsv2rgb;
+use smart_leds::hsv::Hsv;
 use smart_leds::SmartLedsWrite;
+use smart_leds::RGB8;
+use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
@@ -68,7 +78,9 @@ use sx126x::op::RampTime;
 use sx126x::op::TcxoVoltage;
 use sx126x::op::TxParams;
 use sx126x::SX126x;
-use ws2812_timer_delay::Ws2812;
+use usb_logger::setup_usb_serial;
+use ws2812_spi::Ws2812;
+use ws2812_spi::MODE;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
@@ -81,11 +93,11 @@ mod bmp581;
 mod futures;
 mod gps;
 mod ina219;
-mod logger;
 mod mission;
 mod radio;
 mod sdio;
 mod stepper;
+mod usb_logger;
 mod usb_msc;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
@@ -97,28 +109,24 @@ static mut DIO1_PIN: Option<Dio1Pin> = None;
 const RF_FREQUENCY: u32 = 868_000_000; // 868MHz (EU)
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
-static NEOPIXEL: Mutex<RefCell<Option<Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output>>>>> =
-    Mutex::new(RefCell::new(None));
+static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<SPI2>>>>> = Mutex::new(RefCell::new(None));
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
 static mut BUZZER_TIMER: Option<CounterMs<TIM13>> = None;
 static mut PYRO_TIMER: Option<CounterMs<TIM14>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
-static mut FS_ALLOC: Option<Allocation<W25QWrapper<OurFsInfo, Bank1>>> = None;
-static mut FLASH: Option<W25QWrapper<OurFsInfo, Bank1>> = None;
 
-pub static mut LOG_FILE: Option<String<128>> = None;
+pub const CAPACITY: usize = 16777216;
+static mut FLASH: Option<W25QWrapper<Bank1, CAPACITY>> = None;
 
-pub struct OurFsInfo;
-impl FSInfo for OurFsInfo {
-    const BLOCK_COUNT: usize = 4096;
-}
+const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
+const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
 #[entry]
 fn main() -> ! {
     let x = prog_main();
-    pin_mut!(x);
+    let x = core::pin::pin!(x);
     let mut cm = Cassette::new(x);
     loop {
         if let Some(_) = cm.poll_on() {
@@ -126,6 +134,20 @@ fn main() -> ! {
         }
     }
     loop {}
+}
+
+fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
+    channel: &mut PwmHz<TIM3, P>,
+    delay: &mut DELAY,
+    freq: fugit::HertzU32,
+    duration: fugit::MillisDurationU32,
+) {
+    let max_duty = channel.get_max_duty();
+    channel.set_duty(hal::timer::Channel::C2, max_duty / 2);
+    channel.enable(hal::timer::Channel::C2);
+    channel.set_period(freq);
+    delay.delay_ms(duration.to_millis());
+    channel.disable(hal::timer::Channel::C2);
 }
 
 async fn prog_main() {
@@ -142,7 +164,6 @@ async fn prog_main() {
             .ahb3enr
             .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
         let rcc = dp.RCC.constrain();
-
 
         let clocks = rcc
             .cfgr
@@ -165,11 +186,22 @@ async fn prog_main() {
         let mut timer = dp.TIM2.counter_hz(&clocks);
         timer.start(7.MHz()).unwrap();
 
-        const LED_NUM: usize = 4;
-        let mut pa9 = gpioa.pa9.into_push_pull_output();
-        pa9.set_speed(gpio::Speed::VeryHigh);
-        let mut neopixel = Ws2812::new(timer, pa9);
-        neopixel.write([[0, 5, 0]; 4].into_iter()).unwrap();
+        const LED_NUM: usize = 3;
+        let neopixel_spi = Spi::new(
+            dp.SPI2,
+            (NoPin::new(), NoPin::new(), {
+                let mut pc3 = gpioc.pc3.into_alternate();
+                pc3.set_speed(gpio::Speed::VeryHigh);
+                pc3
+            }),
+            MODE,
+            3.MHz(),
+            &clocks,
+        );
+        let mut neopixel = Ws2812::new(neopixel_spi);
+        let mut led_pin = gpioc.pc1.into_push_pull_output();
+
+        let mut data = [RGB8::default(); LED_NUM];
 
         let gpiod = dp.GPIOD.split();
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
@@ -203,8 +235,8 @@ async fn prog_main() {
                 &clocks,
             );
         }
-        let stepper_addr = 1;
-
+        // let stepper_addr = 1;
+        //
         // let stepper_serial = dp
         //     .USART2
         //     .serial(
@@ -270,7 +302,7 @@ async fn prog_main() {
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
-        let flash = W25Q::new(qspi).unwrap();
+        let mut flash = W25Q::new(qspi).unwrap();
 
         #[cfg(feature = "msc")]
         {
@@ -286,50 +318,6 @@ async fn prog_main() {
             loop {}
         }
 
-        let alloc = Filesystem::allocate();
-        let wrapper = W25QWrapper::new(flash);
-        let (flash, alloc) = unsafe {
-            FS_ALLOC.replace(alloc);
-            FLASH.replace(wrapper);
-            (FLASH.as_mut().unwrap(), FS_ALLOC.as_mut().unwrap())
-        };
-        let fs = Filesystem::mount(alloc, flash).unwrap();
-
-        if let Err(_) = fs.read_dir_and_then(path!("/"), |f| {
-            let mut last = 0;
-            for entry in f {
-                let entry = entry?;
-                if entry
-                    .file_name()
-                    .as_str_ref_with_trailing_nul()
-                    .starts_with("log")
-                {
-                    let num = entry
-                        .file_name()
-                        .as_str_ref_with_trailing_nul()
-                        .chars()
-                        .nth(3)
-                        .unwrap_or('0');
-                    let num = num.to_digit(16).unwrap_or(0);
-                    if num > last {
-                        last = num;
-                    }
-                }
-            }
-            let mut string = String::<128>::new();
-            string
-                .write_fmt(format_args!("log{:x}.txt", last + 1))
-                .unwrap();
-
-            unsafe {
-                LOG_FILE.replace(string);
-            }
-            Ok(())
-        })         {
-            panic!("Failed to read log dir");
-        }
-        // let config = fs.read(path!("config.json"));
-        // Config::build(config.unwrap());
         let gps_serial = dp
             .USART1
             .serial(
@@ -409,8 +397,30 @@ async fn prog_main() {
 
         Radio::init(lora, spi1, delay);
 
-        let board_id = 3;
-        let role = match board_id {
+        let mut wrapper = W25QWrapper::new(flash);
+
+        map::store_item(
+            &mut wrapper,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            &U64Item("id".try_into().unwrap(), 4),
+        )
+        .await
+        .unwrap();
+
+        let board_id: Result<Option<U64Item>, _> = map::fetch_item(
+            &mut wrapper,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 41],
+            "id".try_into().unwrap(),
+        )
+        .await;
+
+        hprintln!("{:?}", board_id);
+
+        let role = match 3 {
             5 => Role::Ground,
             3 | 4 => Role::Avionics,
             _ => Role::Cansat,
@@ -419,7 +429,7 @@ async fn prog_main() {
         unsafe { mission::ROLE = role };
 
         if role != Role::Ground {
-            setup_logger(fs).unwrap();
+            setup_logger(wrapper).unwrap();
         }
 
         let mut i2c2 = I2c::new(
@@ -482,13 +492,11 @@ async fn build_config() -> sx126x::conf::Config {
         .combine(IrqMaskBit::TxDone)
         .combine(IrqMaskBit::Timeout);
 
-    let packet_params = LoRaPacketParams {
-        payload_len: 255,
-        preamble_len: 0x12,
-        crc_type: sx126x::op::packet::lora::LoRaCrcType::CrcOn,
-        ..Default::default()
-    }
-    .into();
+    let packet_params = LoRaPacketParams::default()
+        .set_payload_len(255)
+        .set_crc_type(sx126x::op::packet::lora::LoRaCrcType::CrcOn)
+        .set_preamble_len(0x12)
+        .into();
 
     let rf_freq = sx126x::calc_rf_freq(RF_FREQUENCY as f32, F_XTAL as f32);
 

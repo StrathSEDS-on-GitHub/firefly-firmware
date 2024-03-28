@@ -1,0 +1,8 @@
+[package]
+name = "storage-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+heapless = "0.8.0"
+sequential-storage = { version= "1.0.0" }

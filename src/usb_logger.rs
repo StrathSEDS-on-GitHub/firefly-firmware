@@ -1,5 +1,6 @@
-use core::cell::RefCell;
+use core::{cell::RefCell, ptr::addr_of_mut};
 
+use cassette::block_on;
 use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use stm32f4xx_hal::{
     gpio::{alt::otg_fs, Input, Pin},
@@ -133,7 +134,7 @@ pub fn setup_usb_serial<'a>(
         hclk: clocks.hclk(),
     };
 
-    let usb_bus = UsbBus::new(usb, unsafe { &mut EP_MEMORY });
+    let usb_bus = UsbBus::new(usb, unsafe { &mut *addr_of_mut!(EP_MEMORY) });
     // SAFETY: This function is the only access of USB_BUS and it is only called once at init.
     // As a result we can use static mut.
     unsafe {
@@ -158,13 +159,7 @@ pub fn setup_usb_serial<'a>(
 impl core::fmt::Write for &Serial<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let future = self.log(s);
-        cassette::pin_mut!(future);
-        let mut cm = cassette::Cassette::new(future);
-        loop {
-            if let Some(_) = cm.poll_on() {
-                break;
-            }
-        }
+        block_on(future);
         Ok(())
     }
 }

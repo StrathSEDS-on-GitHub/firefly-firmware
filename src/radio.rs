@@ -13,13 +13,11 @@ use crate::mission::Role;
 use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
-use cortex_m::peripheral::NVIC;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::digital::v2::OutputPin;
-use fugit::ExtU32;
 use heapless::Deque;
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,19 +25,11 @@ use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
-use stm32f4xx_hal::pac::RTC;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
-use stm32f4xx_hal::timer;
-use stm32f4xx_hal::timer::CounterMs;
-use stm32f4xx_hal::timer::CounterUs;
-use stm32f4xx_hal::timer::Event;
 use stm32f4xx_hal::timer::SysDelay;
-use stm32f4xx_hal::ClearFlags;
-use stm32f4xx_hal::Listen;
-use sx126x::op::packet::lora::LoRaPacketParams;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
 use sx126x::op::RxTxTimeout;
@@ -176,7 +166,7 @@ impl
     }
 }
 
-pub static QUEUED_PACKETS: Mutex<RefCell<Deque<Message, 32>>> =
+static QUEUED_PACKETS: Mutex<RefCell<Deque<Message, 32>>> =
     Mutex::new(RefCell::new(Deque::new()));
 
 pub fn queue_packet(msg: Message) {
@@ -186,6 +176,7 @@ pub fn queue_packet(msg: Message) {
             queued_packets.clear();
             let _ = queued_packets.push_back(msg);
         }
+        drop(queued_packets);
     });
 }
 
@@ -336,6 +327,7 @@ fn set_radio() {
                     // No packets to transmit, stay idle
                 }
                 LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
+                drop(queued_packets);
             });
         }
         RadioState::Tx(other) | RadioState::Buffer(other) => {

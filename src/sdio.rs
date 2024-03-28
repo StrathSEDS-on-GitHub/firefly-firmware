@@ -1,17 +1,21 @@
 use core::cell::RefCell;
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
-use f4_w25q::fs::W25QWrapper;
+use f4_w25q::embedded_storage::W25QWrapper;
+use futures::TryFutureExt;
 use hal::qspi::Bank1;
-use littlefs2::fs::Filesystem;
-use littlefs2::path::PathBuf;
+use sequential_storage::cache::NoCache;
+use sequential_storage::queue;
 use stm32f4xx_hal::sdio::{SdCard, Sdio};
 
 use stm32f4xx_hal as hal;
+use time::macros::datetime;
 
-use crate::{OurFsInfo, RTC, LOG_FILE};
+use crate::{CAPACITY, LOGS_FLASH_RANGE, RTC};
 
 static mut LOGGER: Option<Logger> = Some(Logger {
     sd_logger: None,
@@ -19,7 +23,7 @@ static mut LOGGER: Option<Logger> = Some(Logger {
 });
 
 pub fn setup_logger<'a>(
-    flash: Filesystem<'static, W25QWrapper<OurFsInfo, Bank1>>,
+    flash: W25QWrapper<Bank1, CAPACITY>,
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     unsafe {
         LOGGER.replace(Logger {
@@ -30,7 +34,7 @@ pub fn setup_logger<'a>(
     Ok(())
 }
 
-pub fn get_logger() -> &'static mut Logger<'static> {
+pub fn get_logger() -> &'static mut Logger {
     unsafe { LOGGER.as_mut().unwrap() }
 }
 
@@ -104,45 +108,33 @@ impl BlockDevice for SdWrapper {
     }
 }
 
-pub struct Logger<'a> {
+pub struct Logger {
     sd_logger: Option<SdLogger>,
-    flash: Option<Filesystem<'a, W25QWrapper<OurFsInfo, Bank1>>>,
+    flash: Option<W25QWrapper<Bank1, CAPACITY>>,
 }
 
-impl Logger<'_> {
-    pub fn log(&mut self, fmt: fmt::Arguments) {
+impl Logger {
+    pub async fn log(&mut self, fmt: fmt::Arguments<'_>) {
         let mut buf = [0u8; 1024];
         let mut buf = FixedWriter(&mut buf, 0);
         write!(buf, "{}", fmt).unwrap();
-        self.log_str(unsafe { core::str::from_utf8_unchecked(&buf.0[..buf.1]) })
+        self.log_str(unsafe { core::str::from_utf8_unchecked(&buf.0[..buf.1]) }).await;
     }
 
-    pub fn log_str(&mut self, msg: &str) {
-        static BUF: Mutex<RefCell<[u8; 2048 * 4]>> = Mutex::new(RefCell::new([0u8; 2048 * 4]));
-        static OFFSET: Mutex<RefCell<usize>> = Mutex::new(RefCell::new(0));
-        cortex_m::interrupt::free(|cs| {
-            if *OFFSET.borrow(cs).borrow() > 8000 {
-                self.flash.as_mut().map(|f| {
-                    f.open_file_with_options_and_then(
-                        |o| o.append(true).create(true),
-                        &PathBuf::from(unsafe { LOG_FILE.as_ref().unwrap().as_bytes() }),
-                        |f| f.write(&BUF.borrow(cs).borrow()[..*OFFSET.borrow(cs).borrow()]),
-                    )
-                });
-                *OFFSET.borrow(cs).borrow_mut() = 0;
-            }
-            let mut buf = BUF.borrow(cs).borrow_mut();
-            let mut buf_writer = FixedWriter(buf.as_mut(), *OFFSET.borrow(cs).borrow());
-
-            let mut borrow = RTC.borrow(cs).borrow_mut();
-            let (h, m, s, millis) = borrow.as_mut().unwrap().get_datetime().as_hms_milli();
-            writeln!(
-                buf_writer,
-                "[{:02}:{:02}:{:02}.{:03}] {}",
-                h, m, s, millis, msg
-            )
-            .ok();
-            *OFFSET.borrow(cs).borrow_mut() = buf_writer.1;
+    pub async fn log_str(&mut self, msg: &str) {
+        let mut buffer = [0u8; 2048];
+        let buffer = cortex_m::interrupt::free(|cs| {
+            let mut rtc = RTC.borrow(cs).borrow_mut();
+            let (h,m,s,millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
+            let mut writer = FixedWriter(&mut buffer, 0);
+            let _ = write!(writer, "{:02}:{:02}:{:02}.{:03} {}\n", h, m, s, millis, msg);
+            &writer.0[..writer.1]
         });
+
+        if let Some(ref mut flash) = self.flash {
+            let x = queue::push(flash, LOGS_FLASH_RANGE, NoCache::new(), &buffer, false).await;
+            hprintln!("Wrote to flash: {:?}", x);
+            // Ignore the result, we can't do anything about it.
+        }
     }
 }

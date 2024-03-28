@@ -1,6 +1,6 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
+use cassette::block_on;
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use embedded_hal::blocking::i2c::WriteRead;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
@@ -12,12 +12,12 @@ use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12, TIM4},
-    timer::{self, CounterMs, Event}, ClearFlags,
+    timer::{self, CounterMs}, ClearFlags,
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
-    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
+    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, usb_logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -91,8 +91,8 @@ pub fn update_pyro_state() {
     };
 
     modify_pyro_state(mv);
-
-    get_logger().log(format_args!("pyro,{}", mv));
+    // FIXME: unfortunate. we should be able to submit this to the executor to avoid blocking.
+    block_on(get_logger().log(format_args!("pyro,{}", mv)));
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
@@ -108,7 +108,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
         }
         let frames = frames.unwrap();
         if sea_level_pressure == 0.0 {
-            let mut vec: Vec<f32, 15> = frames
+            let mut vec: Vec<f32, 16> = frames
                 .map(|frame| {
                     let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
                     pressure
@@ -133,7 +133,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
 
         if start_altitude == 0.0 {
             // If we don't have a start pressure, we can't do anything
-            let mut vec: Vec<f32, 15> = altitudes.clone().into_iter().collect();
+            let mut vec: Vec<f32, 16> = altitudes.clone().into_iter().collect();
             vec.sort_unstable_by(f32::total_cmp);
             start_altitude = vec[7..12].iter().sum::<f32>() / 5.0;
         }
@@ -151,7 +151,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
                     .count()
                     > 12
                 {
-                    get_logger().log_str("stage,detected ascent!");
+                    get_logger().log_str("stage,detected ascent!").await;
                     cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Ascent(s)));
                 }
             }
@@ -160,9 +160,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
                 let velocities = altitudes.windows(3).map(|w| w[2] - w[0]);
 
                 if velocities.filter(|v| *v < 0.05).count() > 10 {
-                    get_logger().log_str("stage,detected apogee");
+                    get_logger().log_str("stage,detected apogee").await;
                     if role() == Role::Avionics {
-                        get_logger().log_str("stage,firing drogue!");
+                        get_logger().log_str("stage,firing drogue!").await;
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::One, 1000).await;
                     }
@@ -174,9 +174,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
                 if altitudes.iter().filter(|a| **a < MAIN_DEPLOYMENT_HEIGHT).count() > 12 {
-                    get_logger().log_str("stage,detected main");
+                    get_logger().log_str("stage,detected main").await;
                     if role() == Role::Avionics {
-                        get_logger().log_str("stage,firing main!");
+                        get_logger().log_str("stage,firing main!").await;
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::Two, 1000).await;
                     }
@@ -189,9 +189,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
                 // If our average velocity is less than 1m/s, we must have landed
                 let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
                 if velocities_abs.clone().filter(|x| *x < 0.02).count() > 12 {
-                    get_logger().log_str("stage,detected entering landed stage");
+                    get_logger().log_str("stage,detected entering landed stage").await;
                     if role() == Role::Cansat {
-                        get_logger().log_str("stage,landed! firing pyro2!");
+                        get_logger().log_str("stage,landed! firing pyro2!").await;
                         fire_pyro(PyroPin::Two, 7000).await;
                     }
 
@@ -366,7 +366,7 @@ async fn gps_broadcast() -> ! {
                     gga.latitude.as_f64(),
                     gga.longitude.as_f64(),
                     gga.altitude.meters
-                ));
+                )).await;
                 i += 1;
             }
         }
@@ -418,7 +418,7 @@ async fn pressure_temp_handler(
                     temperatures[i / 4] = temperature;
                 }
 
-                get_logger().log(format_args!("pressure,{},{}", pressure, temperature));
+                get_logger().log(format_args!("pressure,{},{}", pressure, temperature)).await;
 
                 i += 1;
             }
@@ -672,7 +672,7 @@ where
             voltages[i % 8] = voltage;
             currents[i % 8] = current;
 
-            get_logger().log(format_args!("current,{},{}", current, voltage));
+            get_logger().log(format_args!("current,{},{}", current, voltage)).await;
             i = i.wrapping_add(1);
         }
 
@@ -696,12 +696,12 @@ where
 
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
-    let buzz = unsafe { BUZZER.as_mut().unwrap() };
-    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-    buzz.set_high();
-    timer.start(1000u32.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
-    buzz.set_low();
+    let _buzz = unsafe { BUZZER.as_mut().unwrap() };
+    let _timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+    //buzz.set_high();
+    //timer.start(1000u32.millis()).unwrap();
+    //NbFuture::new(|| timer.wait()).await.unwrap();
+    //buzz.set_low();
 
     while !matches!(
         cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get()),
