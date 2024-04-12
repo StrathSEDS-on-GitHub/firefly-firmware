@@ -9,7 +9,6 @@
 
 use crate::bmp581::BMP581;
 use crate::futures::NbFuture;
-use crate::ina219::INA219;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -80,7 +79,6 @@ use stm32f4xx_hal as hal;
 mod bmp581;
 mod futures;
 mod gps;
-mod ina219;
 mod mission;
 mod pins;
 mod radio;
@@ -382,15 +380,6 @@ async fn prog_main() {
             &clocks,
         );
 
-        let ina = if mission::role() == Role::Cansat {
-            let mut ina = INA219::new(&mut i2c2).unwrap();
-            ina.calibrate(87).unwrap();
-            Some(ina)
-        } else {
-            None
-        };
-        // let mut ina = INA219::new(&mut i2c2).unwrap();
-        // ina.calibrate(87).unwrap();
         let bmp = if mission::role() != Role::Ground {
             let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
             bmp.enable_pressure_temperature().unwrap();
@@ -402,9 +391,7 @@ async fn prog_main() {
 
         mission::begin(
             bmp,
-            ina,
             dp.TIM12.counter_ms(&clocks),
-            dp.TIM4.counter_ms(&clocks),
         )
         .await;
     }

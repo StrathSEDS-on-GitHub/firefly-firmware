@@ -11,13 +11,13 @@ use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
-    pac::{ADC1, TIM12, TIM4},
+    pac::{ADC1, TIM12},
     timer::{self, CounterMs}, ClearFlags,
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
-    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, ina219::INA219, usb_logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
+    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, usb_logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -644,56 +644,6 @@ pub async fn arm() {
     buzz.set_low()
 }
 
-async fn current_sensor_handler<E, I2C>(mut sensor: INA219<'_, E, I2C>, mut timer: CounterMs<TIM4>)
-where
-    I2C: WriteRead<Error = E> + embedded_hal::blocking::i2c::Write<Error = E>,
-    E: core::fmt::Debug,
-{
-    // Wait for FIFO to fill up.
-    timer.clear_flags(timer::Flag::Update);
-    timer.start(550.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
-    let mut voltages = [0; 8];
-    let mut currents = [0; 8];
-
-    let mut i = 0;
-    let mut start_time;
-    loop {
-        let time = current_rtc_time();
-        start_time = time.0 as u32 * 3_600_000
-            + time.1 as u32 * 60_000
-            + time.2 as u32 * 1000
-            + time.3 as u32;
-
-        let current = sensor.current();
-        let voltage = sensor.voltage();
-
-        if let (Ok(current), Ok(voltage)) = (current, voltage) {
-            voltages[i % 8] = voltage;
-            currents[i % 8] = current;
-
-            get_logger().log(format_args!("current,{},{}", current, voltage)).await;
-            i = i.wrapping_add(1);
-        }
-
-        if i % 8 == 0 && matches!(current_stage(), MissionStage::Landed(_)) {
-            let message = Message::CurrentSensorBroadcast {
-                counter: radio::next_counter(),
-                stage: current_stage(),
-                role: role(),
-                time_of_first_packet: start_time,
-                currents,
-                voltages,
-            };
-
-            radio::queue_packet(message);
-        }
-        timer.clear_flags(timer::Flag::Update);
-        timer.start(1000.millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
-    }
-}
-
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     let _buzz = unsafe { BUZZER.as_mut().unwrap() };
@@ -724,15 +674,10 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-pub async fn begin<E, I2C>(
+pub async fn begin(
     pressure_sensor: Option<BMP581>,
-    current_sensor: Option<INA219<'_, E, I2C>>,
     pr_timer: CounterMs<TIM12>,
-    i_timer: CounterMs<TIM4>,
 ) -> !
-where
-    I2C: WriteRead<Error = E> + embedded_hal::blocking::i2c::Write<Error = E>,
-    E: core::fmt::Debug,
 {
     match unsafe { ROLE } {
         Role::Ground =>
@@ -765,7 +710,6 @@ where
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
-                current_sensor_handler(current_sensor.unwrap(), i_timer)
             )
             .0
         }
