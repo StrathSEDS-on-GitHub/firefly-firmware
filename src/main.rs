@@ -19,6 +19,7 @@ use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use cassette::Cassette;
+use hal::timer::Counter;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
@@ -51,7 +52,6 @@ use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
 use hal::timer::CounterHz;
-use hal::timer::CounterMs;
 use hal::timer::PwmHz;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
@@ -99,9 +99,9 @@ const F_XTAL: u32 = 32_000_000; // 32MHz
 static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<NeopixelSPI>>>>> = Mutex::new(RefCell::new(None));
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
-static mut BUZZER_TIMER: Option<CounterMs<TIM13>> = None;
-static mut PYRO_TIMER: Option<CounterMs<TIM14>> = None;
 static mut BUZZER: Option<BuzzerPin> = None;
+static mut BUZZER_TIMER: Option<Counter<TIM13, 10000>> = None;
+static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
@@ -163,10 +163,10 @@ async fn prog_main() {
 
         let clocks = rcc
             .cfgr
-            .sysclk(48.MHz())
+            .sysclk(96.MHz())
             .use_hse(16.MHz())
             .pclk1(48.MHz())
-            .pclk2(48.MHz())
+            .pclk2(96.MHz())
             .require_pll48clk()
             .freeze();
 
@@ -174,8 +174,8 @@ async fn prog_main() {
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
             BUZZER.replace(buzzer_pin!(gpio));
-            BUZZER_TIMER.replace(dp.TIM13.counter_ms(&clocks));
-            PYRO_TIMER.replace(dp.TIM14.counter_ms(&clocks));
+            BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
+            PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
 
         let mut delay = cp.SYST.delay(&clocks);
@@ -391,7 +391,7 @@ async fn prog_main() {
 
         mission::begin(
             bmp,
-            dp.TIM12.counter_ms(&clocks),
+            dp.TIM12.counter(&clocks),
         )
         .await;
     }

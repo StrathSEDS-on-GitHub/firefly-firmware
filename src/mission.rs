@@ -12,7 +12,7 @@ use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12},
-    timer::{self, CounterMs}, ClearFlags,
+    timer::{self, Counter}, ClearFlags,
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
@@ -386,7 +386,7 @@ async fn gps_broadcast() -> ! {
 
 async fn pressure_temp_handler(
     mut sensor: BMP581,
-    mut timer: CounterMs<TIM12>,
+    mut timer: Counter<TIM12, 10000>,
     pressure_sender: StaticSender<[PressureTemp; 16]>,
 ) {
     // Wait for FIFO to fill up.
@@ -676,7 +676,7 @@ async fn buzzer_controller() -> ! {
 
 pub async fn begin(
     pressure_sensor: Option<BMP581>,
-    pr_timer: CounterMs<TIM12>,
+    pr_timer: Counter<TIM12, 10000>,
 ) -> !
 {
     match unsafe { ROLE } {
