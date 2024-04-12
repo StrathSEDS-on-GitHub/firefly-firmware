@@ -8,7 +8,7 @@
 #![no_std]
 
 use crate::bmp581::BMP581;
-use crate::hal::timer::TimerExt;
+use crate::futures::NbFuture;
 use crate::ina219::INA219;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
@@ -16,16 +16,15 @@ use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
+use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use cassette::Cassette;
-use core::convert::Infallible;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprint;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
@@ -41,11 +40,8 @@ use hal::gpio::Output;
 use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::i2c::I2c;
-use hal::pac::SPI2;
-use hal::pac::SPI3;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
-use hal::pac::TIM2;
 use hal::pac::TIM3;
 use hal::pac::TIM9;
 use hal::qspi::FlashSize;
@@ -55,20 +51,11 @@ use hal::rtc;
 use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
-use hal::timer::Channel2;
 use hal::timer::CounterHz;
 use hal::timer::CounterMs;
-use hal::timer::Pwm;
 use hal::timer::PwmHz;
-use hal::timer::C2;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use sequential_storage::queue;
-use smart_leds::gamma;
-use smart_leds::hsv::hsv2rgb;
-use smart_leds::hsv::Hsv;
-use smart_leds::SmartLedsWrite;
-use smart_leds::RGB8;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -81,6 +68,7 @@ use sx126x::SX126x;
 use usb_logger::setup_usb_serial;
 use ws2812_spi::Ws2812;
 use ws2812_spi::MODE;
+use smart_leds::SmartLedsWrite;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
@@ -94,6 +82,7 @@ mod futures;
 mod gps;
 mod ina219;
 mod mission;
+mod pins;
 mod radio;
 mod sdio;
 mod stepper;
@@ -109,12 +98,12 @@ static mut DIO1_PIN: Option<Dio1Pin> = None;
 const RF_FREQUENCY: u32 = 868_000_000; // 868MHz (EU)
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
-static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<SPI2>>>>> = Mutex::new(RefCell::new(None));
+static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<NeopixelSPI>>>>> = Mutex::new(RefCell::new(None));
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
-static mut BUZZER: Option<Pin<'E', 1, Output<PushPull>>> = None;
 static mut BUZZER_TIMER: Option<CounterMs<TIM13>> = None;
 static mut PYRO_TIMER: Option<CounterMs<TIM14>> = None;
+static mut BUZZER: Option<BuzzerPin> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
@@ -158,7 +147,16 @@ async fn prog_main() {
         let gpioa = dp.GPIOA.split();
         let gpiob = dp.GPIOB.split();
         let gpioc = dp.GPIOC.split();
+        let gpiod = dp.GPIOD.split();
         let gpioe = dp.GPIOE.split();
+
+        let gpio = GpioBuses {
+            a: gpioa,
+            b: gpiob,
+            c: gpioc,
+            d: gpiod,
+            e: gpioe,
+        };
 
         dp.RCC
             .ahb3enr
@@ -177,7 +175,7 @@ async fn prog_main() {
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
-            BUZZER.replace(gpioe.pe1.into_push_pull_output());
+            BUZZER.replace(buzzer_pin!(gpio));
             BUZZER_TIMER.replace(dp.TIM13.counter_ms(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter_ms(&clocks));
         }
@@ -188,22 +186,18 @@ async fn prog_main() {
 
         const LED_NUM: usize = 3;
         let neopixel_spi = Spi::new(
-            dp.SPI2,
+            neopixel_spi!(dp),
             (NoPin::new(), NoPin::new(), {
-                let mut pc3 = gpioc.pc3.into_alternate();
-                pc3.set_speed(gpio::Speed::VeryHigh);
-                pc3
+                let mut pin = neopixel_pin!(gpio).into_alternate();
+                pin.set_speed(gpio::Speed::VeryHigh);
+                pin
             }),
             MODE,
             3.MHz(),
             &clocks,
         );
         let mut neopixel = Ws2812::new(neopixel_spi);
-        let mut led_pin = gpioc.pc1.into_push_pull_output();
 
-        let mut data = [RGB8::default(); LED_NUM];
-
-        let gpiod = dp.GPIOD.split();
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
@@ -212,14 +206,14 @@ async fn prog_main() {
             NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
-                PYRO_MEASURE_PIN.replace(gpioc.pc0.into_analog());
+                PYRO_MEASURE_PIN.replace(gpio.c.pc0.into_analog());
                 PYRO_ENABLE_PIN.replace(
-                    gpiod
+                    gpio.d
                         .pd7
                         .into_push_pull_output_in_state(gpio::PinState::Low),
                 );
-                PYRO_FIRE2.replace(gpiod.pd6.into_push_pull_output());
-                PYRO_FIRE1.replace(gpiod.pd5.into_push_pull_output());
+                PYRO_FIRE2.replace(gpio.d.pd6.into_push_pull_output());
+                PYRO_FIRE1.replace(gpio.d.pd5.into_push_pull_output());
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });
@@ -230,60 +224,17 @@ async fn prog_main() {
                 dp.OTG_FS_GLOBAL,
                 dp.OTG_FS_DEVICE,
                 dp.OTG_FS_PWRCLK,
-                gpioa.pa11,
-                gpioa.pa12,
+                gpio.a.pa11,
+                gpio.a.pa12,
                 &clocks,
             );
         }
-        // let stepper_addr = 1;
-        //
-        // let stepper_serial = dp
-        //     .USART2
-        //     .serial(
-        //         (gpioa.pa2.into_alternate(), gpioa.pa3.into_alternate()),
-        //         hal::serial::config::Config {
-        //             baudrate: 9600.bps(),
-        //             dma: hal::serial::config::DmaConfig::TxRx,
-        //             ..Default::default()
-        //         },
-        //         &clocks,
-        //     )
-        //     .unwrap();
-        // stepper::setup(dp.DMA1, stepper_serial);
-        // let mut gconf = tmc2209::reg::GCONF::default();
-        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        // vactual.set(10);
-        // gconf.set_pdn_disable(true);
-        // gconf.set_internal_rsense(true);
 
-        // let STEPPER_ADDR = 1;
+        gpio.e.pe3.into_floating_input();
+        gpio.e.pe4.into_floating_input();
 
-        // loop {
-        //     let req = tmc2209::write_request(STEPPER_ADDR, gconf);
-        //     stepper::tx(req.bytes()).await;
-        //     delay.delay_ms(500u32);
-        //     let req = tmc2209::write_request(STEPPER_ADDR, vactual);
-        //     stepper::tx(req.bytes()).await;
-        //     cortex_m::interrupt::free(|cs| {
-        //         NEOPIXEL
-        //             .borrow(cs)
-        //             .borrow_mut()
-        //             .as_mut()
-        //             .unwrap()
-        //             .write([[0, 20, 0]; 4].into_iter())
-        //             .unwrap();
-        //     });
-        //     YieldFuture::new().await;
-        //     delay.delay_ms(1000u32);
-        // }
-
-        gpioe.pe3.into_floating_input();
-        gpioe.pe4.into_floating_input();
-
-        let i2c1 = I2c::new(dp.I2C1, (gpiob.pb8, gpiob.pb9), 100u32.kHz(), &clocks);
-        let streams = StreamsTuple::new(dp.DMA1);
-        let tx_stream = streams.1;
-        let rx_stream = streams.0;
+        let i2c1 = I2c::new(dp.I2C1, (gpio.b.pb8, gpio.b.pb7), 100u32.kHz(), &clocks);
+        // let mut imu = IcmImu::new(i2c1, 0x68).unwrap();
 
         unsafe {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM1);
@@ -292,9 +243,7 @@ async fn prog_main() {
 
         let qspi = Qspi::<Bank1>::new(
             dp.QUADSPI,
-            (
-                gpiob.pb6, gpiod.pd11, gpiod.pd12, gpioe.pe2, gpioa.pa1, gpiob.pb1,
-            ),
+            qspi_pins!(gpio),
             QspiConfig::default()
                 .address_size(hal::qspi::AddressSize::Addr24Bit)
                 .flash_size(FlashSize::from_megabytes(16))
@@ -302,7 +251,7 @@ async fn prog_main() {
                 .sample_shift(hal::qspi::SampleShift::HalfACycle),
         );
 
-        let mut flash = W25Q::new(qspi).unwrap();
+        let flash = W25Q::new(qspi).unwrap();
 
         #[cfg(feature = "msc")]
         {
@@ -310,8 +259,8 @@ async fn prog_main() {
                 dp.OTG_FS_GLOBAL,
                 dp.OTG_FS_DEVICE,
                 dp.OTG_FS_PWRCLK,
-                gpioa.pa11,
-                gpioa.pa12,
+                gpio.a.pa11,
+                gpio.a.pa12,
                 &clocks,
                 flash,
             );
@@ -321,7 +270,7 @@ async fn prog_main() {
         let gps_serial = dp
             .USART1
             .serial(
-                (gpioa.pa15.into_alternate(), gpioa.pa10.into_alternate()),
+                gps_pins!(gpio),
                 hal::serial::config::Config {
                     baudrate: 9600.bps(),
                     dma: hal::serial::config::DmaConfig::TxRx,
@@ -338,31 +287,27 @@ async fn prog_main() {
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         // ===== Init SPI1 =====
-        let spi1_sck = gpioa.pa5.into_alternate();
-        let spi1_miso = gpioa.pa6.into_floating_input();
-        let spi1_mosi = gpioa.pa7.into_alternate();
         let spi1_mode = spi::Mode {
             polarity: spi::Polarity::IdleLow,
             phase: spi::Phase::CaptureOnFirstTransition,
         };
         let spi1_freq = 100.kHz();
 
-        let spi1_pins = (spi1_sck, spi1_miso, spi1_mosi);
+        let (nss, sck, miso, mosi, nreset, busy, dio) = radio_pins!(gpio);
+
+        let spi1_pins = (sck, miso, mosi);
 
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
-        let lora_nreset = gpiob
-            .pb0
+        let lora_nreset = nreset
             .into_push_pull_output_in_state(gpio::PinState::High);
-        let lora_nss = gpioa
-            .pa4
-            .into_push_pull_output_in_state(gpio::PinState::High);
-        let lora_busy = gpioc.pc5.into_floating_input();
+        let lora_nss = nss            .into_push_pull_output_in_state(gpio::PinState::High);
+        let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
         // This is safe as long as the only other place we use DIO1_PIN is in the ISR
         let lora_dio1 = unsafe {
-            DIO1_PIN.replace(gpioc.pc4.into_floating_input());
+            DIO1_PIN.replace(dio.into_floating_input());
             DIO1_PIN.as_mut().unwrap()
         };
 
@@ -384,8 +329,6 @@ async fn prog_main() {
         );
 
         let conf = build_config().await;
-
-        delay.delay_ms(1000u32);
 
         let mut lora = SX126x::new(lora_pins);
         lora.init(&mut spi1, &mut delay, conf).unwrap();
@@ -434,7 +377,7 @@ async fn prog_main() {
 
         let mut i2c2 = I2c::new(
             dp.I2C3,
-            (gpioa.pa8.into_input(), gpiob.pb4.into_input()),
+            (gpio.a.pa8.into_input(), gpio.b.pb4.into_input()),
             100u32.kHz(),
             &clocks,
         );
