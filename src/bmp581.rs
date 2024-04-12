@@ -89,12 +89,12 @@ impl BMP581 {
         self.com.handle_dma_interrupt();
     }
 
-    pub fn read_fifo(&mut self) -> Result<[PressureTemp; 15], Error> {
-        let mut data = [0u8; 15 * 6];
+    pub fn read_fifo(&mut self) -> Result<[PressureTemp; 16], Error> {
+        let mut data = [0u8; 16 * 6];
         let mut frames = [PressureTemp {
             pressure: 0,
             temperature: 0,
-        }; 15];
+        }; 16];
 
         nb::block!(self.com.write_read(ADDR, &[0x29], &mut data)).unwrap();
 

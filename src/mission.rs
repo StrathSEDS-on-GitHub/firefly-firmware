@@ -1,7 +1,6 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cassette::block_on;
 use cortex_m::interrupt::Mutex;
-use embedded_hal::blocking::i2c::WriteRead;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
 use futures::join;

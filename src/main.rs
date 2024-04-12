@@ -7,8 +7,6 @@
 #![no_main]
 #![no_std]
 
-use crate::bmp581::BMP581;
-use crate::futures::NbFuture;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -32,14 +30,9 @@ use f4_w25q::embedded_storage::W25QWrapper;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
-use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::alt::quadspi::Bank1;
 use hal::gpio::NoPin;
-use hal::gpio::Output;
-use hal::gpio::Pin;
-use hal::gpio::PushPull;
-use hal::i2c::I2c;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM3;
@@ -194,7 +187,7 @@ async fn prog_main() {
             3.MHz(),
             &clocks,
         );
-        let mut neopixel = Ws2812::new(neopixel_spi);
+        let neopixel = Ws2812::new(neopixel_spi);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
@@ -230,9 +223,6 @@ async fn prog_main() {
 
         gpio.e.pe3.into_floating_input();
         gpio.e.pe4.into_floating_input();
-
-        let i2c1 = I2c::new(dp.I2C1, (gpio.b.pb8, gpio.b.pb7), 100u32.kHz(), &clocks);
-        // let mut imu = IcmImu::new(i2c1, 0x68).unwrap();
 
         unsafe {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM1);
@@ -373,18 +363,8 @@ async fn prog_main() {
             setup_logger(wrapper).unwrap();
         }
 
-        let mut i2c2 = I2c::new(
-            dp.I2C3,
-            (gpio.a.pa8.into_input(), gpio.b.pb4.into_input()),
-            100u32.kHz(),
-            &clocks,
-        );
-
         let bmp = if mission::role() != Role::Ground {
-            let mut bmp = BMP581::new(i2c1.use_dma(tx_stream, rx_stream)).unwrap();
-            bmp.enable_pressure_temperature().unwrap();
-            bmp.setup_fifo().unwrap();
-            Some(bmp)
+            None
         } else {
             None
         };

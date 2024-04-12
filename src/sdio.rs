@@ -1,19 +1,14 @@
 use core::cell::RefCell;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
-use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
 use f4_w25q::embedded_storage::W25QWrapper;
-use futures::TryFutureExt;
 use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;
 use sequential_storage::queue;
 use stm32f4xx_hal::sdio::{SdCard, Sdio};
 
 use stm32f4xx_hal as hal;
-use time::macros::datetime;
 
 use crate::{CAPACITY, LOGS_FLASH_RANGE, RTC};
 
@@ -132,8 +127,7 @@ impl Logger {
         });
 
         if let Some(ref mut flash) = self.flash {
-            let x = queue::push(flash, LOGS_FLASH_RANGE, NoCache::new(), &buffer, false).await;
-            hprintln!("Wrote to flash: {:?}", x);
+            let _ = queue::push(flash, LOGS_FLASH_RANGE, NoCache::new(), &buffer, false).await;
             // Ignore the result, we can't do anything about it.
         }
     }

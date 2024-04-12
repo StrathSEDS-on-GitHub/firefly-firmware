@@ -153,6 +153,7 @@ pub fn setup_usb_serial<'a>(
     unsafe {
         SERIAL = Some(Serial::new(serial, usb_dev));
         NVIC::unmask(pac::Interrupt::OTG_FS);
+        NVIC::unpend(pac::Interrupt::OTG_FS);
     };
 }
 

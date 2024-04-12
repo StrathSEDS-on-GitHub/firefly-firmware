@@ -21,7 +21,6 @@ use embedded_hal::digital::v2::OutputPin;
 use heapless::Deque;
 use serde::Deserialize;
 use serde::Serialize;
-use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
@@ -33,6 +32,7 @@ use stm32f4xx_hal::timer::SysDelay;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
 use sx126x::op::RxTxTimeout;
+use smart_leds::SmartLedsWrite;
 
 const MAX_PAYLOAD_SIZE: usize = 255;
 static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
