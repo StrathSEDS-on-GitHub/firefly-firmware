@@ -23,7 +23,9 @@ usbd-serial = "0.2"
 
 smart-leds = "0.3"
 ws2812-spi = "0.4"
-cassette = "0.2"
+embassy-executor = { version = "0.5.0", features = [ "executor-thread", "task-arena-size-32768", "arch-cortex-m" ] }
+embassy-futures = "0.1.1"
+
 futures = { version = "0.3", default-features = false, features= ["async-await"] }
 cortex-m-semihosting = "0.5.0"
 nmea0183 = { version = "0.3.0", path="nmea0183" }
