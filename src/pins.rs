@@ -1,8 +1,10 @@
 #![allow(unused_imports)]
+use bmp388::BMP388;
 use stm32f4xx_hal::{
-    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull},
-    pac::{SPI2, SPI3},
+    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull}, i2c::I2c, pac::{I2C1, SPI2, SPI3}
 };
+
+use crate::bmp581::BMP581;
 pub struct GpioBuses {
     pub a: gpioa::Parts,
     pub b: gpiob::Parts,
@@ -30,6 +32,12 @@ pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
 
 #[cfg(feature = "target-maxi")]
 pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
+
+#[cfg(feature = "target-mini")]
+pub type Altimeter = BMP388<I2c<I2C1>>;
+
+#[cfg(feature = "target-maxi")]
+pub type Altimeter = BMP581;
 
 #[macro_export]
 macro_rules! buzzer_pin {

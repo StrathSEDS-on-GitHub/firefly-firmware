@@ -2,7 +2,7 @@ use core::cell::RefCell;
 use core::fmt::{self, Write};
 
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
-use f4_w25q::embedded_storage::W25QWrapper;
+use f4_w25q::embedded_storage::W25QSequentialStorage;
 use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;
 use sequential_storage::queue;
@@ -18,7 +18,7 @@ static mut LOGGER: Option<Logger> = Some(Logger {
 });
 
 pub fn setup_logger<'a>(
-    flash: W25QWrapper<Bank1, CAPACITY>,
+    flash: W25QSequentialStorage<Bank1, CAPACITY>,
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     unsafe {
         LOGGER.replace(Logger {
@@ -105,7 +105,7 @@ impl BlockDevice for SdWrapper {
 
 pub struct Logger {
     sd_logger: Option<SdLogger>,
-    flash: Option<W25QWrapper<Bank1, CAPACITY>>,
+    flash: Option<W25QSequentialStorage<Bank1, CAPACITY>>,
 }
 
 impl Logger {

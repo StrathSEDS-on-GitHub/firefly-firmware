@@ -16,7 +16,7 @@ use stm32f4xx_hal::{
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
-    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, usb_logger::get_serial, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
+    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, usb_logger::get_serial, Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -384,7 +384,7 @@ async fn gps_broadcast() -> ! {
 }
 
 async fn pressure_temp_handler(
-    mut sensor: BMP581,
+    mut sensor: Altimeter,
     mut timer: Counter<TIM12, 10000>,
     pressure_sender: StaticSender<[PressureTemp; 16]>,
 ) {
@@ -674,7 +674,7 @@ async fn buzzer_controller() -> ! {
 }
 
 pub async fn begin(
-    pressure_sensor: Option<BMP581>,
+    pressure_sensor: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
 ) -> !
 {
@@ -692,7 +692,7 @@ pub async fn begin(
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                //pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver)
             )

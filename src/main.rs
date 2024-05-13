@@ -20,22 +20,25 @@ use hal::timer::Counter;
 use embassy_executor::Executor;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
-
+use bmp388::BMP388;
+use cassette::Cassette;
+use f4_w25q::embedded_storage::W25QSequentialStorage;
+use hal::qspi::Bank1;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
+use cortex_m::iprintln;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
 use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
-use f4_w25q::embedded_storage::W25QWrapper;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
 use hal::gpio;
-use hal::gpio::alt::quadspi::Bank1;
 use hal::gpio::NoPin;
+use hal::pac::ITM;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM3;
@@ -47,10 +50,12 @@ use hal::rtc;
 use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
+use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
+use smart_leds::SmartLedsWrite;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -63,7 +68,6 @@ use sx126x::SX126x;
 use usb_logger::setup_usb_serial;
 use ws2812_spi::Ws2812;
 use ws2812_spi::MODE;
-use smart_leds::SmartLedsWrite;
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
@@ -101,7 +105,7 @@ static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
-static mut FLASH: Option<W25QWrapper<Bank1, CAPACITY>> = None;
+static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
 
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
@@ -122,7 +126,7 @@ fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    if let (Some(mut dp), Some(cp)) = (
+    if let (Some(mut dp), Some(mut cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {
@@ -277,9 +281,8 @@ async fn main(_spawner: Spawner) {
 
         let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
-        let lora_nreset = nreset
-            .into_push_pull_output_in_state(gpio::PinState::High);
-        let lora_nss = nss            .into_push_pull_output_in_state(gpio::PinState::High);
+        let lora_nreset = nreset.into_push_pull_output_in_state(gpio::PinState::High);
+        let lora_nss = nss.into_push_pull_output_in_state(gpio::PinState::High);
         let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
@@ -318,7 +321,7 @@ async fn main(_spawner: Spawner) {
 
         Radio::init(lora, spi1, delay);
 
-        let mut wrapper = W25QWrapper::new(flash);
+        let mut wrapper = W25QSequentialStorage::new(flash);
 
         map::store_item(
             &mut wrapper,
@@ -354,16 +357,25 @@ async fn main(_spawner: Spawner) {
         }
 
         let bmp = if mission::role() != Role::Ground {
-            None
+            #[cfg(feature = "target-mini")]
+            {
+                Some({
+                    {
+                        let i2c = dp.I2C1.i2c((gpio.b.pb8, gpio.b.pb9), 400.kHz(), &clocks);
+                        BMP388::new(i2c).unwrap()
+                    }
+                })
+            }
+
+            #[cfg(feature = "target-maxi")]
+            {
+                None
+            }
         } else {
             None
         };
 
-        mission::begin(
-            bmp,
-            dp.TIM12.counter(&clocks),
-        )
-        .await;
+        mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
     }
 }
 
