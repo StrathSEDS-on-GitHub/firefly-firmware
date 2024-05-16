@@ -13,20 +13,15 @@ use stm32f4xx_hal::{
 };
 
 use crate::futures::YieldFuture;
-
-const ADDR: u8 = 0x46;
+use crate::altimeter::PressureTemp;
 
 pub type I2c1Handle =
     I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub struct PressureTemp {
-    pub pressure: u32,
-    pub temperature: u32,
-}
+const ADDR: u8 = 0x46;
 
 pub struct BMP581 {
-    com: I2c1Handle,
+    pub com: I2c1Handle,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -114,70 +109,3 @@ impl BMP581 {
     }
 }
 
-static BMP: Mutex<RefCell<Option<BMP581>>> = Mutex::new(RefCell::new(None));
-
-#[interrupt]
-fn DMA1_STREAM1() {
-    cortex_m::interrupt::free(|cs| {
-        let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().unwrap().handle_dma_interrupt();
-    });
-}
-
-#[interrupt]
-fn DMA1_STREAM0() {
-    cortex_m::interrupt::free(|cs| {
-        let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().unwrap().handle_dma_interrupt();
-    });
-}
-
-pub async fn read_fifo_dma(bmp: BMP581) -> ([PressureTemp; 16], BMP581) {
-    // SAFETY: As this takes exclusive access to the BMP581, it can be assumed that
-    // this function is not called concurrently, so static mut is safe.
-    static mut DATA: [u8; 16 * 6] = [0u8; 16 * 6];
-
-    static DONE: AtomicBool = AtomicBool::new(false);
-
-    unsafe {
-        cortex_m::interrupt::free(|cs| {
-            BMP.borrow(cs).replace(Some(bmp));
-            nb::block!(BMP
-                .borrow(cs)
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .com
-                .write_read_dma(
-                    ADDR,
-                    &[0x29],
-                    &mut *addr_of_mut!(DATA),
-                    Some(|_| {
-                        DONE.store(true, core::sync::atomic::Ordering::Release);
-                    }),
-                ))
-            .unwrap();
-        });
-    }
-
-    while !DONE.load(core::sync::atomic::Ordering::Acquire) {
-        YieldFuture::new().await;
-    }
-
-    DONE.store(false, core::sync::atomic::Ordering::Release);
-
-    let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
-
-    let frames: [PressureTemp; 16] = unsafe { DATA }
-        .chunks(6)
-        .map(|x| x.split_at(3))
-        .map(|(pres, temp)| PressureTemp {
-            pressure: (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-            temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
-        })
-        .collect::<Vec<_, 16>>()
-        .into_array()
-        .unwrap();
-
-    (frames, bmp)
-}

@@ -18,7 +18,7 @@ use sx126x::op::PacketStatus;
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    bmp581::PressureTemp,
+    altimeter::{AltimeterRead, PressureTemp},
     futures::{NbFuture, YieldFuture},
     gps,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
@@ -424,7 +424,7 @@ async fn pressure_temp_handler(
 
         while i < 4 * 8 {
             let frames;
-            (frames, sensor) = read_fifo_dma(sensor).await;
+            (frames, sensor) = read_altimeter_fifo(sensor).await;
             for frame in frames {
                 let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
                 let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);

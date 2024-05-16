@@ -17,7 +17,6 @@ use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use core::fmt::Write;
-use bmp388::BMP388;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
@@ -46,9 +45,9 @@ use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
+use hal::dma::StreamsTuple;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use smart_leds::SmartLedsWrite;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -80,6 +79,7 @@ mod stepper;
 mod usb_logger;
 mod usb_msc;
 mod neopixel;
+mod altimeter;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -265,6 +265,62 @@ async fn main(_spawner: Spawner) {
         gps::set_nmea_output().await;
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
+
+        let mut wrapper = W25QSequentialStorage::new(flash);
+
+        map::store_item(
+            &mut wrapper,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            &U64Item("id".try_into().unwrap(), 4),
+        )
+        .await
+        .unwrap();
+
+        let board_id: Result<Option<U64Item>, _> = map::fetch_item(
+            &mut wrapper,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 41],
+            "id".try_into().unwrap(),
+        )
+        .await;
+
+        let role = match board_id.unwrap().unwrap().1 {
+            5 => Role::Ground,
+            3 | 4 => Role::Avionics,
+            _ => Role::Cansat,
+        };
+
+        unsafe { mission::ROLE = role };
+
+        if role != Role::Ground {
+            setup_logger(wrapper).unwrap();
+        }
+
+        let bmp = if mission::role() != Role::Ground {
+            #[cfg(feature = "target-mini")]
+            {
+                Some({
+                    let streams = StreamsTuple::new(dp.DMA1);
+                    let tx_stream = streams.1;
+                    let rx_stream = streams.0;
+                    let i2c = dp.I2C1
+                        .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
+                        .use_dma(tx_stream, rx_stream);
+                    altimeter::BMP388Wrapper::new(i2c, &mut delay)
+                })
+            }
+
+            #[cfg(feature = "target-maxi")]
+            {
+                None
+            }
+        } else {
+            None
+        };
+
         // ===== Init SPI1 =====
         let spi1_mode = spi::Mode {
             polarity: spi::Polarity::IdleLow,
@@ -319,47 +375,6 @@ async fn main(_spawner: Spawner) {
         }
 
         Radio::init(lora, spi1, delay);
-
-        let board_id: Result<Option<U64Item>, _> = map::fetch_item(
-            &mut wrapper,
-            CONFIG_FLASH_RANGE,
-            NoCache::new(),
-            &mut [0; 41],
-            "id".try_into().unwrap(),
-        )
-        .await;
-
-        let board_id = board_id.unwrap().unwrap().1;
-        let role = match board_id {
-            1 => Role::Ground,
-            2 | 3 => Role::Avionics,
-            _ => Role::Cansat,
-        };
-
-        unsafe { mission::ROLE = role };
-
-        if role != Role::Ground {
-            setup_logger(wrapper).unwrap();
-        }
-
-        let bmp = if mission::role() != Role::Ground {
-            #[cfg(feature = "target-mini")]
-            {
-                Some({
-                    {
-                        let i2c = dp.I2C1.i2c((gpio.b.pb8, gpio.b.pb9), 400.kHz(), &clocks);
-                        BMP388::new(i2c).unwrap()
-                    }
-                })
-            }
-
-            #[cfg(feature = "target-maxi")]
-            {
-                None
-            }
-        } else {
-            None
-        };
 
         mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
     }

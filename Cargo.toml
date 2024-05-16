@@ -47,7 +47,7 @@ thingbuf = { version="0.1.0", default-features=false, features=["static"] }
 serde-json-core = "0.5.1"
 sequential-storage = { version= "1.0.0" }
 storage-types = { version="0.1.0", path="storage-types" }
-bmp388 = "0.1.0"
+bmp388 = { version="0.1.0", path="bmp388" }
 
 [dependencies.stm32f4xx-hal]
 version = "0.20"

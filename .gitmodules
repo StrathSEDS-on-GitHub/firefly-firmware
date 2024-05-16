@@ -16,3 +16,6 @@
 [submodule "host-tools/tui-menu"]
 	path = host-tools/tui-menu
 	url = https://github.com/X-yl/tui-menu
+[submodule "bmp388"]
+	path = bmp388
+	url = https://github.com/ibutra/bmp388
