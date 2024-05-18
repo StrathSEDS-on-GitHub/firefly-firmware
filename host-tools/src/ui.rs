@@ -4,14 +4,15 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, Paragraph, Wrap,
-    },
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 use tui_menu::Menu;
 
-use crate::{app::{App, Focus, PopupPhase}, flash::LOGS_FLASH_RANGE};
+use crate::{
+    app::{App, Focus, PopupPhase},
+    flash::LOGS_FLASH_RANGE,
+};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let area = f.size();
@@ -31,7 +32,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .fg(Color::Gray)
                 .bg(Color::from_u32(0x4466cc))
                 .bold(),
-        ).dropdown_width(24);
+        )
+        .dropdown_width(24);
 
     let config_section = ratatui::widgets::Block::default()
         .title("Config")
@@ -64,7 +66,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     );
 
     let mut logs_text = Text::default();
-    logs_text.extend(app.logs.text().lines.clone().into_iter().skip(app.logs.line));
+    logs_text.extend(
+        app.logs
+            .text()
+            .lines
+            .clone()
+            .into_iter()
+            .skip(app.logs.line),
+    );
 
     f.render_widget(
         &Span::styled(
@@ -113,19 +122,24 @@ fn ui_popup(f: &mut Frame<'_>, app: &mut App) {
     );
     f.render_widget(&popup_block, popup_area);
 
-    if let PopupPhase::Selection(state, items) = &mut app.popup_phase {
+    if let PopupPhase::Selection {
+        list_state,
+        devices,
+        instructions,
+        show_local,
+        ..
+    } = &mut app.popup_phase
+    {
         let [instructions_area, popup_menu_area] =
             Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
                 .areas(popup_area.inner(&Margin::new(4, 2)));
 
-        let instructions = Paragraph::new("Do you wish to sync from a device?")
+        let instructions = Paragraph::new(instructions as &str)
             .style(Style::new().fg(Color::Gray))
             .alignment(ratatui::layout::Alignment::Center);
-        let popup_menu = ratatui::widgets::List::new(
-            items
-                .clone()
-                .into_iter()
-                .map(|i| {
+        let popup_menu = ratatui::widgets::List::new({
+            let items: &mut dyn Iterator<Item = _> =
+                &mut devices.clone().into_iter().map(|i| {
                     Line::default().spans(
                         [
                             Span::styled("(SYNC) ", Style::new().fg(Color::Blue)),
@@ -144,8 +158,9 @@ fn ui_popup(f: &mut Frame<'_>, app: &mut App) {
                         ]
                         .into_iter(),
                     )
-                })
-                .chain(iter::once(
+                });
+            if *show_local {
+                items.chain(iter::once(
                     Line::default().spans(
                         [
                             Span::styled("(LOCAL)", Style::new().fg(Color::Blue)),
@@ -163,9 +178,11 @@ fn ui_popup(f: &mut Frame<'_>, app: &mut App) {
                         ]
                         .into_iter(),
                     ),
-                ))
-                .collect::<Vec<Line>>(),
-        )
+                )).collect::<Vec<Line>>()
+            } else {
+                items.collect::<Vec<Line>>()
+            }
+        })
         .style(Style::new().fg(Color::Gray))
         .highlight_style(
             Style::new()
@@ -173,15 +190,15 @@ fn ui_popup(f: &mut Frame<'_>, app: &mut App) {
                 .bg(Color::from_u32(0x4466cc))
                 .bold(),
         );
-        f.render_stateful_widget(&popup_menu, popup_menu_area, state);
+        f.render_stateful_widget(&popup_menu, popup_menu_area, list_state);
         f.render_widget(&instructions, instructions_area);
     }
-    if let PopupPhase::Progress(percent) = &app.popup_phase {
+    if let PopupPhase::Progress(message, percent, _) = &app.popup_phase {
         let [text, progress_area] =
             Layout::vertical([Constraint::Length(4), Constraint::Length(3)])
                 .areas(popup_area.inner(&Margin::new(4, 4)));
         f.render_widget(
-            Paragraph::new("Reading from device...")
+            Paragraph::new(message as &str)
                 .style(Style::new().fg(Color::Gray))
                 .alignment(ratatui::layout::Alignment::Center),
             text,

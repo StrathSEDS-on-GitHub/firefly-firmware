@@ -10,7 +10,7 @@ use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
-    },
+    }, thread::{self, sleep}, time::Duration,
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -18,15 +18,16 @@ use ratatui::{
     backend::Backend,
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{ListState, Paragraph},
+    widgets::{List, ListState, Paragraph},
     Terminal,
 };
 use sequential_storage::{cache::NoCache, map, queue};
+use serde_json::{Map, Value};
 use storage_types::U64Item;
 use syntect::{
     easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings,
 };
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot};
 use tui_menu::{MenuItem, MenuState};
 
 use crate::flash::{FileWrapper, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE};
@@ -43,10 +44,22 @@ pub enum Focus {
     Popup,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    Read,
+    Write,
+}
+
 #[derive(Debug)]
 pub enum PopupPhase {
-    Selection(ListState, Vec<Device>),
-    Progress(Arc<AtomicUsize>),
+    Selection {
+        list_state: ListState,
+        devices: Vec<Device>,
+        instructions: String,
+        show_local: bool,
+        reason: Reason,
+    },
+    Progress(String, Arc<AtomicUsize>, Reason),
     Error(bool),
     Closed,
 }
@@ -58,6 +71,7 @@ pub struct App {
     pub logs: Logs,
     pub popup_phase: PopupPhase,
     pub progress_done_channel: Option<oneshot::Receiver<()>>,
+    pub error_channel: Option<oneshot::Receiver<(bool, String)>>,
     pub abort_read_channel: Option<oneshot::Sender<()>>,
 }
 
@@ -87,16 +101,20 @@ impl App {
             focused: Focus::Popup,
             config: Config::default(),
             logs: Logs::default(),
-            popup_phase: PopupPhase::Selection(
-                ListState::default(),
-                get_devices()
+            popup_phase: PopupPhase::Selection {
+                list_state: ListState::default(),
+                devices: get_devices()
                     .unwrap()
                     .map(|d| d.unwrap())
-                    // .filter(|d| d.size == CONFIG_FLASH_RANGE.end as u64)
+                    .filter(|d| d.size == LOGS_FLASH_RANGE.end as u64)
                     .collect(),
-            ),
+                instructions: "Do you wish to sync from a device?".to_owned(),
+                show_local: true,
+                reason: Reason::Read,
+            },
             progress_done_channel: None,
             abort_read_channel: None,
+            error_channel: None,
         };
         s.focus(Focus::Popup);
         s
@@ -141,8 +159,8 @@ impl App {
                 }
             }
             Focus::Popup => match &mut self.popup_phase {
-                PopupPhase::Selection(state, _) => {
-                    state.select(state.selected().map(|s| s.saturating_sub(1)));
+                PopupPhase::Selection { list_state, .. } => {
+                    list_state.select(list_state.selected().map(|s| s.saturating_sub(1)));
                 }
                 _ => {}
             },
@@ -162,8 +180,12 @@ impl App {
                 self.logs.line = min(self.logs.line + 1, self.logs.text().lines.len() - 2);
             }
             Focus::Popup => match &mut self.popup_phase {
-                PopupPhase::Selection(state, items) => {
-                    state.select(state.selected().map(|s| min(s + 1, items.len())));
+                PopupPhase::Selection {
+                    list_state,
+                    devices,
+                    ..
+                } => {
+                    list_state.select(list_state.selected().map(|s| min(s + 1, devices.len())));
                 }
                 _ => {}
             },
@@ -180,7 +202,7 @@ impl App {
         match focus {
             Focus::Menu => self.menu.activate(),
             Focus::Popup => match &mut self.popup_phase {
-                PopupPhase::Selection(state, _) => state.select(0.into()),
+                PopupPhase::Selection { list_state, .. } => list_state.select(0.into()),
                 _ => {}
             },
             _ => {}
@@ -237,13 +259,14 @@ impl App {
             r#"{{
     "id": {}
 }}"#,
-            id.map(|x| x.1 as i64).unwrap_or(-1)
+            id.map(|x| x.1 as u64).unwrap_or(0)
         );
 
         let ss = syntect::parsing::SyntaxSet::load_defaults_newlines();
         let ts = syntect::highlighting::ThemeSet::load_defaults();
 
-        self.config = Config::new(&ss, &ts, config_str);
+        let json = serde_json::from_str(&config_str).unwrap();
+        self.config = Config::new(&ss, &ts, config_str, json);
     }
 
     pub async fn select(&mut self) {
@@ -252,56 +275,20 @@ impl App {
                 self.menu.select();
             }
             Focus::Popup => match &self.popup_phase {
-                PopupPhase::Selection(state, items) => {
-                    if let Some(i) = state.selected() {
-                        if i == items.len() {
-                            // Open existing flash.bin
-                            self.popup_phase = PopupPhase::Closed;
-                            self.load_flash().await;
-                            self.focus(Focus::Config);
+                PopupPhase::Selection {
+                    list_state,
+                    devices,
+                    reason,
+                    ..
+                } => {
+                    if let Some(i) = list_state.selected() {
+                        if *reason == Reason::Read {
+                            self.read_from_device(i).await.unwrap_or_else(|e| {
+                                self.error(true, Paragraph::new(format!("{:?}", e)));
+                            });
                         } else {
-                            // Sync from device
-                            let selected = items[i].clone();
-                            let percent = Arc::new(AtomicUsize::new(0));
-                            self.popup_phase = PopupPhase::Progress(percent.clone());
-
-                            let done_channel = oneshot::channel();
-                            let mut abort_channel = oneshot::channel();
-                            self.progress_done_channel = Some(done_channel.1);
-                            self.abort_read_channel = Some(abort_channel.0);
-
-                            tokio::spawn(async move {
-                                let mut device_file = std::fs::OpenOptions::new()
-                                    .read(true)
-                                    .open(selected.path)
-                                    .unwrap();
-
-                                let mut opts = std::fs::OpenOptions::new();
-                                opts.write(true).create(true).truncate(true);
-
-                                #[cfg(target_family = "unix")]
-                                {
-                                    use std::os::unix::fs::OpenOptionsExt;
-                                    opts.mode(0o777);
-                                }
-
-                                let mut flash_file = opts.open("flash.bin").unwrap();
-
-                                let mut buf = [0u8; 8192];
-                                let mut written = 0;
-                                while let Ok(n) = device_file.read(&mut buf) {
-                                    if n == 0 || abort_channel.1.try_recv().is_ok() {
-                                        break;
-                                    }
-                                    flash_file.write_all(&buf[..n]).unwrap();
-                                    written += n;
-                                    percent.store(
-                                        (written as f64 / selected.size as f64 * 100.0) as usize,
-                                        Ordering::Relaxed,
-                                    );
-                                }
-
-                                done_channel.0.send(()).unwrap();
+                            self.write_to_device(i).await.unwrap_or_else(|e| {
+                                self.error(true, Paragraph::new(format!("{:?}", e)));
                             });
                         }
                     }
@@ -311,12 +298,139 @@ impl App {
             _ => {}
         }
     }
+
+    async fn read_from_device(&mut self, i: usize) -> anyhow::Result<()> {
+        let devices = if let PopupPhase::Selection { devices, .. } = &self.popup_phase {
+            devices
+        } else {
+            unreachable!()
+        };
+        if i == devices.len() {
+            // Open existing flash.bin
+            self.popup_phase = PopupPhase::Closed;
+            self.load_flash().await;
+            self.focus(Focus::Config);
+        } else {
+            // Sync from device
+            let selected = devices[i].clone();
+            let percent = Arc::new(AtomicUsize::new(0));
+            self.popup_phase = PopupPhase::Progress(
+                "Reading from device..".to_owned(),
+                percent.clone(),
+                Reason::Read,
+            );
+
+            let done_channel = oneshot::channel();
+            let mut abort_channel = oneshot::channel();
+            self.progress_done_channel = Some(done_channel.1);
+            self.abort_read_channel = Some(abort_channel.0);
+
+            tokio::spawn(async move {
+                let mut device_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(selected.path)
+                    .unwrap();
+
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create(true).truncate(true);
+
+                #[cfg(target_family = "unix")]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o777);
+                }
+
+                let mut flash_file = opts.open("flash.bin").unwrap();
+
+                let mut buf = [0u8; 8192];
+                let mut written = 0;
+                while let Ok(n) = device_file.read(&mut buf) {
+                    if n == 0 || abort_channel.1.try_recv().is_ok() {
+                        break;
+                    }
+                    flash_file.write_all(&buf[..n]).unwrap();
+                    written += n;
+                    percent.store(
+                        (written as f64 / selected.size as f64 * 100.0) as usize,
+                        Ordering::Relaxed,
+                    );
+                }
+
+                done_channel.0.send(()).unwrap();
+            });
+        }
+        Ok(())
+    }
+    pub async fn write_to_device(&mut self, i: usize) -> anyhow::Result<()> {
+        let devices = if let PopupPhase::Selection { devices, .. } = &self.popup_phase {
+            devices
+        } else {
+            unreachable!()
+        };
+        let selected = devices[i].clone();
+        let percent = Arc::new(AtomicUsize::new(0));
+        self.popup_phase = PopupPhase::Progress(
+            "Writing to device..".to_owned(),
+            percent.clone(),
+            Reason::Write,
+        );
+        self.focus(Focus::Popup);
+
+        let done_channel = oneshot::channel();
+        let err_channel = oneshot::channel();
+        self.progress_done_channel = Some(done_channel.1);
+        self.error_channel = Some(err_channel.1);
+
+        let json = self.config.json.clone();
+        let device_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(selected.path)?;
+
+        let mut flash_wrapper = FileWrapper::new(device_file);
+
+        let total_keys = json.len();
+
+        tokio::spawn(async move {
+            for (i, (key, value)) in json.iter().enumerate() {
+                if let Value::Number(value) = value {
+                    if let Err(e) = map::store_item(
+                        &mut flash_wrapper,
+                        CONFIG_FLASH_RANGE,
+                        NoCache::new(),
+                        &mut [0; 2048],
+                        &U64Item(
+                            (key as &str)
+                                .try_into()
+                                .expect(&format!("Key {} is too long", key)),
+                            value.as_u64().unwrap(),
+                        ),
+                    )
+                    .await {
+                        err_channel
+                            .0
+                            .send((true, format!("{:?}", e))).unwrap();
+                        return;
+                    }
+                }
+                percent.store(
+                    (i as f64 / total_keys as f64 * 100.0) as usize,
+                    Ordering::Relaxed,
+                );
+            }
+
+            done_channel.0.send(()).unwrap();
+        });
+
+        Ok(())
+    }
 }
 
 #[derive(Default)]
 pub struct Config {
     pub own: OwnedString<Text<'static>>,
     pub line: usize,
+    pub json: serde_json::Map<String, Value>,
 }
 
 #[derive(Default)]
@@ -369,7 +483,12 @@ impl<T> Deref for OwnedString<T> {
 }
 
 impl Config {
-    fn new<'a, 'b>(ss: &'a SyntaxSet, ts: &'a ThemeSet, config_str: String) -> Self {
+    fn new<'a, 'b>(
+        ss: &'a SyntaxSet,
+        ts: &'a ThemeSet,
+        config_str: String,
+        json: Map<String, Value>,
+    ) -> Self {
         Config {
             own: OwnedString::new(config_str, move |config_str2: &'static str| {
                 let mut text: Text = Text::default();
@@ -399,6 +518,7 @@ impl Config {
                 text
             }),
             line: 0,
+            json,
         }
     }
 }
@@ -526,13 +646,47 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
 
                         std::fs::remove_file(&edit_file_path).unwrap();
 
+                        let new_config_str = String::from_utf8_lossy(&buf);
+                        let json =
+                            serde_json::from_str::<serde_json::Map<String, Value>>(&new_config_str);
+
+                        if json.is_err() {
+                            app.error(false, Paragraph::new("Invalid JSON"));
+                            continue;
+                        }
+
+                        let json = json.unwrap();
+
+                        for value in json.values() {
+                            if value.is_null() || !(value.is_u64()) {
+                                app.error(false, Paragraph::new("JSON contains invalid values"));
+                                continue;
+                            }
+                        }
+
+
                         app.config = Config::new(
                             &syntect::parsing::SyntaxSet::load_defaults_newlines(),
                             &syntect::highlighting::ThemeSet::load_defaults(),
-                            String::from_utf8_lossy(&buf).to_string(),
+                            new_config_str.to_string(),
+                            json,
                         );
 
                         terminal.clear().unwrap();
+                    }
+                    "sync.device" => {
+                        app.popup_phase = PopupPhase::Selection {
+                            list_state: ListState::default(),
+                            devices: get_devices()
+                                .unwrap()
+                                .map(|d| d.unwrap())
+                                .filter(|d| d.size == LOGS_FLASH_RANGE.end as u64)
+                                .collect(),
+                            instructions: "Choose a device to write to".to_owned(),
+                            show_local: false,
+                            reason: Reason::Write,
+                        };
+                        app.focus(Focus::Popup);
                     }
                     _ => {
                         println!("Selected: {}", item);
@@ -543,10 +697,19 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
 
         if let Some(ref mut rx) = app.progress_done_channel {
             if let Ok(()) = rx.try_recv() {
+                if let PopupPhase::Progress(_, _, Reason::Read) = app.popup_phase {
+                    app.load_flash().await;
+                }
                 app.progress_done_channel = None;
+
                 app.popup_phase = PopupPhase::Closed;
-                app.load_flash().await;
                 app.focus(Focus::Config);
+            }
+        }
+
+        if let Some(ref mut rx) = app.error_channel {
+            if let Ok((critical, message)) = rx.try_recv() {
+                app.error(critical, Paragraph::new(message));
             }
         }
         terminal.draw(|f| ui::ui(f, &mut app))?;

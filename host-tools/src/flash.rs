@@ -48,7 +48,6 @@ impl NorFlash for FileWrapper {
         self.file
             .seek(std::io::SeekFrom::Start(address as u64))
             .unwrap();
-        println!("Writing {} bytes to {:x}", data.len(), address);
         self.file.write_all(data).unwrap();
         Ok(())
     }
