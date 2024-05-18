@@ -15,13 +15,10 @@ use usb_device::{
 };
 use usbd_serial::SerialPort;
 
-use crate::futures::UsbFuture;
-
 use embassy_futures::block_on;
 
 struct Logger {
     serial: Option<Serial<'static>>,
-    
 }
 
 static mut SERIAL: Option<Serial> = None;
@@ -63,57 +60,64 @@ impl<'a> Serial<'a> {
         let mut write_offset = 0;
         let buf = buf.as_bytes();
         let count = buf.len();
+        if count == 0 {
+            return;
+        }
 
-        UsbFuture::new(
-            || {
-                cortex_m::interrupt::free(|cs| {
-                    let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
-                    while write_offset < count {
-                        match serial_port.write(&buf[write_offset..count]) {
-                            Ok(len) => {
-                                if len > 0 {
-                                    write_offset += len;
-                                };
-                            }
-                            Err(e) => return Err(e),
-                        }
+        loop {
+            match cortex_m::interrupt::free(|cs| {
+                let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
+                serial_port.write(&buf[write_offset..count])
+            }) {
+                Ok(n) => {
+                    write_offset += n;
+                    if write_offset == count {
+                        return;
                     }
-                    serial_port.flush()
-                })
-            },
-            || self.poll(),
-        )
-        .await
-        .unwrap();
+                }
+                Err(UsbError::WouldBlock) => {
+                    crate::futures::usb_wake::future().await;
+                }
+                Err(_) => {
+                    // ain't nothing we can do
+                    break;
+                }
+            }
+        }
     }
 
     pub fn read_no_block(&self, buffer: &mut [u8]) -> Result<usize, UsbError> {
         cortex_m::interrupt::free(|cs| {
             let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
-            serial_port.flush()?;
             serial_port.read(buffer)
         })
     }
 
     pub async fn read<'b>(&self, buffer: &'b mut [u8]) -> Result<&'b [u8], UsbError> {
-        let n = UsbFuture::new(
-            || {
-                cortex_m::interrupt::free(|cs| {
-                    let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
-                    serial_port.read(buffer)
-                })
-            },
-            || self.poll(),
-        )
-        .await?;
-        Ok(&buffer[..n])
+        loop {
+            match cortex_m::interrupt::free(|cs| {
+                let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
+                serial_port.read(buffer)
+            }) {
+                Ok(n) => return Ok(&buffer[..n]),
+                Err(UsbError::WouldBlock) => {
+                    crate::futures::usb_wake::future().await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     pub fn poll(&self) -> bool {
         cortex_m::interrupt::free(|cs| {
             let mut serial_port = self.serial_port.borrow(cs).borrow_mut();
             let mut usb_dev = self.usb_device.borrow(cs).borrow_mut();
-            usb_dev.poll(&mut [&mut *serial_port])
+            let poll = usb_dev.poll(&mut [&mut *serial_port]);
+            if poll {
+                // Required to clear the interrupt
+                let _ = serial_port.read(&mut []);
+            }
+            poll
         })
     }
 }
@@ -169,5 +173,8 @@ impl core::fmt::Write for &Serial<'_> {
 #[cfg(not(feature = "msc"))]
 #[interrupt]
 fn OTG_FS() {
+    use crate::interrupt_wake;
+
     get_serial().poll();
+    interrupt_wake!(crate::futures::usb_wake);
 }
