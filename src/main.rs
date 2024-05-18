@@ -7,6 +7,7 @@
 #![no_main]
 #![no_std]
 
+use crate::futures::NbFuture;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -21,7 +22,6 @@ use embassy_executor::Executor;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use bmp388::BMP388;
-use cassette::Cassette;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use hal::qspi::Bank1;
 use core::fmt::Write;
@@ -50,7 +50,6 @@ use hal::rtc;
 use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
-use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
 use sequential_storage::cache::NoCache;
@@ -323,16 +322,6 @@ async fn main(_spawner: Spawner) {
 
         let mut wrapper = W25QSequentialStorage::new(flash);
 
-        map::store_item(
-            &mut wrapper,
-            CONFIG_FLASH_RANGE,
-            NoCache::new(),
-            &mut [0; 1024],
-            &U64Item("id".try_into().unwrap(), 4),
-        )
-        .await
-        .unwrap();
-
         let board_id: Result<Option<U64Item>, _> = map::fetch_item(
             &mut wrapper,
             CONFIG_FLASH_RANGE,
@@ -342,11 +331,10 @@ async fn main(_spawner: Spawner) {
         )
         .await;
 
-        let board_id = 3; // TODO : dont
-                          // fs.read::<1>(path!("/board_id")).unwrap()[0] - b'0';
+        let board_id = board_id.unwrap().unwrap().1;
         let role = match board_id {
-            5 => Role::Ground,
-            3 | 4 => Role::Avionics,
+            1 => Role::Ground,
+            2 | 3 => Role::Avionics,
             _ => Role::Cansat,
         };
 
