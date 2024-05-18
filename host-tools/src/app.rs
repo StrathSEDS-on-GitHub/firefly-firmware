@@ -10,7 +10,9 @@ use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
-    }, thread::{self, sleep}, time::Duration,
+    },
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -27,7 +29,7 @@ use storage_types::U64Item;
 use syntect::{
     easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings,
 };
-use tokio::{sync::oneshot};
+use tokio::sync::oneshot;
 use tui_menu::{MenuItem, MenuState};
 
 use crate::flash::{FileWrapper, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE};
@@ -243,6 +245,56 @@ impl App {
         .await
         .unwrap();
 
+        let sf: Option<U64Item> = map::fetch_item(
+            &mut file,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            "sf".try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let bw: Option<U64Item> = map::fetch_item(
+            &mut file,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            "bw".try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let cr: Option<U64Item> = map::fetch_item(
+            &mut file,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            "cr".try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let power: Option<U64Item> = map::fetch_item(
+            &mut file,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            "power".try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let rf_freq: Option<U64Item> = map::fetch_item(
+            &mut file,
+            CONFIG_FLASH_RANGE,
+            NoCache::new(),
+            &mut [0; 1024],
+            "rf_freq".try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+
         let mut logs = queue::peek_many(&mut file, LOGS_FLASH_RANGE, NoCache::new())
             .await
             .unwrap();
@@ -257,9 +309,19 @@ impl App {
 
         let config_str = format!(
             r#"{{
-    "id": {}
+    "id": {},
+    "sf": {},
+    "bw": {},
+    "cr": {},
+    "power": {},
+    "rf_freq": {}
 }}"#,
-            id.map(|x| x.1 as u64).unwrap_or(0)
+            id.map(|x| x.1 as u64).unwrap_or(0),
+            sf.map(|x| x.1 as u64).unwrap_or(0),
+            bw.map(|x| x.1 as u64).unwrap_or(0),
+            cr.map(|x| x.1 as u64).unwrap_or(0),
+            power.map(|x| x.1 as u64).unwrap_or(0),
+            rf_freq.map(|x| x.1 as u64).unwrap_or(0),
         );
 
         let ss = syntect::parsing::SyntaxSet::load_defaults_newlines();
@@ -406,10 +468,9 @@ impl App {
                             value.as_u64().unwrap(),
                         ),
                     )
-                    .await {
-                        err_channel
-                            .0
-                            .send((true, format!("{:?}", e))).unwrap();
+                    .await
+                    {
+                        err_channel.0.send((true, format!("{:?}", e))).unwrap();
                         return;
                     }
                 }
@@ -663,7 +724,6 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
                                 continue;
                             }
                         }
-
 
                         app.config = Config::new(
                             &syntect::parsing::SyntaxSet::load_defaults_newlines(),
