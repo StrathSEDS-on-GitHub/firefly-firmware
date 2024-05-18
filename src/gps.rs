@@ -24,7 +24,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, NEOPIXEL, RTC};
+use crate::{futures::YieldFuture, interrupt_wake, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -58,8 +58,6 @@ static RX_TRANSFER: Mutex<
 static RX_BUFFER: Mutex<RefCell<Option<&'static mut [u8; RX_BUFFER_SIZE]>>> =
     Mutex::new(RefCell::new(None));
 
-static TX_COMPLETE: AtomicBool = AtomicBool::new(false);
-static RX_COMPLETE: AtomicBool = AtomicBool::new(false);
 static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
 
 const RX_BUFFER_SIZE: usize = 1024;
@@ -122,7 +120,6 @@ pub async fn set_nmea_output() {
 }
 
 pub async fn change_baudrate(baudrate: u32) {
-    //gps_tx_complete().await;
     cortex_m::interrupt::free(|cs| {
         let tx_transfer = TX_TRANSFER.borrow(cs).replace(None).unwrap();
         let rx_transfer = RX_TRANSFER.borrow(cs).replace(None).unwrap();
@@ -180,9 +177,7 @@ pub async fn change_baudrate(baudrate: u32) {
         );
         rx_transfer.start(|_rx| {});
 
-        RX_COMPLETE.store(false, Ordering::SeqCst);
         RX_BYTES_READ.store(0, Ordering::SeqCst);
-        // SAFETY: Mutex makes access of static mutable variable safe
         TX_TRANSFER.borrow(cs).replace(Some(tx_transfer));
         RX_TRANSFER.borrow(cs).replace(Some(rx_transfer));
     });
@@ -206,7 +201,7 @@ pub async fn next_sentence() -> ParseResult {
             return x;
         }
 
-        YieldFuture::new().await;
+        crate::futures::gps_rx_wake::future().await;
     }
 }
 
@@ -224,7 +219,7 @@ fn DMA2_STREAM7() {
 
         if transfer.is_transfer_complete() {
             transfer.clear_transfer_complete();
-            TX_COMPLETE.store(true, Ordering::Relaxed);
+            interrupt_wake!(crate::futures::gps_tx_wake);
         }
     });
 }
@@ -325,7 +320,7 @@ fn DMA2_STREAM2() {
                 .0
                 .try_into()
                 .unwrap();
-            RX_COMPLETE.store(true, Ordering::SeqCst);
+            interrupt_wake!(crate::futures::gps_rx_wake);
             RX_BYTES_READ.store(rx_buf.len(), Ordering::SeqCst);
             RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
         }
@@ -351,7 +346,7 @@ fn USART1() {
             .0
             .try_into()
             .unwrap();
-        RX_COMPLETE.store(true, Ordering::SeqCst);
+        interrupt_wake!(crate::futures::gps_rx_wake);
         RX_BYTES_READ.store(bytes as usize, Ordering::SeqCst);
 
         RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
@@ -360,32 +355,17 @@ fn USART1() {
 }
 
 async fn gps_tx_complete() {
-    loop {
-        if TX_COMPLETE.load(Ordering::SeqCst) {
-            break;
-        }
-
-        YieldFuture::new().await;
-    }
+    crate::futures::gps_tx_wake::future().await;
 }
 
 async fn gps_rx_complete() {
-    loop {
-        if RX_COMPLETE.load(Ordering::SeqCst) {
-            break;
-        }
-
-        YieldFuture::new().await;
-    }
+    crate::futures::gps_rx_wake::future().await;
 }
 
 pub async fn tx(tx_buf: &[u8]) {
-    gps_tx_complete().await;
     cortex_m::interrupt::free(|cs| {
         let mut tx_transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
         let tx_transfer = tx_transfer_ref.as_mut().unwrap();
-        TX_COMPLETE.store(false, Ordering::SeqCst);
-        // SAFETY: not double buffered.
         unsafe {
             tx_transfer
                 .next_transfer_with(|buf, _| {
@@ -401,20 +381,17 @@ pub async fn tx(tx_buf: &[u8]) {
 pub async fn rx(rx_buf: &mut [u8]) -> usize {
     gps_rx_complete().await;
     cortex_m::interrupt::free(|cs| {
-        // SAFETY: not double buffered.
         let mut buf_ref = RX_BUFFER.borrow(cs).borrow_mut();
         let buf = buf_ref.as_mut().unwrap();
         let bytes_available = RX_BYTES_READ.load(Ordering::SeqCst) as usize;
 
         let bytes_copied = min(rx_buf.len(), bytes_available);
         rx_buf[..bytes_copied].copy_from_slice(&buf[..bytes_copied]);
-        RX_COMPLETE.store(bytes_available - bytes_copied != 0, Ordering::SeqCst);
         RX_BYTES_READ.store(bytes_available - bytes_copied, Ordering::SeqCst);
 
         for i in bytes_copied..bytes_available {
             buf[i - bytes_copied] = buf[i]
         }
-        // hprintln!("{:?}", core::str::from_utf8(&rx_buf[..bytes_copied]));
         bytes_copied
     })
 }
