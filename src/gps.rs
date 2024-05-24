@@ -1,7 +1,7 @@
 use core::{
     cell::RefCell,
     cmp::min,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
@@ -239,11 +239,10 @@ fn set_rtc(time: Time) {
 
         cortex_m::interrupt::free(|cs| {
             let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
-            neo_ref
+            let _ = neo_ref
                 .as_mut()
                 .unwrap()
-                .write([[0, 0, 255]].into_iter())
-                .unwrap();
+                .write([[0, 0, 255]].into_iter());
         });
     });
 }

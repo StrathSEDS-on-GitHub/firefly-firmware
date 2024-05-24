@@ -1,7 +1,7 @@
 use core::{
     future::Future,
     pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     task::Waker,
 };
 use thingbuf::mpsc::{errors::TrySendError, StaticSender};

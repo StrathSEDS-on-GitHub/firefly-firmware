@@ -1,22 +1,30 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
-use embedded_hal::digital::v2::OutputPin;
 use embassy_futures::block_on;
+use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
 use futures::join;
-use heapless::Vec;
+use heapless::{Deque, Vec};
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12},
-    timer::{self, Counter}, ClearFlags,
+    timer::{self, Counter},
+    ClearFlags,
 };
-use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
+use sx126x::op::PacketStatus;
+use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    bmp581::{read_fifo_dma, PressureTemp, BMP581}, futures::{NbFuture, YieldFuture}, gps, radio::{self, Message, RECEIVED_MESSAGE_QUEUE}, sdio::get_logger, usb_logger::get_serial, Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC
+    bmp581::PressureTemp,
+    futures::{NbFuture, YieldFuture},
+    gps,
+    radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
+    sdio::get_logger,
+    usb_logger::get_serial,
+    Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -172,7 +180,12 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
             }
             MissionStage::DescentDrogue(s) => {
                 // At 300m, fire main
-                if altitudes.iter().filter(|a| **a < MAIN_DEPLOYMENT_HEIGHT).count() > 12 {
+                if altitudes
+                    .iter()
+                    .filter(|a| **a < MAIN_DEPLOYMENT_HEIGHT)
+                    .count()
+                    > 12
+                {
                     get_logger().log_str("stage,detected main").await;
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing main!").await;
@@ -188,7 +201,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
                 // If our average velocity is less than 1m/s, we must have landed
                 let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
                 if velocities_abs.clone().filter(|x| *x < 0.02).count() > 12 {
-                    get_logger().log_str("stage,detected entering landed stage").await;
+                    get_logger()
+                        .log_str("stage,detected entering landed stage")
+                        .await;
                     if role() == Role::Cansat {
                         get_logger().log_str("stage,landed! firing pyro2!").await;
                         fire_pyro(PyroPin::Two, 7000).await;
@@ -360,12 +375,14 @@ async fn gps_broadcast() -> ! {
                     altitudes[i / 2] = gga.altitude.meters;
                 }
 
-                get_logger().log(format_args!(
-                    "gps,{},{},{}",
-                    gga.latitude.as_f64(),
-                    gga.longitude.as_f64(),
-                    gga.altitude.meters
-                )).await;
+                get_logger()
+                    .log(format_args!(
+                        "gps,{},{},{}",
+                        gga.latitude.as_f64(),
+                        gga.longitude.as_f64(),
+                        gga.altitude.meters
+                    ))
+                    .await;
                 i += 1;
             }
         }
@@ -383,6 +400,7 @@ async fn gps_broadcast() -> ! {
     }
 }
 
+/*
 async fn pressure_temp_handler(
     mut sensor: Altimeter,
     mut timer: Counter<TIM12, 10000>,
@@ -440,7 +458,7 @@ async fn pressure_temp_handler(
 
         radio::queue_packet(message);
     }
-}
+}*/
 
 async fn handle_incoming_packets() -> ! {
     let mut idempotency_counter = 0;
@@ -472,7 +490,7 @@ async fn handle_incoming_packets() -> ! {
                         )
                         .unwrap();
 
-                        let rssi = radio::get_rssi();
+                        let rssi = radio::get_packet_status().rssi_pkt();
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
@@ -495,7 +513,7 @@ async fn handle_incoming_packets() -> ! {
                             temperatures
                         )
                         .unwrap();
-                        let rssi = radio::get_rssi();
+                        let rssi = radio::get_packet_status().rssi_pkt();
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
@@ -522,7 +540,7 @@ async fn handle_incoming_packets() -> ! {
                             voltages
                         )
                         .unwrap();
-                        let rssi = radio::get_rssi();
+                        let rssi = radio::get_packet_status().rssi_pkt();
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
@@ -706,7 +724,7 @@ pub async fn begin(
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                //cpressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
             )

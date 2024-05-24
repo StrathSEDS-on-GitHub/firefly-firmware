@@ -7,7 +7,6 @@
 #![no_main]
 #![no_std]
 
-use crate::futures::NbFuture;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -17,32 +16,26 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
-use hal::timer::Counter;
-use embassy_executor::Executor;
-use embassy_executor::Spawner;
-use embassy_futures::block_on;
-use bmp388::BMP388;
-use f4_w25q::embedded_storage::W25QSequentialStorage;
-use hal::qspi::Bank1;
 use core::fmt::Write;
+use bmp388::BMP388;
 use cortex_m::interrupt::Mutex;
-use cortex_m::iprintln;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
+use embassy_executor::Spawner;
 use embedded_hal::blocking::delay::DelayMs;
+use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
 use hal::gpio;
 use hal::gpio::NoPin;
-use hal::pac::ITM;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM3;
 use hal::pac::TIM9;
+use hal::qspi::Bank1;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
@@ -50,6 +43,7 @@ use hal::rtc;
 use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
+use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
 use sequential_storage::cache::NoCache;
@@ -72,7 +66,6 @@ use core::cell::RefCell;
 use core::panic::PanicInfo;
 
 use crate::hal::{pac, prelude::*};
-use cortex_m_rt::entry;
 use stm32f4xx_hal as hal;
 
 mod bmp581;
@@ -184,6 +177,12 @@ async fn main(_spawner: Spawner) {
         let neopixel = Ws2812::new(neopixel_spi);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
+        rtc.enable_wakeup(1000u32.millis().into());
+
+        pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
+        unsafe {
+            pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
+        }
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
         cortex_m::interrupt::free(|cs| {
@@ -308,7 +307,9 @@ async fn main(_spawner: Spawner) {
             lora_dio1,   // D6
         );
 
-        let conf = build_config().await;
+        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
+
+        let conf = build_config(&mut wrapper).await;
 
         let mut lora = SX126x::new(lora_pins);
         lora.init(&mut spi1, &mut delay, conf).unwrap();
@@ -319,8 +320,6 @@ async fn main(_spawner: Spawner) {
         }
 
         Radio::init(lora, spi1, delay);
-
-        let mut wrapper = W25QSequentialStorage::new(flash);
 
         let board_id: Result<Option<U64Item>, _> = map::fetch_item(
             &mut wrapper,
@@ -367,21 +366,114 @@ async fn main(_spawner: Spawner) {
     }
 }
 
-async fn build_config() -> sx126x::conf::Config {
+async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx126x::conf::Config {
     use sx126x::op::{
         modulation::lora::*, packet::lora::LoRaPacketParams, rxtx::DeviceSel::SX1262,
         PacketType::LoRa,
     };
 
+    let sf: U64Item = map::fetch_item(
+        flash,
+        CONFIG_FLASH_RANGE,
+        NoCache::new(),
+        &mut [0; 128],
+        "sf".try_into().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap_or(U64Item("".try_into().unwrap(), 7));
+    let sf = match sf.1 {
+        7 => LoRaSpreadFactor::SF7,
+        8 => LoRaSpreadFactor::SF8,
+        9 => LoRaSpreadFactor::SF9,
+        10 => LoRaSpreadFactor::SF10,
+        11 => LoRaSpreadFactor::SF11,
+        12 => LoRaSpreadFactor::SF12,
+        _ => panic!("Invalid spread factor"),
+    };
+
+    let bw: U64Item = map::fetch_item(
+        flash,
+        CONFIG_FLASH_RANGE,
+        NoCache::new(),
+        &mut [0; 128],
+        "bw".try_into().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap_or(U64Item("".try_into().unwrap(), 250));
+
+    let bw = match bw.1 {
+        7 => LoRaBandWidth::BW7,
+        10 => LoRaBandWidth::BW10,
+        15 => LoRaBandWidth::BW15,
+        20 => LoRaBandWidth::BW20,
+        31 => LoRaBandWidth::BW31,
+        41 => LoRaBandWidth::BW41,
+        62 => LoRaBandWidth::BW62,
+        125 => LoRaBandWidth::BW125,
+        250 => LoRaBandWidth::BW250,
+        500 => LoRaBandWidth::BW500,
+        _ => panic!("Invalid bandwidth"),
+    };
+
+    let cr: U64Item = map::fetch_item(
+        flash,
+        CONFIG_FLASH_RANGE,
+        NoCache::new(),
+        &mut [0; 128],
+        "cr".try_into().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap_or(U64Item("".try_into().unwrap(), 8));
+
+    let cr = match cr.1 {
+        5 => LoraCodingRate::CR4_5,
+        6 => LoraCodingRate::CR4_6,
+        7 => LoraCodingRate::CR4_7,
+        8 => LoraCodingRate::CR4_8,
+        _ => panic!("Invalid coding rate"),
+    };
+
+    let power: U64Item = map::fetch_item(
+        flash,
+        CONFIG_FLASH_RANGE,
+        NoCache::new(),
+        &mut [0; 128],
+        "power".try_into().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap_or(U64Item("".try_into().unwrap(), 22));
+    let power = power.1;
+    if power > 22 {
+        panic!("Invalid power");
+    }
+
+    let rf_freq: U64Item = map::fetch_item(
+        flash,
+        CONFIG_FLASH_RANGE,
+        NoCache::new(),
+        &mut [0; 128],
+        "rf_freq".try_into().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap_or(U64Item("".try_into().unwrap(), 868_000_000));
+
+    let rf_freq = rf_freq.1;
+
     let mod_params = LoraModParams::default()
-        .set_spread_factor(LoRaSpreadFactor::SF7)
-        .set_bandwidth(LoRaBandWidth::BW250)
-        .set_coding_rate(LoraCodingRate::CR4_8)
+        .set_spread_factor(sf)
+        .set_bandwidth(bw)
+        .set_coding_rate(cr)
         .into();
 
     let tx_params = TxParams::default()
-        .set_power_dbm(22)
+        .set_power_dbm(power as i8)
         .set_ramp_time(RampTime::Ramp200u);
+
     let pa_config = PaConfig::default()
         .set_device_sel(SX1262)
         .set_pa_duty_cycle(0x04)
@@ -398,7 +490,7 @@ async fn build_config() -> sx126x::conf::Config {
         .set_preamble_len(0x12)
         .into();
 
-    let rf_freq = sx126x::calc_rf_freq(RF_FREQUENCY as f32, F_XTAL as f32);
+    let rf_freq = sx126x::calc_rf_freq(rf_freq as f32, F_XTAL as f32);
 
     sx126x::conf::Config {
         packet_type: LoRa,

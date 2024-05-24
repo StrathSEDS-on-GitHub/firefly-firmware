@@ -13,12 +13,12 @@ use crate::mission::Role;
 use crate::Dio1PinRefMut;
 use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::digital::v2::OutputPin;
 use heapless::Deque;
+use heapless::String;
 use serde::Deserialize;
 use serde::Serialize;
 use stm32f4xx_hal::gpio::Output;
@@ -31,6 +31,7 @@ use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::timer::SysDelay;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
+use sx126x::op::PacketStatus;
 use sx126x::op::RxTxTimeout;
 use smart_leds::SmartLedsWrite;
 
@@ -77,7 +78,7 @@ fn EXTI4() {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Message {
     GpsBroadCast {
         counter: u16,
@@ -172,7 +173,7 @@ static QUEUED_PACKETS: Mutex<RefCell<Deque<Message, 32>>> =
 pub fn queue_packet(msg: Message) {
     cortex_m::interrupt::free(|cs| {
         let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
-        if let Err(_) = queued_packets.push_back(msg) {
+        if let Err(msg) = queued_packets.push_back(msg) {
             queued_packets.clear();
             let _ = queued_packets.push_back(msg);
         }
@@ -261,7 +262,7 @@ fn receive_message() {
             let mut msg_queue = RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut();
             msg_queue
                 .push_back(message)
-                .or_else(|_| {
+                .or_else(|message| {
                     msg_queue.pop_front();
                     msg_queue.push_back(message)
                 })
@@ -292,11 +293,10 @@ fn set_radio() {
             RadioState::Tx(Role::Cansat) => 55,
             _ => 0,
         };
-        neo_ref
+        let _ = neo_ref
             .as_mut()
             .unwrap()
-            .write([[r, g, b]].into_iter())
-            .unwrap();
+            .write([[r, g, b]].into_iter());
     });
 
     match state {
@@ -370,7 +370,7 @@ fn set_radio() {
     }
 }
 
-pub fn get_rssi() -> f32 {
+pub fn get_packet_status() -> PacketStatus {
     cortex_m::interrupt::free(|cs| {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
         let radio = radio_ref.as_mut().unwrap();
@@ -378,6 +378,5 @@ pub fn get_rssi() -> f32 {
             .radio
             .get_packet_status(&mut radio.spi, &mut radio.delay)
             .unwrap()
-            .rssi_pkt()
     })
 }
