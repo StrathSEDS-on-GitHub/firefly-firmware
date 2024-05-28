@@ -515,21 +515,11 @@ pub fn panic(info: &PanicInfo) -> ! {
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
     timer.start(4.Hz()).ok();
-    // cortex_m::interrupt::free(|cs| {
-    //     let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
-    //     let neo = neo_ref.as_mut().unwrap();
-    //     loop {
-    //         neo.write([[255, 0, 0]; 4].into_iter()).unwrap();
-    //         nb::block!(timer.wait()).ok();
-    //         neo.write([[0, 0, 0]; 4].into_iter()).unwrap();
-    //         nb::block!(timer.wait()).ok();
-    //     }
-    // });
 
     loop {
-        neopixel::update_pixel(2, [255,0,0]);
+        neopixel::update_pixel(1, [255,0,0]);
         nb::block!(timer.wait()).ok();
-        neopixel::update_pixel(2, [0,0,0]);
+        neopixel::update_pixel(1, [0,0,0]);
         nb::block!(timer.wait()).ok();    
     }
 

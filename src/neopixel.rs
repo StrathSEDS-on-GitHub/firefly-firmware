@@ -6,27 +6,17 @@ use stm32f4xx_hal::spi::Spi;
 use crate::pins::NeopixelSPI;
 use stm32f4xx_hal::pac::SPI2;
 
-    // n: Ws2812<CounterHz<TIM2>, Pin<'A', 9, Output>>;
 static BUFFER: Mutex<RefCell<[[u8; 3]; 4]>> = Mutex::new(RefCell::new([[0,0,0]; 4]));
 pub static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<NeopixelSPI>>>>> = Mutex::new(RefCell::new(None));
 
-/*
-Creates a new neopixel controller with the given neopixel and timer.
- */
-    /*
-    Creates a new neopixel controller with the given neopixel. If the neopixel is Some, 
-    then the buffer is written to the neopixel.
-     */
+    /// Creates a new neopixel controller passing a neopixel SPI Bus.
     pub fn new_neopixel(neopixel_spi: ws2812_spi::Ws2812<Spi<SPI2>>) {
         cortex_m::interrupt::free(|cs| {
             NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel_spi);
         });
     }
 
-    /*
-    Updates the pixel at the given index with the given color. If the neopixel is Some, 
-    the buffer is written to the neopixel.
-     */
+    /// Updates the color of a given neopixel, with a given RGB value.
     pub fn update_pixel(pixel: usize, color: [u8; 3]) {
 
         let color = [color[0] as u8, color[1] as u8, color[2] as u8];
