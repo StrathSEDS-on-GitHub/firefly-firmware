@@ -16,7 +16,7 @@ use stm32f4xx_hal::{pac};
 use usb_device::prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 use usbd_scsi::{BlockDevice, Scsi};
 
-use crate::{usb_logger::USB_BUS, EP_MEMORY, NEOPIXEL};
+use crate::{usb_logger::USB_BUS, EP_MEMORY, neopixel::NEOPIXEL};
 
 pub static mut USB_STORAGE: Option<Scsi<UsbBusType, Storage>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<UsbBusType>> = None;

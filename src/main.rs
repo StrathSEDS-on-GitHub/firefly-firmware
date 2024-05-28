@@ -62,6 +62,7 @@ use usb_logger::setup_usb_serial;
 use ws2812_spi::Ws2812;
 use ws2812_spi::MODE;
 
+
 use core::cell::RefCell;
 use core::panic::PanicInfo;
 
@@ -88,8 +89,6 @@ static mut DIO1_PIN: Option<Dio1Pin> = None;
 
 const RF_FREQUENCY: u32 = 868_000_000; // 868MHz (EU)
 const F_XTAL: u32 = 32_000_000; // 32MHz
-
-static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<NeopixelSPI>>>>> = Mutex::new(RefCell::new(None));
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
 static mut BUZZER: Option<BuzzerPin> = None;
@@ -160,17 +159,22 @@ async fn main(_spawner: Spawner) {
         }
 
         let mut delay = cp.SYST.delay(&clocks);
-        let mut timer = dp.TIM2.counter_hz(&clocks);
-        timer.start(7.MHz()).unwrap();
 
-        const LED_NUM: usize = 4;
-        let mut pa9 = gpioa.pa9.into_push_pull_output();
-        pa9.set_speed(gpio::Speed::VeryHigh);
-        let mut neopixel = Ws2812::new(timer, pa9);
+        const LED_NUM: usize = 3;
+        let neopixel_spi = Spi::new(
+            neopixel_spi!(dp),
+            (NoPin::new(), NoPin::new(), {
+                let mut pin = neopixel_pin!(gpio).into_alternate();
+                pin.set_speed(gpio::Speed::VeryHigh);
+                pin
+            }),
+            MODE,
+            3.MHz(),
+            &clocks,
+        );
 
-        let neopixel = neopixel::new_neopixel(neopixel, timer, pa9);
-        neopixel::update_pixel(0, [0, 5, 0]);
-        
+        neopixel::new_neopixel(Ws2812::new(neopixel_spi));
+        neopixel::update_pixel(0, [0, 255, 0]);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.enable_wakeup(1000u32.millis().into());
@@ -183,7 +187,6 @@ async fn main(_spawner: Spawner) {
 
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
-            NEOPIXEL.borrow(cs).borrow_mut().replace(neopixel);
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpio.c.pc0.into_analog());
@@ -512,16 +515,24 @@ pub fn panic(info: &PanicInfo) -> ! {
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
     timer.start(4.Hz()).ok();
-    cortex_m::interrupt::free(|cs| {
-        let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
-        let neo = neo_ref.as_mut().unwrap();
-        loop {
-            neo.write([[255, 0, 0]; 4].into_iter()).unwrap();
-            nb::block!(timer.wait()).ok();
-            neo.write([[0, 0, 0]; 4].into_iter()).unwrap();
-            nb::block!(timer.wait()).ok();
-        }
-    });
+    // cortex_m::interrupt::free(|cs| {
+    //     let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
+    //     let neo = neo_ref.as_mut().unwrap();
+    //     loop {
+    //         neo.write([[255, 0, 0]; 4].into_iter()).unwrap();
+    //         nb::block!(timer.wait()).ok();
+    //         neo.write([[0, 0, 0]; 4].into_iter()).unwrap();
+    //         nb::block!(timer.wait()).ok();
+    //     }
+    // });
+
+    loop {
+        neopixel::update_pixel(2, [255,0,0]);
+        nb::block!(timer.wait()).ok();
+        neopixel::update_pixel(2, [0,0,0]);
+        nb::block!(timer.wait()).ok();    
+    }
+
     unreachable!();
 }
 

@@ -11,7 +11,7 @@ use crate::mission::MissionStage;
 use crate::mission::PyroPin;
 use crate::mission::Role;
 use crate::Dio1PinRefMut;
-use crate::NEOPIXEL;
+use crate::neopixel::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
