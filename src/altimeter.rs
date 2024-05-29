@@ -21,7 +21,7 @@ use crate::pins::Altimeter;
 use crate::bmp581::I2c1Handle;
 use crate::bmp581::BMP581;
 
-const BMP388_FRAME_COUNT: usize = 16;
+const BMP388_FRAME_COUNT: usize = 73;
 const BMP388_BUF_SIZE:    usize = 512;
 const BMP581_FRAME_COUNT: usize = 16;
 const BMP581_BUF_SIZE:    usize = BMP581_FRAME_COUNT * 6;
@@ -145,7 +145,7 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
                     (false, true, true) => {
                         // pressure & temp
                         let t = &data[i+1 .. i+4];
-                        let p = &data[i+4 .. i+8];
+                        let p = &data[i+4 .. i+7];
                         output.push(frame_to_reading(p, t));
                         i += 7;
                     },
