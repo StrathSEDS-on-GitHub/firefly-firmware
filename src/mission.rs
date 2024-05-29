@@ -18,7 +18,7 @@ use sx126x::op::PacketStatus;
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    altimeter::{AltimeterRead, PressureTemp},
+    altimeter::PressureTemp,
     futures::{NbFuture, YieldFuture},
     gps,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},

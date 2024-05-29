@@ -265,8 +265,7 @@ async fn main(_spawner: Spawner) {
         gps::set_nmea_output().await;
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
-
-        let mut wrapper = W25QSequentialStorage::new(flash);
+        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
 
         map::store_item(
             &mut wrapper,
@@ -287,17 +286,14 @@ async fn main(_spawner: Spawner) {
         )
         .await;
 
-        let role = match board_id.unwrap().unwrap().1 {
-            5 => Role::Ground,
-            3 | 4 => Role::Avionics,
+        let board_id = board_id.unwrap().unwrap().1;
+        let role = match board_id {
+            1 => Role::Ground,
+            2 | 3 => Role::Avionics,
             _ => Role::Cansat,
         };
 
         unsafe { mission::ROLE = role };
-
-        if role != Role::Ground {
-            setup_logger(wrapper).unwrap();
-        }
 
         let bmp = if mission::role() != Role::Ground {
             #[cfg(feature = "target-mini")]
@@ -362,7 +358,6 @@ async fn main(_spawner: Spawner) {
             lora_dio1,   // D6
         );
 
-        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
 
         let conf = build_config(&mut wrapper).await;
 
@@ -375,6 +370,10 @@ async fn main(_spawner: Spawner) {
         }
 
         Radio::init(lora, spi1, delay);
+
+        if role != Role::Ground {
+            setup_logger(wrapper).unwrap();
+        }
 
         mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
     }
