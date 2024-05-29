@@ -1,5 +1,5 @@
 use bmp388::{BMP388, Blocking, config::FifoConfig};
-use heapless::Vec;
+use heapless::{Vec, Deque};
 use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use stm32f4xx_hal::{
@@ -52,16 +52,23 @@ impl BMP388Wrapper {
     }
 }
 
-pub trait AltimeterDMA<
+pub trait AltimeterFifoDMA<
     const FRAMES: usize, const BUF_SIZE: usize
 >: I2CMasterWriteReadDMA {
     const FIFO_READ_REG: u8;
     const ADDRESS: u8;
     fn dma_interrupt(&mut self);
-    fn process_buffer(data: [u8; BUF_SIZE]) -> [PressureTemp; FRAMES];
+    fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> [PressureTemp; FRAMES];
 }
 
-impl AltimeterDMA<BMP581_FRAME_COUNT, BMP581_BUF_SIZE> for BMP581 {
+fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
+    PressureTemp {
+        pressure:    (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
+        temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
+    }
+}
+
+impl AltimeterFifoDMA<BMP581_FRAME_COUNT, BMP581_BUF_SIZE> for BMP581 {
     const FIFO_READ_REG: u8 = 0x29;
     const ADDRESS: u8 = 0x46;
 
@@ -69,16 +76,13 @@ impl AltimeterDMA<BMP581_FRAME_COUNT, BMP581_BUF_SIZE> for BMP581 {
         self.com.handle_dma_interrupt();
     }
 
-    fn process_buffer(
+    fn process_fifo_buffer(
         data: [u8; BMP581_BUF_SIZE]
     ) -> [PressureTemp; BMP581_FRAME_COUNT] {
         data
         .chunks(6)
         .map(|x| x.split_at(3))
-        .map(|(pres, temp)| PressureTemp {
-            pressure: (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-            temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
-        })
+        .map(|(pres, temp)| frame_to_reading(pres, temp))
         .collect::<Vec<_, 16>>()
         .into_array()
         .unwrap()
@@ -97,7 +101,7 @@ impl I2CMasterWriteReadDMA for BMP581 {
     }
 }
 
-impl AltimeterDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
+impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
     const FIFO_READ_REG: u8 = 0x14;
     const ADDRESS: u8 = 0x77;
 
@@ -105,11 +109,63 @@ impl AltimeterDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
         self.bmp.com.handle_dma_interrupt();
     }
 
-    fn process_buffer(
+    fn process_fifo_buffer(
         data: [u8; BMP388_BUF_SIZE]
     ) -> [PressureTemp; BMP388_FRAME_COUNT] {
-         
-        panic!()
+        let mut i: usize = 0;
+        let mut output = Vec::<PressureTemp, BMP388_FRAME_COUNT>::new();
+
+        while i < BMP388_FRAME_COUNT {
+            let header = data[i];
+            let fh_mode = (header >> 6) & 0b11;
+            let fh_param = (header >> 2) & 0b1111;
+            let p = (fh_param & 1) != 0;
+            let t = ((fh_param >> 2) & 1) != 0;
+            let s = ((fh_param >> 3) & 1) != 0;
+
+            // TODO: log invalid frames
+            match fh_mode {
+                0b01 => {
+                    // Config change or error
+                    i += 2;
+                },
+                0b10 => match (s, t, p) { // Data frame
+                    (true, false, false) => {
+                        // sensortime 
+                        i += 4;
+                    },
+                    (false, true, false) => {
+                        // temp only
+                        i += 4;
+                    },
+                    (false, false, true) => {
+                        // pressure only
+                        i += 4;
+                    },
+                    (false, true, true) => {
+                        // pressure & temp
+                        let t = &data[i+1 .. i+4];
+                        let p = &data[i+4 .. i+8];
+                        output.push(frame_to_reading(p, t));
+                        i += 7;
+                    },
+                    (false, false, false) => {
+                        // Empty
+                        i += 2;
+                    },
+                    _ => {
+                        // Invalid
+                        break;
+                    }
+                },
+                _ => {
+                    // Invalid
+                    break;
+                }
+            }
+        }
+        output.resize(BMP388_FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 });
+        output.into_array().unwrap()
     }
 }
 
@@ -160,6 +216,7 @@ pub async fn read_altimeter_fifo(
 ) -> ([PressureTemp; ALTIMETER_FRAME_COUNT], Altimeter) {
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
     static DONE: AtomicBool = AtomicBool::new(false);
+
     unsafe {
         cortex_m::interrupt::free(|cs| {
             BMP.borrow(cs).replace(Some(bmp));
@@ -183,12 +240,11 @@ pub async fn read_altimeter_fifo(
     while !DONE.load(core::sync::atomic::Ordering::Acquire) {
         YieldFuture::new().await;
     }
-
     DONE.store(false, core::sync::atomic::Ordering::Release);
 
     let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
 
-    let frames = Altimeter::process_buffer(unsafe{DATA});
+    let frames = Altimeter::process_fifo_buffer(unsafe{DATA});
 
     (frames, bmp)
 }
