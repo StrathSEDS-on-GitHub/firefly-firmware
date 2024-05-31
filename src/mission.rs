@@ -444,6 +444,7 @@ async fn pressure_temp_handler(
             pressure_sender.send(frames.into()).await.unwrap();
             timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
+            // FIXME: Use interrupt to wait for FIFO to fill up.
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
 

@@ -135,7 +135,7 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
         let mut i: usize = 0;
         let mut output = Vec::<PressureTemp, BMP388_FRAME_COUNT>::new();
 
-        while i < BMP388_FRAME_COUNT {
+        while i < BMP388_BUF_SIZE - 7 {
             let header = data[i];
             let fh_mode = (header >> 6) & 0b11;
             let fh_param = (header >> 2) & 0b1111;
@@ -166,7 +166,7 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
                         // pressure & temp
                         let t = &data[i+1 .. i+4];
                         let p = &data[i+4 .. i+7];
-                        output.push(frame_to_reading(p, t));
+                        output.push(frame_to_reading(p, t)).unwrap();
                         i += 7;
                     },
                     (false, false, false) => {
@@ -184,7 +184,9 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
                 }
             }
         }
-        output.resize(BMP388_FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 });
+
+
+        output.resize(BMP388_FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 }).unwrap();
         output.into_array().unwrap()
     }
 }
