@@ -1,18 +1,11 @@
-use bmp388::{BMP388, Blocking, config::FifoConfig};
-use heapless::{Vec, Deque};
+use bmp388::{config::{FifoConfig, OversamplingConfig}, Blocking, PowerControl, BMP388};
+use heapless::Vec;
 use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
-use cortex_m::{interrupt::Mutex, peripheral::NVIC};
+use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
-    pac::I2C1,
-    i2c::{
-        I2c,
-        dma::{
-            I2CMasterWriteReadDMA,
-            I2cCompleteCallback,
-            I2CMasterHandleIT
-        }
-    },
-    interrupt,
+    i2c::dma::{
+            I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback
+        }, interrupt
 };
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
@@ -32,6 +25,33 @@ pub struct PressureTemp {
     pub temperature: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FifoFrames([PressureTemp; ALTIMETER_FRAME_COUNT]);
+
+impl Default for FifoFrames {
+    fn default() -> Self {
+        FifoFrames([PressureTemp::default(); BMP388_FRAME_COUNT])
+    }
+}
+
+impl From<[PressureTemp; ALTIMETER_FRAME_COUNT]> for FifoFrames {
+    fn from(frames: [PressureTemp; ALTIMETER_FRAME_COUNT]) -> Self {
+        FifoFrames(frames)
+    }
+}
+
+impl Into<[PressureTemp; ALTIMETER_FRAME_COUNT]> for FifoFrames {
+    fn into(self) -> [PressureTemp; ALTIMETER_FRAME_COUNT] {
+        self.0
+    }
+}
+
+impl<'a> Into<&'a [PressureTemp; ALTIMETER_FRAME_COUNT]> for &'a FifoFrames {
+    fn into(self) -> &'a [PressureTemp; ALTIMETER_FRAME_COUNT] {
+        &self.0
+    }
+}
+
 pub struct BMP388Wrapper {
     pub bmp: BMP388<I2c1Handle, Blocking>
 }
@@ -47,8 +67,8 @@ impl BMP388Wrapper {
             return_sensor_time: false,
             subsampling: 0,
             filter_data: false
-        });
-        Self { bmp: bmp }
+        }).unwrap();
+        Self { bmp }
     }
 }
 
@@ -200,16 +220,16 @@ fn DMA1_STREAM0() {
 }
 
 #[cfg(feature = "target-mini")]
-const ALTIMETER_FRAME_COUNT: usize = BMP388_FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = BMP388_FRAME_COUNT;
 
 #[cfg(feature = "target-maxi")]
-const ALTIMETER_FRAME_COUNT: usize = BMP581_FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = BMP581_FRAME_COUNT;
 
 #[cfg(feature = "target-mini")]
-const ALTIMETER_BUF_SIZE: usize = BMP388_BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = BMP388_BUF_SIZE;
 
 #[cfg(feature = "target-maxi")]
-const ALTIMETER_BUF_SIZE: usize = BMP581_BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = BMP581_BUF_SIZE;
 
 pub async fn read_altimeter_fifo(
     bmp: Altimeter

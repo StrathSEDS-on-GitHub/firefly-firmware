@@ -17,6 +17,7 @@ use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use core::fmt::Write;
+use bmp388::BMP388;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
@@ -48,6 +49,7 @@ use hal::timer::PwmHz;
 use hal::dma::StreamsTuple;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
+use smart_leds::SmartLedsWrite;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -60,6 +62,7 @@ use sx126x::SX126x;
 use usb_logger::setup_usb_serial;
 use ws2812_spi::Ws2812;
 use ws2812_spi::MODE;
+use bmp388::config::FifoConfig;
 
 
 use core::cell::RefCell;
@@ -265,7 +268,8 @@ async fn main(_spawner: Spawner) {
         gps::set_nmea_output().await;
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
-        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
+
+        let mut wrapper = W25QSequentialStorage::new(flash);
 
         map::store_item(
             &mut wrapper,
@@ -286,14 +290,17 @@ async fn main(_spawner: Spawner) {
         )
         .await;
 
-        let board_id = board_id.unwrap().unwrap().1;
         let role = match board_id {
-            1 => Role::Ground,
-            2 | 3 => Role::Avionics,
+            5 => Role::Ground,
+            3 | 4 => Role::Avionics,
             _ => Role::Cansat,
         };
 
         unsafe { mission::ROLE = role };
+
+        if role != Role::Ground {
+            setup_logger(wrapper).unwrap();
+        }
 
         let bmp = if mission::role() != Role::Ground {
             #[cfg(feature = "target-mini")]
@@ -358,6 +365,7 @@ async fn main(_spawner: Spawner) {
             lora_dio1,   // D6
         );
 
+        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
 
         let conf = build_config(&mut wrapper).await;
 
@@ -370,10 +378,6 @@ async fn main(_spawner: Spawner) {
         }
 
         Radio::init(lora, spi1, delay);
-
-        if role != Role::Ground {
-            setup_logger(wrapper).unwrap();
-        }
 
         mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
     }

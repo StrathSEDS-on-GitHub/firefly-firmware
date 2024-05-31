@@ -18,7 +18,7 @@ use sx126x::op::PacketStatus;
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    altimeter::PressureTemp,
+    altimeter::{read_altimeter_fifo, FifoFrames, PressureTemp, ALTIMETER_FRAME_COUNT},
     futures::{NbFuture, YieldFuture},
     gps,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
@@ -102,7 +102,7 @@ pub fn update_pyro_state() {
     block_on(get_logger().log(format_args!("pyro,{}", mv)));
 }
 
-pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
+pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
     const MAIN_DEPLOYMENT_HEIGHT: f32 = 3000.0;
@@ -115,20 +115,21 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
         }
         let frames = frames.unwrap();
         if sea_level_pressure == 0.0 {
-            let mut vec: Vec<f32, 16> = frames
-                .map(|frame| {
-                    let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
-                    pressure
-                })
-                .into_iter()
-                .collect();
+            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> =
+                Into::<&[_; ALTIMETER_FRAME_COUNT]>::into(&frames)
+                    .map(|frame| {
+                        let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
+                        pressure
+                    })
+                    .into_iter()
+                    .collect();
             vec.sort_unstable_by(f32::total_cmp);
             // Take the average of the middle 5 values
             sea_level_pressure = vec[7..12].iter().sum::<f32>() / 5.0;
         }
 
         let stage = current_stage();
-        let altitudes = frames.map(|frame| {
+        let altitudes = Into::<&[_; ALTIMETER_FRAME_COUNT]>::into(&frames).map(|frame| {
             let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
             let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
@@ -140,7 +141,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<[PressureTemp; 16]>) {
 
         if start_altitude == 0.0 {
             // If we don't have a start pressure, we can't do anything
-            let mut vec: Vec<f32, 16> = altitudes.clone().into_iter().collect();
+            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = altitudes.clone().into_iter().collect();
             vec.sort_unstable_by(f32::total_cmp);
             start_altitude = vec[7..12].iter().sum::<f32>() / 5.0;
         }
@@ -400,11 +401,10 @@ async fn gps_broadcast() -> ! {
     }
 }
 
-/*
 async fn pressure_temp_handler(
     mut sensor: Altimeter,
     mut timer: Counter<TIM12, 10000>,
-    pressure_sender: StaticSender<[PressureTemp; 16]>,
+    pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
 ) {
     // Wait for FIFO to fill up.
     timer.clear_flags(timer::Flag::Update);
@@ -435,11 +435,13 @@ async fn pressure_temp_handler(
                     temperatures[i / 4] = temperature;
                 }
 
-                get_logger().log(format_args!("pressure,{},{}", pressure, temperature)).await;
+                get_logger()
+                    .log(format_args!("pressure,{},{}", pressure, temperature))
+                    .await;
 
                 i += 1;
             }
-            pressure_sender.send(frames).await.unwrap();
+            pressure_sender.send(frames.into()).await.unwrap();
             timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
@@ -458,7 +460,7 @@ async fn pressure_temp_handler(
 
         radio::queue_packet(message);
     }
-}*/
+}
 
 async fn handle_incoming_packets() -> ! {
     let mut idempotency_counter = 0;
@@ -691,11 +693,7 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-pub async fn begin(
-    pressure_sensor: Option<Altimeter>,
-    pr_timer: Counter<TIM12, 10000>,
-) -> !
-{
+pub async fn begin(pressure_sensor: Option<Altimeter>, pr_timer: Counter<TIM12, 10000>) -> ! {
     match unsafe { ROLE } {
         Role::Ground =>
         {
@@ -703,28 +701,28 @@ pub async fn begin(
             join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
         }
         Role::Avionics => {
-            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 16], 10> = StaticChannel::new();
+            static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
-                //pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver)
             )
             .0
         }
         Role::Cansat => {
-            static PRESSURE_CHANNEL: StaticChannel<[PressureTemp; 16], 10> = StaticChannel::new();
+            static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
-                //cpressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
             )
