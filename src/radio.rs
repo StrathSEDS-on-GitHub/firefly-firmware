@@ -10,8 +10,8 @@ use crate::mission;
 use crate::mission::MissionStage;
 use crate::mission::PyroPin;
 use crate::mission::Role;
+use crate::neopixel;
 use crate::Dio1PinRefMut;
-use crate::NEOPIXEL;
 use cortex_m::interrupt::Mutex;
 use dummy_pin::DummyPin;
 use embedded_hal::blocking::delay::DelayMs;
@@ -276,28 +276,23 @@ fn receive_message() {
 /// The radio interrupt fires when the radio is done transmitting a packet.
 fn set_radio() {
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
-    cortex_m::interrupt::free(|cs| {
-        let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
 
-        let r = match state {
-            RadioState::Buffer(_) | RadioState::Tx(Role::Ground) => 55,
-            _ => 0,
-        };
+    let r = match state {
+        RadioState::Buffer(_) | RadioState::Tx(Role::Ground) => 55,
+        _ => 0,
+    };
 
-        let g = match state {
-            RadioState::Tx(Role::Avionics) | RadioState::Tx(Role::Ground) => 55,
-            _ => 0,
-        };
+    let g = match state {
+        RadioState::Tx(Role::Avionics) | RadioState::Tx(Role::Ground) => 55,
+        _ => 0,
+    };
 
-        let b = match state {
-            RadioState::Tx(Role::Cansat) => 55,
-            _ => 0,
-        };
-        let _ = neo_ref
-            .as_mut()
-            .unwrap()
-            .write([[r, g, b]].into_iter());
-    });
+    let b = match state {
+        RadioState::Tx(Role::Cansat) => 55,
+        _ => 0,
+    };
+        
+    neopixel::update_pixel(2, [r,g,b]);
 
     match state {
         RadioState::Tx(role) if role == mission::role() => {

@@ -24,7 +24,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, interrupt_wake, NEOPIXEL, RTC};
+use crate::{futures::YieldFuture, interrupt_wake, neopixel::{self}, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
@@ -237,13 +237,8 @@ fn set_rtc(time: Time) {
         NVIC::unpend(pac::Interrupt::RTC_WKUP);
         unsafe { NVIC::unmask(pac::Interrupt::RTC_WKUP); }
 
-        cortex_m::interrupt::free(|cs| {
-            let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
-            let _ = neo_ref
-                .as_mut()
-                .unwrap()
-                .write([[0, 0, 255]].into_iter());
-        });
+        neopixel::update_pixel(1, [0,0,255])
+        
     });
 }
 
