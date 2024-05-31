@@ -19,13 +19,12 @@ pub static NEOPIXEL: Mutex<RefCell<Option<Ws2812<Spi<NeopixelSPI>>>>> = Mutex::n
     /// Updates the color of a given neopixel, with a given RGB value.
     pub fn update_pixel(pixel: usize, color: [u8; 3]) {
 
-        let color = [color[0] as u8, color[1] as u8, color[2] as u8];
-
         cortex_m::interrupt::free(|cs| {
             let mut neo_ref = NEOPIXEL.borrow(cs).borrow_mut();
             let mut buffer_ref = BUFFER.borrow(cs).borrow_mut();
 
-            buffer_ref[pixel] = color;
+            buffer_ref[pixel] = [color[0], color[1], color[2]];
+
             let _ = neo_ref
                 .as_mut()
                 .unwrap()
