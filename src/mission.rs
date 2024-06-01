@@ -116,8 +116,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         let frames = frames.unwrap();
         if sea_level_pressure == 0.0 {
             let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = frames
-                .clone()
-                .into_iter()
+                .iter()
                 .map(|frame| {
                     let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
                     pressure
@@ -130,7 +129,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         }
 
         let stage = current_stage();
-        let altitudes: Vec<f32, ALTIMETER_FRAME_COUNT> = frames.into_iter().map(|frame| {
+        let altitudes: Vec<f32, ALTIMETER_FRAME_COUNT> = frames.iter().map(|frame| {
             let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
             let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
