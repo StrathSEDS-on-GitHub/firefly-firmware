@@ -4,8 +4,8 @@ use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
     i2c::dma::{
-            I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback
-        }, interrupt
+        I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback
+    }, interrupt
 };
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
@@ -48,7 +48,7 @@ impl<'a> Into<&'a [PressureTemp; ALTIMETER_FRAME_COUNT]> for &'a FifoFrames {
 }
 
 pub struct BMP388Wrapper {
-    pub bmp: BMP388<I2c1Handle, Blocking>
+    bmp: BMP388<I2c1Handle, Blocking>
 }
 
 impl BMP388Wrapper {
@@ -77,47 +77,15 @@ pub trait AltimeterFifoDMA<
     const ADDRESS: u8;
     fn dma_interrupt(&mut self);
     fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> [PressureTemp; FRAMES];
-}
-
-fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
-    PressureTemp {
-        pressure:    (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-        temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
+    
+    fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
+        PressureTemp {
+            pressure:    (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
+            temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
+        }
     }
 }
 
-impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
-    const FIFO_READ_REG: u8 = 0x29;
-    const ADDRESS: u8 = 0x46;
-
-    fn dma_interrupt(&mut self) {
-        self.com.handle_dma_interrupt();
-    }
-
-    fn process_fifo_buffer(
-        data: [u8; BMP581::BUF_SIZE]
-    ) -> [PressureTemp; BMP581::FRAME_COUNT] {
-        data
-        .chunks(6)
-        .map(|x| x.split_at(3))
-        .map(|(pres, temp)| frame_to_reading(pres, temp))
-        .collect::<Vec<_, 16>>()
-        .into_array()
-        .unwrap()
-    }
-}
-
-impl I2CMasterWriteReadDMA for BMP581 {
-    unsafe fn write_read_dma(
-        &mut self,
-        addr: u8,
-        bytes: &[u8],
-        buf: &mut [u8],
-        callback: Option<I2cCompleteCallback>
-    ) -> Result<(), nb::Error<i2c::Error>> {
-        self.com.write_read_dma(addr, bytes, buf, callback)
-    }
-}
 
 impl AltimeterFifoDMA<
     {BMP388Wrapper::FRAME_COUNT}, 
@@ -167,7 +135,7 @@ impl AltimeterFifoDMA<
                         // pressure & temp
                         let t = &data[i+1 .. i+4];
                         let p = &data[i+4 .. i+7];
-                        output.push(frame_to_reading(p, t)).unwrap();
+                        output.push(Altimeter::frame_to_reading(p, t)).unwrap();
                         i += 7;
                     },
                     (false, false, false) => {

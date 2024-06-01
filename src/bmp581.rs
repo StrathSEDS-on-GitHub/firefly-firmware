@@ -5,15 +5,24 @@ use heapless::Vec;
 use stm32f4xx_hal::{
     dma::{Stream0, Stream1},
     i2c::{
-        dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
+        dma::{
+            I2CMasterDma, 
+            I2CMasterHandleIT, 
+            I2CMasterWriteReadDMA, 
+            I2cCompleteCallback,
+            RxDMA, 
+            TxDMA
+        },
         Error,
     },
+    i2c,
     interrupt,
     pac::{DMA1, I2C1},
 };
 
 use crate::futures::YieldFuture;
-use crate::altimeter::PressureTemp;
+use crate::altimeter::{AltimeterFifoDMA, PressureTemp};
+use crate::pins::Altimeter;
 
 pub type I2c1Handle =
     I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
@@ -21,7 +30,7 @@ pub type I2c1Handle =
 const ADDR: u8 = 0x46;
 
 pub struct BMP581 {
-    pub com: I2c1Handle,
+    com: I2c1Handle,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -109,6 +118,39 @@ impl BMP581 {
         }
 
         Ok(frames)
+    }
+}
+
+impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
+    const FIFO_READ_REG: u8 = 0x29;
+    const ADDRESS: u8 = 0x46;
+
+    fn dma_interrupt(&mut self) {
+        self.com.handle_dma_interrupt();
+    }
+
+    fn process_fifo_buffer(
+        data: [u8; BMP581::BUF_SIZE]
+    ) -> [PressureTemp; BMP581::FRAME_COUNT] {
+        data
+        .chunks(6)
+        .map(|x| x.split_at(3))
+        .map(|(pres, temp)| Altimeter::frame_to_reading(pres, temp))
+        .collect::<Vec<_, 16>>()
+        .into_array()
+        .unwrap()
+    }
+}
+
+impl I2CMasterWriteReadDMA for BMP581 {
+    unsafe fn write_read_dma(
+        &mut self,
+        addr: u8,
+        bytes: &[u8],
+        buf: &mut [u8],
+        callback: Option<I2cCompleteCallback>
+    ) -> Result<(), nb::Error<i2c::Error>> {
+        self.com.write_read_dma(addr, bytes, buf, callback)
     }
 }
 
