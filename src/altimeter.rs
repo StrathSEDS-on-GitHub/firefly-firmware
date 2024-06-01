@@ -86,7 +86,7 @@ fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
     }
 }
 
-impl AltimeterFifoDMA<{ BMP581::FRAME_COUNT }, { BMP581::BUF_SIZE }> for BMP581 {
+impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
     const FIFO_READ_REG: u8 = 0x29;
     const ADDRESS: u8 = 0x46;
 
@@ -120,7 +120,8 @@ impl I2CMasterWriteReadDMA for BMP581 {
 }
 
 impl AltimeterFifoDMA<
-    { BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE}
+    {BMP388Wrapper::FRAME_COUNT}, 
+    {BMP388Wrapper::BUF_SIZE}
 > for BMP388Wrapper {
     const FIFO_READ_REG: u8 = 0x14;
     const ADDRESS: u8 = 0x77;
