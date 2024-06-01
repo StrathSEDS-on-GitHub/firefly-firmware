@@ -135,7 +135,7 @@ impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
         data
         .chunks(6)
         .map(|x| x.split_at(3))
-        .map(|(pres, temp)| Altimeter::frame_to_reading(pres, temp))
+        .map(|(pres, temp)| Self::frame_to_reading(pres, temp))
         .collect::<Vec<_, 16>>()
         .into_array()
         .unwrap()

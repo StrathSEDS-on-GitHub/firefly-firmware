@@ -1,4 +1,4 @@
-use bmp388::{config::{FifoConfig, OversamplingConfig}, Blocking, PowerControl, BMP388};
+use bmp388::{config::{FifoConfig, OversamplingConfig, SubsamplingFactor}, Blocking, PowerControl, BMP388};
 use heapless::Vec;
 use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 use cortex_m::interrupt::Mutex;
@@ -63,7 +63,7 @@ impl BMP388Wrapper {
             store_pressure: true,
             store_temperature: true,
             return_sensor_time: false,
-            subsampling: 0,
+            subsampling: SubsamplingFactor::subsample_1,
             filter_data: false
         }).unwrap();
         Self { bmp }
@@ -75,6 +75,7 @@ pub trait AltimeterFifoDMA<
 >: I2CMasterWriteReadDMA {
     const FIFO_READ_REG: u8;
     const ADDRESS: u8;
+
     fn dma_interrupt(&mut self);
     fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> [PressureTemp; FRAMES];
     
