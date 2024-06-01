@@ -12,6 +12,7 @@ use stm32f4xx_hal::timer::delay::SysDelay;
 use crate::futures::YieldFuture;
 use crate::pins::{Altimeter, I2c1Handle};
 use crate::bmp581::BMP581;
+use crate::interrupt_wake;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct PressureTemp {
@@ -181,6 +182,7 @@ fn DMA1_STREAM1() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
         i2c.as_mut().unwrap().dma_interrupt();
+        interrupt_wake!(crate::futures::bmp_wake);
     });
 }
 
@@ -189,6 +191,7 @@ fn DMA1_STREAM0() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
         i2c.as_mut().unwrap().dma_interrupt();
+        interrupt_wake!(crate::futures::bmp_wake);
     });
 }
 
@@ -206,7 +209,6 @@ pub const ALTIMETER_BUF_SIZE: usize = BMP581::BUF_SIZE;
 
 pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
-    static DONE: AtomicBool = AtomicBool::new(false);
 
     unsafe {
         cortex_m::interrupt::free(|cs| {
@@ -220,23 +222,17 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
                     Altimeter::ADDRESS,
                     &[Altimeter::FIFO_READ_REG],
                     &mut *addr_of_mut!(DATA),
-                    Some(|_| {
-                        DONE.store(true, core::sync::atomic::Ordering::Release);
-                    }),
+                    None
                 ))
             .unwrap();
         });
     }
-
-    while !DONE.load(core::sync::atomic::Ordering::Acquire) {
-        YieldFuture::new().await;
-    }
-    DONE.store(false, core::sync::atomic::Ordering::Release);
-
-    let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
-
+    crate::futures::bmp_wake::future().await;
+    
+    let bmp = cortex_m::interrupt::free(|cs| 
+        BMP.borrow(cs).replace(None).unwrap()
+    );
     let frames = Altimeter::process_fifo_buffer(unsafe{DATA});
-
     (frames, bmp)
 }
 
