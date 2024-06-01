@@ -1,10 +1,20 @@
 #![allow(unused_imports)]
 use bmp388::{BMP388, Blocking};
 use stm32f4xx_hal::{
-    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull}, i2c::I2c, pac::{I2C1, SPI2, SPI3}
+    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull}, 
+    i2c::{
+        I2c,
+        dma::{
+            I2CMasterDma, 
+            RxDMA, 
+            TxDMA,
+        }
+    }, 
+    pac::{I2C1, SPI2, SPI3, DMA1},
+    dma::{Stream0, Stream1},
 };
 
-use crate::bmp581::{BMP581, I2c1Handle};
+use crate::bmp581::BMP581;
 use crate::altimeter::BMP388Wrapper;
 
 pub struct GpioBuses {
@@ -34,6 +44,9 @@ pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
 
 #[cfg(feature = "target-maxi")]
 pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
+
+pub type I2c1Handle =
+    I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
 #[cfg(feature = "target-mini")]
 pub type Altimeter = BMP388Wrapper;

@@ -22,10 +22,7 @@ use stm32f4xx_hal::{
 
 use crate::futures::YieldFuture;
 use crate::altimeter::{AltimeterFifoDMA, PressureTemp};
-use crate::pins::Altimeter;
-
-pub type I2c1Handle =
-    I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
+use crate::pins::{Altimeter, I2c1Handle};
 
 const ADDR: u8 = 0x46;
 

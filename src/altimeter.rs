@@ -10,8 +10,7 @@ use stm32f4xx_hal::{
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
 use crate::futures::YieldFuture;
-use crate::pins::Altimeter;
-use crate::bmp581::I2c1Handle;
+use crate::pins::{Altimeter, I2c1Handle};
 use crate::bmp581::BMP581;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
