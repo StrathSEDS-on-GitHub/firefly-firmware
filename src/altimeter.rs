@@ -20,6 +20,9 @@ pub struct PressureTemp {
     pub temperature: u32,
 }
 
+pub type FifoFrames = Vec<PressureTemp, ALTIMETER_FRAME_COUNT>;
+
+/*
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FifoFrames([PressureTemp; ALTIMETER_FRAME_COUNT]);
 
@@ -46,6 +49,7 @@ impl<'a> Into<&'a [PressureTemp; ALTIMETER_FRAME_COUNT]> for &'a FifoFrames {
         &self.0
     }
 }
+*/
 
 pub struct BMP388Wrapper {
     bmp: BMP388<I2c1Handle, Blocking>
@@ -77,7 +81,7 @@ pub trait AltimeterFifoDMA<
     const ADDRESS: u8;
 
     fn dma_interrupt(&mut self);
-    fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> [PressureTemp; FRAMES];
+    fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
     
     fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
         PressureTemp {
@@ -101,7 +105,7 @@ impl AltimeterFifoDMA<
 
     fn process_fifo_buffer(
         data: [u8; BMP388Wrapper::BUF_SIZE]
-    ) -> [PressureTemp; BMP388Wrapper::FRAME_COUNT] {
+    ) -> Vec<PressureTemp, {BMP388Wrapper::FRAME_COUNT}> {
         let mut i: usize = 0;
         let mut output = Vec::<PressureTemp, {BMP388Wrapper::FRAME_COUNT}>::new();
 
@@ -155,9 +159,7 @@ impl AltimeterFifoDMA<
             }
         }
 
-
-        output.resize(BMP388Wrapper::FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 }).unwrap();
-        output.into_array().unwrap()
+        output
     }
 }
 
@@ -203,9 +205,7 @@ pub const ALTIMETER_BUF_SIZE: usize = BMP388Wrapper::BUF_SIZE;
 #[cfg(feature = "target-maxi")]
 pub const ALTIMETER_BUF_SIZE: usize = BMP581::BUF_SIZE;
 
-pub async fn read_altimeter_fifo(
-    bmp: Altimeter
-) -> ([PressureTemp; ALTIMETER_FRAME_COUNT], Altimeter) {
+pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
     static DONE: AtomicBool = AtomicBool::new(false);
 

@@ -115,21 +115,22 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         }
         let frames = frames.unwrap();
         if sea_level_pressure == 0.0 {
-            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> =
-                Into::<&[_; ALTIMETER_FRAME_COUNT]>::into(&frames)
-                    .map(|frame| {
-                        let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
-                        pressure
-                    })
-                    .into_iter()
-                    .collect();
+            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = frames
+                .clone()
+                .into_iter()
+                .map(|frame| {
+                    let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
+                    pressure
+                })
+                .into_iter()
+                .collect();
             vec.sort_unstable_by(f32::total_cmp);
             // Take the average of the middle 5 values
             sea_level_pressure = vec[7..12].iter().sum::<f32>() / 5.0;
         }
 
         let stage = current_stage();
-        let altitudes = Into::<&[_; ALTIMETER_FRAME_COUNT]>::into(&frames).map(|frame| {
+        let altitudes: Vec<f32, ALTIMETER_FRAME_COUNT> = frames.into_iter().map(|frame| {
             let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
             let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
@@ -137,7 +138,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 * (temperature + 273.15)
                 / 0.0065;
             altitude
-        });
+        }).collect();
 
         if start_altitude == 0.0 {
             // If we don't have a start pressure, we can't do anything
@@ -425,7 +426,7 @@ async fn pressure_temp_handler(
         while i < 4 * 8 {
             let frames;
             (frames, sensor) = read_altimeter_fifo(sensor).await;
-            for frame in frames {
+            for frame in &frames {
                 let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
                 let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
 
