@@ -30,7 +30,7 @@ pub struct FifoFrames([PressureTemp; ALTIMETER_FRAME_COUNT]);
 
 impl Default for FifoFrames {
     fn default() -> Self {
-        FifoFrames([PressureTemp::default(); BMP388_FRAME_COUNT])
+        FifoFrames([PressureTemp::default(); ALTIMETER_FRAME_COUNT])
     }
 }
 
