@@ -31,6 +31,9 @@ pub enum Register {
 }
 
 impl BMP581 {
+    pub const FRAME_COUNT: usize = 16;
+    pub const BUF_SIZE:    usize = Self::FRAME_COUNT * 6;
+
     pub fn new(mut i2c: I2c1Handle) -> Result<Self, Error> {
         nb::block!(i2c.write(ADDR, &[0x37, 0b0000_0001]))?;
         let chip = BMP581 { com: i2c };

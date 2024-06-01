@@ -14,11 +14,6 @@ use crate::pins::Altimeter;
 use crate::bmp581::I2c1Handle;
 use crate::bmp581::BMP581;
 
-const BMP388_FRAME_COUNT: usize = 73;
-const BMP388_BUF_SIZE:    usize = 512;
-const BMP581_FRAME_COUNT: usize = 16;
-const BMP581_BUF_SIZE:    usize = BMP581_FRAME_COUNT * 6;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct PressureTemp {
     pub pressure: u32,
@@ -57,6 +52,9 @@ pub struct BMP388Wrapper {
 }
 
 impl BMP388Wrapper {
+    pub const FRAME_COUNT: usize = 73;
+    pub const BUF_SIZE:    usize = 512;
+
     pub fn new(i2c: I2c1Handle, delay: &mut SysDelay) -> Self {
         let mut bmp = BMP388::new_blocking(i2c, Self::ADDRESS, delay).unwrap();
         bmp.set_fifo_config(FifoConfig {
@@ -88,7 +86,7 @@ fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
     }
 }
 
-impl AltimeterFifoDMA<BMP581_FRAME_COUNT, BMP581_BUF_SIZE> for BMP581 {
+impl AltimeterFifoDMA<{ BMP581::FRAME_COUNT }, { BMP581::BUF_SIZE }> for BMP581 {
     const FIFO_READ_REG: u8 = 0x29;
     const ADDRESS: u8 = 0x46;
 
@@ -97,8 +95,8 @@ impl AltimeterFifoDMA<BMP581_FRAME_COUNT, BMP581_BUF_SIZE> for BMP581 {
     }
 
     fn process_fifo_buffer(
-        data: [u8; BMP581_BUF_SIZE]
-    ) -> [PressureTemp; BMP581_FRAME_COUNT] {
+        data: [u8; BMP581::BUF_SIZE]
+    ) -> [PressureTemp; BMP581::FRAME_COUNT] {
         data
         .chunks(6)
         .map(|x| x.split_at(3))
@@ -121,7 +119,9 @@ impl I2CMasterWriteReadDMA for BMP581 {
     }
 }
 
-impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
+impl AltimeterFifoDMA<
+    { BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE}
+> for BMP388Wrapper {
     const FIFO_READ_REG: u8 = 0x14;
     const ADDRESS: u8 = 0x77;
 
@@ -130,12 +130,12 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
     }
 
     fn process_fifo_buffer(
-        data: [u8; BMP388_BUF_SIZE]
-    ) -> [PressureTemp; BMP388_FRAME_COUNT] {
+        data: [u8; BMP388Wrapper::BUF_SIZE]
+    ) -> [PressureTemp; BMP388Wrapper::FRAME_COUNT] {
         let mut i: usize = 0;
-        let mut output = Vec::<PressureTemp, BMP388_FRAME_COUNT>::new();
+        let mut output = Vec::<PressureTemp, {BMP388Wrapper::FRAME_COUNT}>::new();
 
-        while i < BMP388_BUF_SIZE - 7 {
+        while i < BMP388Wrapper::BUF_SIZE - 7 {
             let header = data[i];
             let fh_mode = (header >> 6) & 0b11;
             let fh_param = (header >> 2) & 0b1111;
@@ -186,7 +186,7 @@ impl AltimeterFifoDMA<BMP388_FRAME_COUNT, BMP388_BUF_SIZE> for BMP388Wrapper {
         }
 
 
-        output.resize(BMP388_FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 }).unwrap();
+        output.resize(BMP388Wrapper::FRAME_COUNT, PressureTemp { pressure: 0, temperature: 0 }).unwrap();
         output.into_array().unwrap()
     }
 }
@@ -222,16 +222,16 @@ fn DMA1_STREAM0() {
 }
 
 #[cfg(feature = "target-mini")]
-pub const ALTIMETER_FRAME_COUNT: usize = BMP388_FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = BMP388Wrapper::FRAME_COUNT;
 
 #[cfg(feature = "target-maxi")]
-pub const ALTIMETER_FRAME_COUNT: usize = BMP581_FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = BMP581::FRAME_COUNT;
 
 #[cfg(feature = "target-mini")]
-pub const ALTIMETER_BUF_SIZE: usize = BMP388_BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = BMP388Wrapper::BUF_SIZE;
 
 #[cfg(feature = "target-maxi")]
-pub const ALTIMETER_BUF_SIZE: usize = BMP581_BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = BMP581::BUF_SIZE;
 
 pub async fn read_altimeter_fifo(
     bmp: Altimeter
