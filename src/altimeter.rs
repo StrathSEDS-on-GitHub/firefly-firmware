@@ -1,4 +1,13 @@
-use bmp388::{config::{FifoConfig, OversamplingConfig, SubsamplingFactor}, Blocking, PowerControl, BMP388};
+use bmp388::{
+    config::{
+        FifoConfig, OversamplingConfig, SubsamplingFactor
+    }, 
+    Blocking, 
+    PowerControl, 
+    PowerMode,
+    Oversampling,
+    BMP388
+};
 use heapless::Vec;
 use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 use cortex_m::interrupt::Mutex;
@@ -61,6 +70,15 @@ impl BMP388Wrapper {
 
     pub fn new(i2c: I2c1Handle, delay: &mut SysDelay) -> Self {
         let mut bmp = BMP388::new_blocking(i2c, Self::ADDRESS, delay).unwrap();
+        bmp.set_power_control(PowerControl {
+            pressure_enable: true,
+            temperature_enable: true,
+            mode: PowerMode::Normal
+        }).unwrap();
+        bmp.set_oversampling(OversamplingConfig {
+            osr_pressure: Oversampling::x1,
+            osr_temperature: Oversampling::x1
+        }).unwrap();
         bmp.set_fifo_config(FifoConfig {
             enabled: true,
             stop_on_full: false,
