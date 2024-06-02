@@ -83,7 +83,7 @@ impl BMP388Wrapper {
             store_pressure: true,
             store_temperature: true,
             return_sensor_time: false,
-            subsampling: SubsamplingFactor::subsample_1,
+            subsampling: SubsamplingFactor::Subsample1,
             filter_data: false
         }).unwrap();
         Self { bmp }
