@@ -1,7 +1,3 @@
-#![feature(async_closure)]
-#![feature(type_alias_impl_trait)]
-//! Demonstrate the use of a blocking `Delay` using the SYST (sysclock) timer.
-
 #![allow(clippy::empty_loop)]
 #![allow(dead_code)]
 #![no_main]
