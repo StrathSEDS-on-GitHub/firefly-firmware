@@ -3,7 +3,6 @@
 #![no_main]
 #![no_std]
 
-use crate::altimeter::BMP388Wrapper;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -316,7 +315,7 @@ async fn main(_spawner: Spawner) {
             #[cfg(feature = "target-maxi")]
             {
 
-                let mut bmp = BMP581::new(i2c).unwrap();
+                let mut bmp = crate::bmp581::BMP581::new(i2c).unwrap();
                 bmp.enable_pressure_temperature().unwrap();
                 bmp.setup_fifo().unwrap();
                 Some(bmp)

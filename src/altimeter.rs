@@ -213,16 +213,16 @@ fn DMA1_STREAM0() {
 }
 
 #[cfg(feature = "target-mini")]
-pub const ALTIMETER_FRAME_COUNT: usize = BMP388Wrapper::FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = crate::altimeter::BMP388Wrapper::FRAME_COUNT;
 
 #[cfg(feature = "target-maxi")]
-pub const ALTIMETER_FRAME_COUNT: usize = BMP581::FRAME_COUNT;
+pub const ALTIMETER_FRAME_COUNT: usize = crate::bmp581::BMP581::FRAME_COUNT;
 
 #[cfg(feature = "target-mini")]
-pub const ALTIMETER_BUF_SIZE: usize = BMP388Wrapper::BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = crate::altimeter::BMP388Wrapper::BUF_SIZE;
 
 #[cfg(feature = "target-maxi")]
-pub const ALTIMETER_BUF_SIZE: usize = BMP581::BUF_SIZE;
+pub const ALTIMETER_BUF_SIZE: usize = crate::bmp581::BMP581::BUF_SIZE;
 
 pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
