@@ -135,10 +135,11 @@ impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
         .map(|x| x.split_at(3))
         .map(|(temp, pres)| {
             let (u_pres, u_temp) = Self::decode_frame(pres, temp);
-            // TODO: Compensation
+            let pres = u_pres as f32 / libm::powf(2.0, 6.0);
+            let temp = u_pres as f32 / libm::powf(2.0, 16.0);
             PressureTemp {
-                temperature: u_temp as f32,
-                pressure: u_pres as f32
+                temperature: temp,
+                pressure: pres
             }
         })
         .collect::<Vec<_, 16>>()
