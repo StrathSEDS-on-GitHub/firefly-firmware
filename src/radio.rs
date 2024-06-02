@@ -18,7 +18,6 @@ use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::digital::v2::OutputPin;
 use heapless::Deque;
-use heapless::String;
 use serde::Deserialize;
 use serde::Serialize;
 use stm32f4xx_hal::gpio::Output;

@@ -1,28 +1,21 @@
-use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
 
-use cortex_m::{interrupt::Mutex, peripheral::NVIC};
+use cortex_m::peripheral::NVIC;
 use heapless::Vec;
 use stm32f4xx_hal::{
-    dma::{Stream0, Stream1},
     i2c::{
         dma::{
-            I2CMasterDma, 
             I2CMasterHandleIT, 
             I2CMasterWriteReadDMA, 
-            I2cCompleteCallback,
-            RxDMA, 
-            TxDMA
+            I2cCompleteCallback
         },
         Error,
     },
     i2c,
     interrupt,
-    pac::{DMA1, I2C1},
 };
 
-use crate::futures::YieldFuture;
 use crate::altimeter::{AltimeterFifoDMA, PressureTemp};
-use crate::pins::{Altimeter, I2c1Handle};
+use crate::pins::I2c1Handle;
 
 const ADDR: u8 = 0x46;
 

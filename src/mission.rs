@@ -4,7 +4,7 @@ use embassy_futures::block_on;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::ExtU32;
 use futures::join;
-use heapless::{Deque, Vec};
+use heapless::Vec;
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
@@ -14,11 +14,10 @@ use stm32f4xx_hal::{
     timer::{self, Counter},
     ClearFlags,
 };
-use sx126x::op::PacketStatus;
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    altimeter::{read_altimeter_fifo, FifoFrames, PressureTemp, ALTIMETER_FRAME_COUNT},
+    altimeter::{read_altimeter_fifo, FifoFrames, ALTIMETER_FRAME_COUNT},
     futures::{NbFuture, YieldFuture},
     gps,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},

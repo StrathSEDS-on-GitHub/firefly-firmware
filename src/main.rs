@@ -8,7 +8,6 @@
 #![no_std]
 
 use crate::altimeter::BMP388Wrapper;
-use crate::bmp581::BMP581;
 use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
@@ -123,7 +122,7 @@ fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    if let (Some(mut dp), Some(mut cp)) = (
+    if let (Some(mut dp), Some(cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {

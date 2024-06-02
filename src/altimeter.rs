@@ -9,7 +9,7 @@ use bmp388::{
     BMP388
 };
 use heapless::Vec;
-use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicBool};
+use core::{cell::RefCell, ptr::addr_of_mut};
 use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
     i2c::dma::{
@@ -18,9 +18,7 @@ use stm32f4xx_hal::{
 };
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
-use crate::futures::YieldFuture;
 use crate::pins::{Altimeter, I2c1Handle};
-use crate::bmp581::BMP581;
 use crate::interrupt_wake;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]

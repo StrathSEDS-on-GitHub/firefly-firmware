@@ -24,7 +24,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, interrupt_wake, neopixel::{self}, RTC};
+use crate::{futures::YieldFuture, interrupt_wake, neopixel, NEOPIXEL, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
