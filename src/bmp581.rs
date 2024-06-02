@@ -96,8 +96,8 @@ impl BMP581 {
     pub fn read_fifo(&mut self) -> Result<[PressureTemp; 16], Error> {
         let mut data = [0u8; 16 * 6];
         let mut frames = [PressureTemp {
-            pressure: 0,
-            temperature: 0,
+            pressure: 0.0,
+            temperature: 0.0,
         }; 16];
 
         nb::block!(self.com.write_read(ADDR, &[0x29], &mut data)).unwrap();
@@ -106,8 +106,8 @@ impl BMP581 {
             .chunks(6)
             .map(|x| x.split_at(3))
             .map(|(temp, pres)| PressureTemp {
-                pressure: (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-                temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
+                pressure: ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16) as f32,
+                temperature: ((temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16) as f32,
             })
             .enumerate()
         {
@@ -127,12 +127,20 @@ impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
     }
 
     fn process_fifo_buffer(
+        &self,
         data: [u8; BMP581::BUF_SIZE]
     ) -> Vec<PressureTemp, {BMP581::FRAME_COUNT}> {
         data
         .chunks(6)
         .map(|x| x.split_at(3))
-        .map(|(pres, temp)| Self::frame_to_reading(pres, temp))
+        .map(|(pres, temp)| {
+            let (u_pres, u_temp) = Self::decode_frame(pres, temp);
+            // TODO: Compensation
+            PressureTemp {
+                temperature: u_temp as f32,
+                pressure: u_pres as f32
+            }
+        })
         .collect::<Vec<_, 16>>()
     }
 }

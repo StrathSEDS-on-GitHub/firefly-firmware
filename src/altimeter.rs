@@ -23,10 +23,10 @@ use crate::pins::{Altimeter, I2c1Handle};
 use crate::bmp581::BMP581;
 use crate::interrupt_wake;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct PressureTemp {
-    pub pressure: u32,
-    pub temperature: u32,
+    pub pressure: f32,
+    pub temperature: f32,
 }
 
 pub type FifoFrames = Vec<PressureTemp, ALTIMETER_FRAME_COUNT>;
@@ -99,13 +99,11 @@ pub trait AltimeterFifoDMA<
     const ADDRESS: u8;
 
     fn dma_interrupt(&mut self);
-    fn process_fifo_buffer(data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
+    fn process_fifo_buffer(&self, data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
     
-    fn frame_to_reading(pres: &[u8], temp: &[u8]) -> PressureTemp {
-        PressureTemp {
-            pressure:    (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-            temperature: (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
-        }
+    fn decode_frame(pres: &[u8], temp: &[u8]) -> (u32, u32) {
+        ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
+         (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16)
     }
 }
 
@@ -122,6 +120,7 @@ impl AltimeterFifoDMA<
     }
 
     fn process_fifo_buffer(
+        &self,
         data: [u8; BMP388Wrapper::BUF_SIZE]
     ) -> Vec<PressureTemp, {BMP388Wrapper::FRAME_COUNT}> {
         let mut i: usize = 0;
@@ -158,7 +157,11 @@ impl AltimeterFifoDMA<
                         // pressure & temp
                         let t = &data[i+1 .. i+4];
                         let p = &data[i+4 .. i+7];
-                        output.push(Altimeter::frame_to_reading(p, t)).unwrap();
+                        let (u_pres, u_temp) = Self::decode_frame(p, t);
+                        let temp = self.bmp.compensate_temp(u_temp);
+                        let pres = self.bmp.compensate_pressure(u_pres, temp);
+                        let frame = PressureTemp { pressure: pres as f32, temperature: temp as f32 };
+                        output.push(frame).unwrap();
                         i += 7;
                     },
                     (false, false, false) => {
@@ -250,7 +253,7 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     let bmp = cortex_m::interrupt::free(|cs| 
         BMP.borrow(cs).replace(None).unwrap()
     );
-    let frames = Altimeter::process_fifo_buffer(unsafe{DATA});
+    let frames = bmp.process_fifo_buffer(unsafe{DATA});
     (frames, bmp)
 }
 
