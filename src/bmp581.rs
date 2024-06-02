@@ -133,7 +133,7 @@ impl AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581 {
         data
         .chunks(6)
         .map(|x| x.split_at(3))
-        .map(|(pres, temp)| {
+        .map(|(temp, pres)| {
             let (u_pres, u_temp) = Self::decode_frame(pres, temp);
             // TODO: Compensation
             PressureTemp {
