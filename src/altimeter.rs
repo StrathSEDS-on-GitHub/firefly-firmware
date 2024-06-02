@@ -29,35 +29,6 @@ pub struct PressureTemp {
 
 pub type FifoFrames = Vec<PressureTemp, ALTIMETER_FRAME_COUNT>;
 
-/*
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FifoFrames([PressureTemp; ALTIMETER_FRAME_COUNT]);
-
-impl Default for FifoFrames {
-    fn default() -> Self {
-        FifoFrames([PressureTemp::default(); ALTIMETER_FRAME_COUNT])
-    }
-}
-
-impl From<[PressureTemp; ALTIMETER_FRAME_COUNT]> for FifoFrames {
-    fn from(frames: [PressureTemp; ALTIMETER_FRAME_COUNT]) -> Self {
-        FifoFrames(frames)
-    }
-}
-
-impl Into<[PressureTemp; ALTIMETER_FRAME_COUNT]> for FifoFrames {
-    fn into(self) -> [PressureTemp; ALTIMETER_FRAME_COUNT] {
-        self.0
-    }
-}
-
-impl<'a> Into<&'a [PressureTemp; ALTIMETER_FRAME_COUNT]> for &'a FifoFrames {
-    fn into(self) -> &'a [PressureTemp; ALTIMETER_FRAME_COUNT] {
-        &self.0
-    }
-}
-*/
-
 pub struct BMP388Wrapper {
     bmp: BMP388<I2c1Handle, Blocking>
 }
