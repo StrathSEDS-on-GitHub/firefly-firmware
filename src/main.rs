@@ -12,19 +12,21 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
+use core::convert::Infallible;
 use core::fmt::Write;
-use bmp388::BMP388;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
-use embedded_hal::blocking::delay::DelayMs;
+use embedded_hal::delay::DelayNs;
+use embedded_hal::digital::ErrorType;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
+use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::NoPin;
 use hal::pac::TIM13;
@@ -42,10 +44,9 @@ use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
-use hal::dma::StreamsTuple;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use smart_leds::SmartLedsWrite;
+use stm32f4xx_hal::pac::SPI1;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -58,8 +59,6 @@ use sx126x::SX126x;
 use usb_logger::setup_usb_serial;
 use ws2812_spi::Ws2812;
 use ws2812_spi::MODE;
-use bmp388::config::FifoConfig;
-
 
 use core::cell::RefCell;
 use core::panic::PanicInfo;
@@ -67,18 +66,18 @@ use core::panic::PanicInfo;
 use crate::hal::{pac, prelude::*};
 use stm32f4xx_hal as hal;
 
+mod altimeter;
 mod bmp581;
 mod futures;
 mod gps;
 mod mission;
+mod neopixel;
 mod pins;
 mod radio;
 mod sdio;
 mod stepper;
 mod usb_logger;
 mod usb_msc;
-mod neopixel;
-mod altimeter;
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::new(None));
@@ -101,7 +100,7 @@ static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
-fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayMs<u32>>(
+fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayNs>(
     channel: &mut PwmHz<TIM3, P>,
     delay: &mut DELAY,
     freq: fugit::HertzU32,
@@ -178,10 +177,6 @@ async fn main(_spawner: Spawner) {
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.enable_wakeup(1000u32.millis().into());
 
-        pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
-        unsafe {
-            pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
-        }
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
         cortex_m::interrupt::free(|cs| {
@@ -264,18 +259,7 @@ async fn main(_spawner: Spawner) {
         gps::set_nmea_output().await;
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
-
         let mut wrapper = W25QSequentialStorage::new(flash);
-
-        map::store_item(
-            &mut wrapper,
-            CONFIG_FLASH_RANGE,
-            NoCache::new(),
-            &mut [0; 1024],
-            &U64Item("id".try_into().unwrap(), 4),
-        )
-        .await
-        .unwrap();
 
         let board_id: Result<Option<U64Item>, _> = map::fetch_item(
             &mut wrapper,
@@ -286,17 +270,13 @@ async fn main(_spawner: Spawner) {
         )
         .await;
 
-        let role = match board_id {
+        let role = match board_id.unwrap().unwrap().1 {
             5 => Role::Ground,
             3 | 4 => Role::Avionics,
             _ => Role::Cansat,
         };
 
         unsafe { mission::ROLE = role };
-
-        if role != Role::Ground {
-            setup_logger(wrapper).unwrap();
-        }
 
         let bmp = if mission::role() != Role::Ground {
             #[cfg(feature = "target-mini")]
@@ -305,16 +285,27 @@ async fn main(_spawner: Spawner) {
                     let streams = StreamsTuple::new(dp.DMA1);
                     let tx_stream = streams.1;
                     let rx_stream = streams.0;
-                    let i2c = dp.I2C1
+                    let i2c = dp
+                        .I2C1
                         .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
                         .use_dma(tx_stream, rx_stream);
-                    altimeter::BMP388Wrapper::new(i2c, &mut delay)
+
+                    static I2C_BUS: Option<critical_section::Mutex<RefCell<I2c1Handle>>> = None;
+                    critical_section::with(|cs| {
+                        I2C_BUS.as_ref().unwrap().borrow(cs).replace(i2c);
+                    });
+                    let alt_proxy = crate::pins::i2c::CriticalSectionDevice::new(I2C_BUS.as_ref().unwrap());
+
+                    altimeter::BMP388Wrapper::new(alt_proxy, &mut delay)
+                    // let mut icm = IcmImu::new(i2c, 0x68).unwrap();
+                    // icm.enable_acc().unwrap();
+                    // icm.enable_gyro().unwrap();
+                    // todo!()
                 })
             }
 
             #[cfg(feature = "target-maxi")]
             {
-
                 let mut bmp = crate::bmp581::BMP581::new(i2c).unwrap();
                 bmp.enable_pressure_temperature().unwrap();
                 bmp.setup_fifo().unwrap();
@@ -335,12 +326,24 @@ async fn main(_spawner: Spawner) {
 
         let spi1_pins = (sck, miso, mosi);
 
-        let mut spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
+        let spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
         let lora_nreset = nreset.into_push_pull_output_in_state(gpio::PinState::High);
         let lora_nss = nss.into_push_pull_output_in_state(gpio::PinState::High);
         let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
+
+        static SPI_BUS: Option<critical_section::Mutex<RefCell<Spi<SPI1>>>> = None;
+        critical_section::with(|cs| {
+            SPI_BUS.as_ref().unwrap().borrow(cs).replace(spi1);
+        });
+
+        let mut spi1_device = embedded_hal_bus::spi::CriticalSectionDevice::new(
+            &SPI_BUS.as_ref().unwrap(),
+            lora_nss,
+            delay,
+        )
+        .unwrap();
 
         // This is safe as long as the only other place we use DIO1_PIN is in the ISR
         let lora_dio1 = unsafe {
@@ -358,26 +361,28 @@ async fn main(_spawner: Spawner) {
         let lora_dio1 = Dio1PinRefMut(lora_dio1);
 
         let lora_pins = (
-            lora_nss,    // D7
             lora_nreset, // A0
             lora_busy,   // D4
             lora_ant,    // D8
             lora_dio1,   // D6
         );
 
-        let mut wrapper: W25QSequentialStorage<Bank1, CAPACITY> = W25QSequentialStorage::new(flash);
-
         let conf = build_config(&mut wrapper).await;
 
-        let mut lora = SX126x::new(lora_pins);
-        lora.init(&mut spi1, &mut delay, conf).unwrap();
-
-        unsafe {
-            pac::NVIC::unmask(pac::Interrupt::EXTI4);
-            pac::NVIC::unpend(pac::Interrupt::EXTI4);
+        if role != Role::Ground {
+            setup_logger(wrapper).unwrap();
         }
 
-        Radio::init(lora, spi1, delay);
+        let mut lora = SX126x::new(lora_pins);
+        lora.init(&mut spi1_device, conf).unwrap();
+
+        Radio::init(lora, spi1_device);
+        unsafe {
+            pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
+            pac::NVIC::unmask(pac::Interrupt::EXTI4);
+            pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
+            pac::NVIC::unpend(pac::Interrupt::EXTI4);
+        }
 
         mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
     }
@@ -535,26 +540,25 @@ pub fn panic(info: &PanicInfo) -> ! {
     timer.start(4.Hz()).ok();
 
     loop {
-        neopixel::update_pixel(1, [255,0,0]);
+        neopixel::update_pixel(1, [255, 0, 0]);
         nb::block!(timer.wait()).ok();
-        neopixel::update_pixel(1, [0,0,0]);
-        nb::block!(timer.wait()).ok();    
+        neopixel::update_pixel(1, [0, 0, 0]);
+        nb::block!(timer.wait()).ok();
     }
-
-    unreachable!();
 }
 
 struct Dio1PinRefMut<'dio1>(&'dio1 mut Dio1Pin);
+impl ErrorType for Dio1PinRefMut<'_> {
+    type Error = Infallible;
+}
 
-impl<'dio1> embedded_hal::digital::v2::InputPin for Dio1PinRefMut<'dio1> {
-    type Error = core::convert::Infallible;
-
-    fn is_high(&self) -> Result<bool, Self::Error> {
-        Ok(self.0.is_high())
+impl<'dio1> embedded_hal::digital::InputPin for Dio1PinRefMut<'dio1> {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        self.0.is_high()
     }
 
-    fn is_low(&self) -> Result<bool, Self::Error> {
-        Ok(self.0.is_low())
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        self.0.is_low()
     }
 }
 

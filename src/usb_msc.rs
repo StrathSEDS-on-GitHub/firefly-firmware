@@ -4,7 +4,6 @@ use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicU32};
 
 use cortex_m::peripheral::NVIC;
 use f4_w25q::w25q::{SectorAddress, W25Q};
-use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     gpio::{alt::otg_fs, Input, Pin},
     otg_fs::{UsbBus, UsbBusType, USB},

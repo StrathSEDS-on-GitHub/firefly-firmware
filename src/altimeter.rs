@@ -18,7 +18,7 @@ use stm32f4xx_hal::{
 };
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
-use crate::{futures::bmp_wake, pins::{Altimeter, I2c1Handle}};
+use crate::{futures::bmp_wake, pins::Altimeter, I2c1Proxy};
 use crate::interrupt_wake;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
@@ -30,14 +30,14 @@ pub struct PressureTemp {
 pub type FifoFrames = Vec<PressureTemp, ALTIMETER_FRAME_COUNT>;
 
 pub struct BMP388Wrapper {
-    bmp: BMP388<I2c1Handle, Blocking>
+    bmp: BMP388<I2c1Proxy, Blocking>
 }
 
 impl BMP388Wrapper {
     pub const FRAME_COUNT: usize = 73;
     pub const BUF_SIZE:    usize = 512;
 
-    pub fn new(i2c: I2c1Handle, delay: &mut SysDelay) -> Self {
+    pub fn new(i2c: I2c1Proxy, delay: &mut SysDelay) -> Self {
         let mut bmp = BMP388::new_blocking(i2c, Self::ADDRESS, delay).unwrap();
         bmp.set_power_control(PowerControl {
             pressure_enable: true,

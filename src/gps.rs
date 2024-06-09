@@ -14,7 +14,6 @@ use hal::{
     serial::{RxISR, RxListen, SerialExt}};
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
-use smart_leds::SmartLedsWrite;
 use stm32f4xx_hal::{
     dma::{
         self,
@@ -24,7 +23,7 @@ use stm32f4xx_hal::{
 };
 use time::{PrimitiveDateTime, Date};
 
-use crate::{futures::YieldFuture, interrupt_wake, neopixel, NEOPIXEL, RTC};
+use crate::{interrupt_wake, neopixel, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<

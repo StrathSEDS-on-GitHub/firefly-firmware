@@ -1,7 +1,7 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use embassy_futures::block_on;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::OutputPin;
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;

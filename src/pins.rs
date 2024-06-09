@@ -1,21 +1,20 @@
 #![allow(unused_imports)]
-use bmp388::{BMP388, Blocking};
+use core::cell::RefCell;
+
+use bmp388::{Blocking, BMP388};
+use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::{
-    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull}, 
-    i2c::{
-        I2c,
-        dma::{
-            I2CMasterDma, 
-            RxDMA, 
-            TxDMA,
-        }
-    }, 
-    pac::{I2C1, SPI2, SPI3, DMA1},
     dma::{Stream0, Stream1},
+    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull},
+    i2c::{
+        dma::{I2CMasterDma, RxDMA, TxDMA},
+        I2c,
+    },
+    pac::{DMA1, I2C1, SPI2, SPI3},
 };
 
-use crate::bmp581::BMP581;
 use crate::altimeter::BMP388Wrapper;
+use crate::bmp581::BMP581;
 
 pub struct GpioBuses {
     pub a: gpioa::Parts,
@@ -47,6 +46,114 @@ pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
 
 pub type I2c1Handle =
     I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
+
+pub mod i2c {
+    use core::cell::RefCell;
+    use embedded_hal::i2c::{ErrorType, I2c};
+    use stm32f4xx_hal::i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA};
+
+    /// Replacement for embedded-hal-bus CriticalSectionDevice that also implements I2CMasterHandleIT
+    pub struct CriticalSectionDevice<'a, T> {
+        bus: &'a critical_section::Mutex<RefCell<T>>,
+    }
+
+    impl<'a, T> CriticalSectionDevice<'a, T> {
+        /// Create a new `CriticalSectionDevice`.
+        #[inline]
+        pub fn new(bus: &'a critical_section::Mutex<RefCell<T>>) -> Self {
+            Self { bus }
+        }
+    }
+
+    impl<'a, T> ErrorType for CriticalSectionDevice<'a, T>
+    where
+        T: I2c,
+    {
+        type Error = T::Error;
+    }
+
+    impl<'a, T> I2c for CriticalSectionDevice<'a, T>
+    where
+        T: I2c,
+    {
+        #[inline]
+        fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.read(address, read)
+            })
+        }
+
+        #[inline]
+        fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.write(address, write)
+            })
+        }
+
+        #[inline]
+        fn write_read(
+            &mut self,
+            address: u8,
+            write: &[u8],
+            read: &mut [u8],
+        ) -> Result<(), Self::Error> {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.write_read(address, write, read)
+            })
+        }
+
+        #[inline]
+        fn transaction(
+            &mut self,
+            address: u8,
+            operations: &mut [embedded_hal::i2c::Operation<'_>],
+        ) -> Result<(), Self::Error> {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.transaction(address, operations)
+            })
+        }
+    }
+
+    impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for CriticalSectionDevice<'a, T> {
+        fn handle_dma_interrupt(&mut self) {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.handle_dma_interrupt()
+            })
+        }
+
+        fn handle_error_interrupt(&mut self) {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.handle_error_interrupt()
+            })
+        }
+    }
+
+    impl<'a, T> I2CMasterWriteReadDMA for CriticalSectionDevice<'a, T>
+    where
+        T: I2c + I2CMasterWriteReadDMA
+    {
+        unsafe fn write_read_dma(
+            &mut self,
+            addr: u8,
+            bytes: &[u8],
+            buf: &mut [u8],
+            callback: Option<stm32f4xx_hal::i2c::dma::I2cCompleteCallback>,
+        ) -> nb::Result<(), stm32f4xx_hal::i2c::Error> {
+            critical_section::with(|cs| {
+                let bus = &mut *self.bus.borrow_ref_mut(cs);
+                bus.write_read_dma(addr, bytes, buf, callback)
+            }) 
+        }
+    }
+}
+
+pub type I2c1Proxy = i2c::CriticalSectionDevice<'static, I2c1Handle>;
 
 #[cfg(feature = "target-mini")]
 pub type Altimeter = BMP388Wrapper;
@@ -122,16 +229,29 @@ macro_rules! qspi_pins {
         #[cfg(feature = "target-mini")]
         {
             // (ncs, io0, io1, io2, io3, clk)
-            ($gpio.b.pb6, $gpio.c.pc9, $gpio.c.pc10, $gpio.c.pc8, $gpio.a.pa1, $gpio.b.pb1)
+            (
+                $gpio.b.pb6,
+                $gpio.c.pc9,
+                $gpio.c.pc10,
+                $gpio.c.pc8,
+                $gpio.a.pa1,
+                $gpio.b.pb1,
+            )
         }
         #[cfg(feature = "target-maxi")]
         {
             // (ncs, io0, io1, io2, io3, clk)
-            ($gpio.b.pb6, $gpio.d.pd11, $gpio.d.pd12, $gpio.e.pe2, $gpio.a.pa1, $gpio.b.pb1)
+            (
+                $gpio.b.pb6,
+                $gpio.d.pd11,
+                $gpio.d.pd12,
+                $gpio.e.pe2,
+                $gpio.a.pa1,
+                $gpio.b.pb1,
+            )
         }
     }};
 }
-
 
 #[macro_export]
 macro_rules! radio_pins {
@@ -139,12 +259,28 @@ macro_rules! radio_pins {
         #[cfg(feature = "target-mini")]
         {
             // (nss, sck, miso, mosi, reset, busy, dio1)
-            ($gpio.a.pa4, $gpio.a.pa5, $gpio.a.pa6, $gpio.a.pa7, $gpio.b.pb0, $gpio.c.pc5, $gpio.c.pc4)
+            (
+                $gpio.a.pa4,
+                $gpio.a.pa5,
+                $gpio.a.pa6,
+                $gpio.a.pa7,
+                $gpio.b.pb0,
+                $gpio.c.pc5,
+                $gpio.c.pc4,
+            )
         }
 
         #[cfg(feature = "target-maxi")]
         {
-            ($gpio.a.pa4, $gpio.a.pa5, $gpio.a.pa6, $gpio.a.pa7, $gpio.b.pb0, $gpio.c.pc5, $gpio.c.pc4)
+            (
+                $gpio.a.pa4,
+                $gpio.a.pa5,
+                $gpio.a.pa6,
+                $gpio.a.pa7,
+                $gpio.b.pb0,
+                $gpio.c.pc5,
+                $gpio.c.pc4,
+            )
         }
     }};
 }
