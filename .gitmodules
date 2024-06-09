@@ -19,3 +19,9 @@
 [submodule "bmp388"]
 	path = bmp388
 	url = https://github.com/ibutra/bmp388
+[submodule "icm209478_driver"]
+	path = icm20948_driver
+	url = https://github.com/Zolkin1/icm20948_driver
+[submodule "icm20948_driver"]
+	path = icm20948_driver
+	url = https://github.com/Zolkin1/icm20948_driver
