@@ -15,7 +15,9 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use embedded_storage_async::nor_flash::NorFlash;
 use ratatui::{
     backend::Backend,
     style::{Color, Style},
@@ -50,6 +52,7 @@ pub enum Focus {
 pub enum Reason {
     Read,
     Write,
+    Erase,
 }
 
 #[derive(Debug)]
@@ -88,7 +91,7 @@ impl App {
                     " Sync ",
                     vec![
                         MenuItem::item(" Sync config to device ", "sync.device"),
-                        MenuItem::item(" Erase logs from device ", "sync.erase.logs"),
+                        MenuItem::item(" Erase device fully", "sync.erase.logs"),
                     ],
                 ),
                 MenuItem::group(
@@ -234,7 +237,7 @@ impl App {
             cfg.seek(std::io::SeekFrom::Start(0)).unwrap();
         }
 
-        let mut file = FileWrapper::new(cfg);
+        let mut file = FileWrapper::new(cfg).unwrap();
         let id: Option<U64Item> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
@@ -344,14 +347,22 @@ impl App {
                     ..
                 } => {
                     if let Some(i) = list_state.selected() {
-                        if *reason == Reason::Read {
-                            self.read_from_device(i).await.unwrap_or_else(|e| {
-                                self.error(true, Paragraph::new(format!("{:?}", e)));
-                            });
-                        } else {
-                            self.write_to_device(i).await.unwrap_or_else(|e| {
-                                self.error(true, Paragraph::new(format!("{:?}", e)));
-                            });
+                        match *reason {
+                            Reason::Read => {
+                                self.read_from_device(i).await.unwrap_or_else(|e| {
+                                    self.error(true, Paragraph::new(format!("{:?}", e)));
+                                });
+                            }
+                            Reason::Write => {
+                                self.write_to_device(i).await.unwrap_or_else(|e| {
+                                    self.error(true, Paragraph::new(format!("{:?}", e)));
+                                });
+                            }
+                            Reason::Erase =>  {
+                                self.erase_device(i).await.unwrap_or_else(|e| {
+                                    self.error(true, Paragraph::new(format!("{:?}", e)));
+                                });
+                            }
                         }
                     }
                 }
@@ -359,6 +370,45 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    async fn erase_device(&mut self, i: usize) -> anyhow::Result<()> {
+        let devices = if let PopupPhase::Selection { devices, .. } = &self.popup_phase {
+            devices
+        } else {
+            unreachable!()
+        };
+        let selected = devices[i].clone();
+        let percent = Arc::new(AtomicUsize::new(0));
+        self.popup_phase = PopupPhase::Progress(
+            "Erasing device..".to_owned(),
+            percent.clone(),
+            Reason::Erase,
+        );
+        self.focus(Focus::Popup);
+
+        let done_channel = oneshot::channel();
+        let err_channel = oneshot::channel();
+        self.progress_done_channel = Some(done_channel.1);
+        self.error_channel = Some(err_channel.1);
+
+        let device_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(selected.path)?;
+
+        let mut flash_wrapper = FileWrapper::new_no_cache(device_file)?;
+
+        tokio::spawn(async move {
+            if let Err(e) = flash_wrapper.erase(CONFIG_FLASH_RANGE.start, LOGS_FLASH_RANGE.end).await {
+                err_channel.0.send((true, format!("{:?}", e))).unwrap();
+                return;
+            }
+            done_channel.0.send(()).unwrap();
+            println!("erasing done??");
+        });
+
+        Ok(())
     }
 
     async fn read_from_device(&mut self, i: usize) -> anyhow::Result<()> {
@@ -449,7 +499,7 @@ impl App {
             .write(true)
             .open(selected.path)?;
 
-        let mut flash_wrapper = FileWrapper::new(device_file);
+        let mut flash_wrapper = FileWrapper::new(device_file).context("Reading file failed")?;
 
         let total_keys = json.len();
 
@@ -748,6 +798,20 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
                         };
                         app.focus(Focus::Popup);
                     }
+                    "sync.erase.logs" => {
+                        app.popup_phase = PopupPhase::Selection {
+                            list_state: ListState::default(),
+                            devices: get_devices()
+                                .unwrap()
+                                .map(|d| d.unwrap())
+                                .filter(|d| d.size == LOGS_FLASH_RANGE.end as u64)
+                                .collect(),
+                            instructions: "Choose a device to erase".to_owned(),
+                            show_local: false,
+                            reason: Reason::Erase,
+                        };
+                        app.focus(Focus::Popup);
+                    }
                     _ => {
                         println!("Selected: {}", item);
                     }
@@ -757,7 +821,7 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
 
         if let Some(ref mut rx) = app.progress_done_channel {
             if let Ok(()) = rx.try_recv() {
-                if let PopupPhase::Progress(_, _, Reason::Read) = app.popup_phase {
+                if matches!(app.popup_phase, PopupPhase::Progress(_, _, Reason::Read | Reason::Erase)) {
                     app.load_flash().await;
                 }
                 app.progress_done_channel = None;
