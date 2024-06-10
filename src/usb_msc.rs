@@ -59,7 +59,7 @@ impl Storage {
         sector: &[u8],
     ) -> Result<(), usbd_scsi::BlockDeviceError> {
 
-        neopixel::update_pixel(3, [128, 0, 0]);
+        neopixel::update_pixel(2, [128, 0, 0]);
 
         self.host
             .borrow_mut()
@@ -74,7 +74,7 @@ impl Storage {
             self.host.borrow_mut().wait_on_busy().unwrap();
         }
 
-        neopixel::update_pixel(3, [0,0,0]);
+        neopixel::update_pixel(2, [0,0,0]);
 
         Ok(())
     }
@@ -99,7 +99,7 @@ impl BlockDevice for Storage {
             }
         }
 
-        neopixel::update_pixel(3, [0,0,128]);
+        neopixel::update_pixel(2, [0,0,128]);
 
         let res = self
             .host
@@ -109,7 +109,7 @@ impl BlockDevice for Storage {
                 usbd_scsi::BlockDeviceError::HardwareError
             });
 
-        neopixel::update_pixel(3, [0,0,0]);
+        neopixel::update_pixel(2, [0,0,0]);
 
         res
     }
@@ -117,14 +117,14 @@ impl BlockDevice for Storage {
     fn write_block(&mut self, lba: u32, block: &[u8]) -> Result<(), usbd_scsi::BlockDeviceError> {
         if lba == 0x34 && block.len() > 366 && &block[361..366] == &[0x42, 0x42, 0x42, 0x42, 0x42] {
             // Magic value to trigger a chip erase
-            neopixel::update_pixel(3, [128, 128, 0]);
+            neopixel::update_pixel(2, [128, 128, 0]);
 
             self.host
                 .borrow_mut()
                 .chip_erase()
                 .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
 
-            neopixel::update_pixel(3, [0,0,0]);
+            neopixel::update_pixel(2, [0,0,0]);
 
             return Ok(());
         }

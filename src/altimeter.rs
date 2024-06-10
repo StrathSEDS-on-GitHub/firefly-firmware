@@ -1,25 +1,23 @@
-use bmp388::{
-    config::{
-        FifoConfig, OversamplingConfig, SubsamplingFactor
-    }, 
-    Blocking, 
-    PowerControl, 
-    PowerMode,
-    Oversampling,
-    BMP388
+use crate::futures::YieldFuture;
+use crate::interrupt_wake;
+use crate::{
+    futures::{bmp_wake, NbFuture},
+    pins::Altimeter,
+    I2c1Proxy,
 };
-use heapless::Vec;
+use bmp388::{
+    config::{FifoConfig, OversamplingConfig, SubsamplingFactor},
+    Blocking, Oversampling, PowerControl, PowerMode, BMP388,
+};
 use core::{cell::RefCell, ptr::addr_of_mut};
 use cortex_m::interrupt::Mutex;
-use stm32f4xx_hal::{
-    i2c::dma::{
-        I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback
-    }, interrupt
-};
+use heapless::Vec;
 use stm32f4xx_hal::i2c;
 use stm32f4xx_hal::timer::delay::SysDelay;
-use crate::{futures::bmp_wake, pins::Altimeter, I2c1Proxy};
-use crate::interrupt_wake;
+use stm32f4xx_hal::{
+    i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback},
+    interrupt,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct PressureTemp {
@@ -30,24 +28,30 @@ pub struct PressureTemp {
 pub type FifoFrames = Vec<PressureTemp, ALTIMETER_FRAME_COUNT>;
 
 pub struct BMP388Wrapper {
-    bmp: BMP388<I2c1Proxy, Blocking>
+    bmp: BMP388<I2c1Proxy, Blocking>,
 }
 
 impl BMP388Wrapper {
     pub const FRAME_COUNT: usize = 73;
-    pub const BUF_SIZE:    usize = 512;
+    pub const BUF_SIZE: usize = 512;
+
+    pub(crate) unsafe fn dma_complete(&self) -> Result<(), ()> {
+        self.bmp.com.dma_complete()
+    }
 
     pub fn new(i2c: I2c1Proxy, delay: &mut SysDelay) -> Self {
         let mut bmp = BMP388::new_blocking(i2c, Self::ADDRESS, delay).unwrap();
         bmp.set_power_control(PowerControl {
             pressure_enable: true,
             temperature_enable: true,
-            mode: PowerMode::Normal
-        }).unwrap();
+            mode: PowerMode::Normal,
+        })
+        .unwrap();
         bmp.set_oversampling(OversamplingConfig {
             osr_pressure: Oversampling::x1,
-            osr_temperature: Oversampling::x1
-        }).unwrap();
+            osr_temperature: Oversampling::x1,
+        })
+        .unwrap();
         bmp.set_fifo_config(FifoConfig {
             enabled: true,
             stop_on_full: false,
@@ -55,32 +59,33 @@ impl BMP388Wrapper {
             store_temperature: true,
             return_sensor_time: false,
             subsampling: SubsamplingFactor::Subsample1,
-            filter_data: false
-        }).unwrap();
+            filter_data: false,
+        })
+        .unwrap();
         Self { bmp }
     }
 }
 
-pub trait AltimeterFifoDMA<
-    const FRAMES: usize, const BUF_SIZE: usize
->: I2CMasterWriteReadDMA {
+pub trait AltimeterFifoDMA<const FRAMES: usize, const BUF_SIZE: usize>:
+    I2CMasterWriteReadDMA
+{
     const FIFO_READ_REG: u8;
     const ADDRESS: u8;
 
     fn dma_interrupt(&mut self);
     fn process_fifo_buffer(&self, data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
-    
+
     fn decode_frame(pres: &[u8], temp: &[u8]) -> (u32, u32) {
-        ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
-         (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16)
+        (
+            (pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16,
+            (temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16,
+        )
     }
 }
 
-
-impl AltimeterFifoDMA<
-    {BMP388Wrapper::FRAME_COUNT}, 
-    {BMP388Wrapper::BUF_SIZE}
-> for BMP388Wrapper {
+impl AltimeterFifoDMA<{ BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE }>
+    for BMP388Wrapper
+{
     const FIFO_READ_REG: u8 = 0x14;
     const ADDRESS: u8 = 0x77;
 
@@ -90,10 +95,10 @@ impl AltimeterFifoDMA<
 
     fn process_fifo_buffer(
         &self,
-        data: [u8; BMP388Wrapper::BUF_SIZE]
-    ) -> Vec<PressureTemp, {BMP388Wrapper::FRAME_COUNT}> {
+        data: [u8; BMP388Wrapper::BUF_SIZE],
+    ) -> Vec<PressureTemp, { BMP388Wrapper::FRAME_COUNT }> {
         let mut i: usize = 0;
-        let mut output = Vec::<PressureTemp, {BMP388Wrapper::FRAME_COUNT}>::new();
+        let mut output = Vec::<PressureTemp, { BMP388Wrapper::FRAME_COUNT }>::new();
 
         while i < BMP388Wrapper::BUF_SIZE - 7 {
             let header = data[i];
@@ -108,35 +113,39 @@ impl AltimeterFifoDMA<
                 0b01 => {
                     // Config change or error
                     i += 2;
-                },
-                0b10 => match (s, t, p) { // Data frame
+                }
+                0b10 => match (s, t, p) {
+                    // Data frame
                     (true, false, false) => {
-                        // sensortime 
+                        // sensortime
                         i += 4;
-                    },
+                    }
                     (false, true, false) => {
                         // temp only
                         i += 4;
-                    },
+                    }
                     (false, false, true) => {
                         // pressure only
                         i += 4;
-                    },
+                    }
                     (false, true, true) => {
                         // pressure & temp
-                        let t = &data[i+1 .. i+4];
-                        let p = &data[i+4 .. i+7];
+                        let t = &data[i + 1..i + 4];
+                        let p = &data[i + 4..i + 7];
                         let (u_pres, u_temp) = Self::decode_frame(p, t);
                         let temp = self.bmp.compensate_temp(u_temp);
                         let pres = self.bmp.compensate_pressure(u_pres, temp);
-                        let frame = PressureTemp { pressure: pres as f32, temperature: temp as f32 };
+                        let frame = PressureTemp {
+                            pressure: pres as f32,
+                            temperature: temp as f32,
+                        };
                         output.push(frame).unwrap();
                         i += 7;
-                    },
+                    }
                     (false, false, false) => {
                         // Empty
                         i += 2;
-                    },
+                    }
                     _ => {
                         // Invalid
                         break;
@@ -159,7 +168,7 @@ impl I2CMasterWriteReadDMA for BMP388Wrapper {
         addr: u8,
         bytes: &[u8],
         buf: &mut [u8],
-        callback: Option<I2cCompleteCallback>
+        callback: Option<I2cCompleteCallback>,
     ) -> Result<(), nb::Error<i2c::Error>> {
         self.bmp.com.write_read_dma(addr, bytes, buf, callback)
     }
@@ -171,7 +180,7 @@ static BMP: Mutex<RefCell<Option<Altimeter>>> = Mutex::new(RefCell::new(None));
 fn DMA1_STREAM1() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().unwrap().dma_interrupt();
+        i2c.as_mut().map(|it| it.dma_interrupt());
     });
 }
 
@@ -179,7 +188,7 @@ fn DMA1_STREAM1() {
 fn DMA1_STREAM0() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().unwrap().dma_interrupt();
+        i2c.as_mut().map(|it| it.dma_interrupt());
     });
 }
 
@@ -198,28 +207,38 @@ pub const ALTIMETER_BUF_SIZE: usize = crate::bmp581::BMP581::BUF_SIZE;
 pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
 
+    cortex_m::interrupt::free(|cs| {
+        BMP.borrow(cs).replace(Some(bmp));
+    });
     unsafe {
-        cortex_m::interrupt::free(|cs| {
-            BMP.borrow(cs).replace(Some(bmp));
-            nb::block!(BMP
-                .borrow(cs)
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .write_read_dma(
-                    Altimeter::ADDRESS,
-                    &[Altimeter::FIFO_READ_REG],
-                    &mut *addr_of_mut!(DATA),
-                    Some(|_| { interrupt_wake!(bmp_wake); } )
-                ))
-            .unwrap();
-        });
+        let mut done = false;
+        while !done {
+            cortex_m::interrupt::free(|cs| {
+                if let Ok(()) = BMP
+                                    .borrow(cs)
+                                    .borrow_mut()
+                                    .as_mut()
+                                    .unwrap()
+                                    .write_read_dma(
+                                        Altimeter::ADDRESS,
+                                        &[Altimeter::FIFO_READ_REG],
+                                        &mut *addr_of_mut!(DATA),
+                                        Some(|_| {
+                                            interrupt_wake!(bmp_wake);
+                                        }),
+                                    ) {
+                    done = true
+                }
+            });
+
+            // Busy, yield (or BMP is fucked and we aren't going to progress anyway)
+            YieldFuture::new().await;
+        }
     }
     crate::futures::bmp_wake::future().await;
-    
-    let bmp = cortex_m::interrupt::free(|cs| 
-        BMP.borrow(cs).replace(None).unwrap()
-    );
-    let frames = bmp.process_fifo_buffer(unsafe{DATA});
+
+    let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
+    unsafe { bmp.dma_complete().expect("Failed to mark DMA complete?") };
+    let frames = bmp.process_fifo_buffer(unsafe { DATA });
     (frames, bmp)
 }

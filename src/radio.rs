@@ -7,6 +7,7 @@ use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
 
 use crate::mission;
+use crate::mission::EpochTime;
 use crate::mission::MissionStage;
 use crate::mission::PyroPin;
 use crate::mission::Role;
@@ -80,7 +81,7 @@ pub enum Message {
         counter: u16,
         stage: MissionStage,
         role: Role,
-        time_of_first_packet: u32,
+        time_of_first_packet: EpochTime,
         latitudes: [f32; 10],
         longitudes: [f32; 10],
         altitudes: [f32; 10],
@@ -89,18 +90,18 @@ pub enum Message {
         counter: u16,
         stage: MissionStage,
         role: Role,
-        time_of_first_packet: u32,
+        time_of_first_packet: EpochTime,
         pressures: [f32; 8],
         temperatures: [f32; 8],
     },
-    CurrentSensorBroadcast {
+    IMUBroadcast {
         counter: u16,
         stage: MissionStage,
         role: Role,
-        time_of_first_packet: u32,
-        currents: [i16; 8],
-        voltages: [u16; 8],
-    },
+        time_of_first_packet: EpochTime,
+        accels: [[f32; 3]; 8],
+        gyros: [[f32; 3]; 8],
+    }, 
     Arm(Role, u8),
     Disarm(Role, u8),
     TestPyro(Role, PyroPin, u32),
@@ -177,13 +178,11 @@ static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-const TDM_CONFIG: [(RadioState, u32); 6] = [
+const TDM_CONFIG: [(RadioState, u32); 4] = [
     (RadioState::Buffer(Role::Ground), 100),
     (RadioState::Tx(Role::Ground), 600),
-    (RadioState::Buffer(Role::Avionics), 50),
-    (RadioState::Tx(Role::Avionics), 600),
-    (RadioState::Buffer(Role::Cansat), 50),
-    (RadioState::Tx(Role::Cansat), 600),
+    (RadioState::Buffer(Role::Avionics), 100),
+    (RadioState::Tx(Role::Avionics), 1200),
 ];
 
 pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message, 64>>> =

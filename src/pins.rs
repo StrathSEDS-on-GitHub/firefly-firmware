@@ -48,48 +48,87 @@ pub type I2c1Handle =
     I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
 pub mod i2c {
-    use core::cell::RefCell;
+    use core::{
+        cell::{RefCell, UnsafeCell},
+        sync::atomic::{AtomicBool, Ordering},
+    };
     use embedded_hal::i2c::{ErrorType, I2c};
+    use embedded_hal_bus::i2c::AtomicError;
     use stm32f4xx_hal::i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA};
 
-    /// Replacement for embedded-hal-bus CriticalSectionDevice that also implements I2CMasterHandleIT
-    pub struct CriticalSectionDevice<'a, T> {
-        bus: &'a critical_section::Mutex<RefCell<T>>,
+    /// Replacement for embedded-hal-bus AtomicDevice that also implements I2CMasterHandleIT
+    pub struct AtomicDevice<'a, T> {
+        bus: &'a UnsafeCell<T>,
+        busy: &'a AtomicBusyState,
+    }
+    unsafe impl<'a, T> Send for AtomicDevice<'a, T> {}
+
+    #[derive(PartialEq, Eq)]
+    #[atomic_enum::atomic_enum]
+    pub enum BusyState {
+        Free,
+        Busy,
+        BusyDMA, // Only handle_dma_interrupt is allowed
     }
 
-    impl<'a, T> CriticalSectionDevice<'a, T> {
+    impl<'a, T> AtomicDevice<'a, T> {
         /// Create a new `CriticalSectionDevice`.
         #[inline]
-        pub fn new(bus: &'a critical_section::Mutex<RefCell<T>>) -> Self {
-            Self { bus }
+        pub fn new(bus: &'a UnsafeCell<T>, busy: &'a AtomicBusyState) -> Self {
+            busy.store(BusyState::Free, Ordering::Relaxed);
+            Self { bus, busy }
         }
     }
 
-    impl<'a, T> ErrorType for CriticalSectionDevice<'a, T>
+    impl<'a, T> ErrorType for AtomicDevice<'a, T>
     where
         T: I2c,
     {
-        type Error = T::Error;
+        type Error = AtomicError<T::Error>;
     }
 
-    impl<'a, T> I2c for CriticalSectionDevice<'a, T>
+    impl<'a, T: I2c> AtomicDevice<'a, T> {
+        fn lock<R, F>(&self, f: F) -> Result<R, AtomicError<T::Error>>
+        where
+            F: FnOnce(&mut T) -> Result<R, T::Error>,
+        {
+            self.busy
+                .compare_exchange_weak(
+                    BusyState::Free,
+                    BusyState::Busy,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .map_err(|_| embedded_hal_bus::i2c::AtomicError::Busy)?;
+            let result = f(unsafe { &mut *self.bus.get() });
+
+            self.busy.store(BusyState::Free, Ordering::Release);
+
+            result.map_err(AtomicError::Other)
+        }
+
+        pub unsafe fn dma_complete(&self) -> Result<(), ()> {
+            self.busy.compare_exchange(
+                BusyState::BusyDMA,
+                BusyState::Free,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ).map_err(|_| ()).map(|_| ())
+        }
+    }
+
+    impl<'a, T> I2c for AtomicDevice<'a, T>
     where
         T: I2c,
     {
         #[inline]
         fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.read(address, read)
-            })
+            self.lock(|bus| bus.read(address, read))
         }
 
         #[inline]
         fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.write(address, write)
-            })
+            self.lock(|bus| bus.write(address, write))
         }
 
         #[inline]
@@ -99,10 +138,7 @@ pub mod i2c {
             write: &[u8],
             read: &mut [u8],
         ) -> Result<(), Self::Error> {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.write_read(address, write, read)
-            })
+            self.lock(|bus| bus.write_read(address, write, read))
         }
 
         #[inline]
@@ -111,32 +147,35 @@ pub mod i2c {
             address: u8,
             operations: &mut [embedded_hal::i2c::Operation<'_>],
         ) -> Result<(), Self::Error> {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.transaction(address, operations)
-            })
+            self.lock(|bus| bus.transaction(address, operations))
         }
     }
 
-    impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for CriticalSectionDevice<'a, T> {
+    impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for AtomicDevice<'a, T> {
         fn handle_dma_interrupt(&mut self) {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.handle_dma_interrupt()
-            })
+            match self.busy.load(Ordering::Relaxed) {
+                BusyState::BusyDMA  => {
+                    let bus = unsafe { &mut *self.bus.get() };
+                    bus.handle_dma_interrupt();
+                }
+                _ => panic!("Invalid state for DMA interrupt"),
+            }
         }
 
         fn handle_error_interrupt(&mut self) {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.handle_error_interrupt()
-            })
+            match self.busy.load(Ordering::Relaxed) {
+                BusyState::BusyDMA  => {
+                    let bus = unsafe { &mut *self.bus.get() };
+                    bus.handle_error_interrupt();
+                }
+                _ => panic!("Invalid state for DMA interrupt"),
+            }
         }
     }
 
-    impl<'a, T> I2CMasterWriteReadDMA for CriticalSectionDevice<'a, T>
+    impl<'a, T> I2CMasterWriteReadDMA for AtomicDevice<'a, T>
     where
-        T: I2c + I2CMasterWriteReadDMA
+        T: I2c + I2CMasterWriteReadDMA,
     {
         unsafe fn write_read_dma(
             &mut self,
@@ -145,21 +184,27 @@ pub mod i2c {
             buf: &mut [u8],
             callback: Option<stm32f4xx_hal::i2c::dma::I2cCompleteCallback>,
         ) -> nb::Result<(), stm32f4xx_hal::i2c::Error> {
-            critical_section::with(|cs| {
-                let bus = &mut *self.bus.borrow_ref_mut(cs);
-                bus.write_read_dma(addr, bytes, buf, callback)
-            }) 
+            self.busy
+                .compare_exchange_weak(
+                    BusyState::Free,
+                    BusyState::BusyDMA,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .map_err(|_| nb::Error::WouldBlock)?;
+            let bus = &mut *self.bus.get();
+            bus.write_read_dma(addr, bytes, buf, callback)
         }
     }
 }
 
-pub type I2c1Proxy = i2c::CriticalSectionDevice<'static, I2c1Handle>;
+pub type I2c1Proxy = i2c::AtomicDevice<'static, I2c1Handle>;
 
 #[cfg(feature = "target-mini")]
 pub type Altimeter = BMP388Wrapper;
 
 #[cfg(feature = "target-maxi")]
-pub type Altimeter = BMP581;
+pub type Altimeter = BMP581<I2c1Proxy>;
 
 #[macro_export]
 macro_rules! buzzer_pin {

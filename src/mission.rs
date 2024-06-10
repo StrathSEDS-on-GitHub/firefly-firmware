@@ -1,10 +1,11 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use embassy_futures::block_on;
-use embedded_hal::digital::OutputPin;
+use embedded_hal::{digital::OutputPin, i2c::I2c};
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;
+use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
@@ -114,7 +115,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         }
         let frames = frames.unwrap();
         if sea_level_pressure == 0.0 {
-            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = frames                
+            let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = frames
                 .iter()
                 .map(|frame| frame.pressure)
                 .into_iter()
@@ -125,12 +126,15 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         }
 
         let stage = current_stage();
-        let altitudes: Vec<f32, ALTIMETER_FRAME_COUNT> = frames.iter().map(|frame| {
-            let altitude = (libm::powf(sea_level_pressure / frame.pressure, 1.0 / 5.257) - 1.0)
-                * (frame.temperature + 273.15)
-                / 0.0065;
-            altitude
-        }).collect();
+        let altitudes: Vec<f32, ALTIMETER_FRAME_COUNT> = frames
+            .iter()
+            .map(|frame| {
+                let altitude = (libm::powf(sea_level_pressure / frame.pressure, 1.0 / 5.257) - 1.0)
+                    * (frame.temperature + 273.15)
+                    / 0.0065;
+                altitude
+            })
+            .collect();
 
         if start_altitude == 0.0 {
             // If we don't have a start pressure, we can't do anything
@@ -333,13 +337,29 @@ async fn gps_handler() -> ! {
     gps::poll_for_sentences().await
 }
 
-fn current_rtc_time() -> (u8, u8, u8, u16) {
+pub type RTCTime = (u8, u8, u8, u16);
+fn current_rtc_time() -> RTCTime {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
         let date_time = rtc.get_datetime();
         date_time.as_hms_milli()
     })
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[repr(transparent)]
+pub struct EpochTime(u32);
+
+impl From<RTCTime> for EpochTime {
+    fn from(time: RTCTime) -> Self {
+        EpochTime(
+            time.0 as u32 * 3_600_000
+                + time.1 as u32 * 60_000
+                + time.2 as u32 * 1000
+                + time.3 as u32,
+        )
+    }
 }
 
 async fn gps_broadcast() -> ! {
@@ -353,12 +373,7 @@ async fn gps_broadcast() -> ! {
         while i < 20 {
             if i == 0 {
                 let time = current_rtc_time();
-                start_time = Some(
-                    time.0 as u32 * 3_600_000
-                        + time.1 as u32 * 60_000
-                        + time.2 as u32 * 1000
-                        + time.3 as u32,
-                );
+                start_time = Some(time.into());
             }
             let fix = gps::next_sentence().await;
             if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
@@ -407,11 +422,7 @@ async fn pressure_temp_handler(
         let mut pressures = [0.0; 8];
         let mut temperatures = [0.0; 8];
 
-        let time = current_rtc_time();
-        let start_time = time.0 as u32 * 3_600_000
-            + time.1 as u32 * 60_000
-            + time.2 as u32 * 1000
-            + time.3 as u32;
+        let start_time = current_rtc_time().into();
 
         let mut i = 0;
 
@@ -517,23 +528,23 @@ async fn handle_incoming_packets() -> ! {
                     Message::Disarm(..) => {}
                     Message::TestPyro(..) => {}
                     Message::SetStage(..) => {}
-                    Message::CurrentSensorBroadcast {
+                    Message::IMUBroadcast {
                         counter,
                         stage,
                         role,
                         time_of_first_packet,
-                        currents,
-                        voltages,
+                        accels,
+                        gyros,
                     } => {
                         writeln!(
                             get_serial(),
-                            "current,{:?},{:?},{},{:?},{:?},{:?}",
+                            "imu,{:?},{:?},{},{:?},{:?},{:?}",
                             role,
                             stage,
                             counter,
                             time_of_first_packet,
-                            currents,
-                            voltages
+                            accels,
+                            gyros
                         )
                         .unwrap();
                         let rssi = radio::get_packet_status().rssi_pkt();
@@ -687,7 +698,50 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-pub async fn begin(pressure_sensor: Option<Altimeter>, pr_timer: Counter<TIM12, 10000>) -> ! {
+async fn imu_handler(mut imu: IcmImu<impl I2c, NoDmp>, mut imu_timer: Counter<impl timer::Instance, 100000>) -> ! {
+    let mut acc_buffer = [[0.0f32; 3]; 8];
+    let mut gyro_buffer = [[0.0f32; 3]; 8];
+
+    loop {
+        // SAFETY: We're in a loop, so we're guaranteed to get a value.
+        let mut start_time = None;
+
+        for (acc, gyro) in acc_buffer.iter_mut().zip(gyro_buffer.iter_mut()) {
+            let (acc_data, gyro_data) = loop {
+                if let Ok(x) = imu.read_acc().and_then(|a| imu.read_gyro().map(|g| (a, g))) {
+                    start_time.get_or_insert(current_rtc_time().into());
+                    get_logger()
+                        .log(format_args!("imu,{:?},{:?}", x.0, x.1))
+                        .await;
+                    break x;
+                };
+                YieldFuture::new().await;
+            };
+
+            *acc = acc_data;
+            *gyro = gyro_data;
+            imu_timer.start(10.millis()).unwrap();
+            NbFuture::new(||imu_timer.wait()).await.unwrap();
+        }
+
+        let message = Message::IMUBroadcast {
+            counter: radio::next_counter(),
+            stage: current_stage(),
+            role: role(),
+            time_of_first_packet: start_time.unwrap(),
+            accels: acc_buffer,
+            gyros: gyro_buffer,
+        };
+        radio::queue_packet(message);
+    }
+}
+
+pub async fn begin(
+    pressure_sensor: Option<Altimeter>,
+    pr_timer: Counter<TIM12, 10000>,
+    imu: Option<IcmImu<impl I2c, NoDmp>>,
+    imu_timer: Counter<impl timer::Instance, 100000>,
+) -> ! {
     match unsafe { ROLE } {
         Role::Ground =>
         {
@@ -704,6 +758,7 @@ pub async fn begin(pressure_sensor: Option<Altimeter>, pr_timer: Counter<TIM12, 
                 gps_broadcast(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
+                imu_handler(imu.unwrap(), imu_timer),
                 stage_update_handler(pressure_receiver)
             )
             .0

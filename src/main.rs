@@ -12,6 +12,7 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
+use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
@@ -44,6 +45,7 @@ use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
+use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::pac::SPI1;
@@ -277,40 +279,53 @@ async fn main(_spawner: Spawner) {
         };
 
         unsafe { mission::ROLE = role };
+        let streams = StreamsTuple::new(dp.DMA1);
+        let tx_stream = streams.1;
+        let rx_stream = streams.0;
+        let i2c = dp
+            .I2C1
+            .i2c((gpio.b.pb8, gpio.b.pb7), 100.kHz(), &clocks)
+            .use_dma(tx_stream, rx_stream);
+
+        static mut I2C_BUS: Option<UnsafeCell<I2c1Handle>> = None;
+        static I2C_BUSY: i2c::AtomicBusyState = i2c::AtomicBusyState::new(i2c::BusyState::Free);
+        // SAFETY: This is the only mutation of I2C_BUS so we have exclusive mutable access
+        unsafe { I2C_BUS = Some(UnsafeCell::new(i2c)) };
 
         let bmp = if mission::role() != Role::Ground {
             #[cfg(feature = "target-mini")]
             {
                 Some({
-                    let streams = StreamsTuple::new(dp.DMA1);
-                    let tx_stream = streams.1;
-                    let rx_stream = streams.0;
-                    let i2c = dp
-                        .I2C1
-                        .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
-                        .use_dma(tx_stream, rx_stream);
-
-                    static I2C_BUS: Option<critical_section::Mutex<RefCell<I2c1Handle>>> = None;
-                    critical_section::with(|cs| {
-                        I2C_BUS.as_ref().unwrap().borrow(cs).replace(i2c);
-                    });
-                    let alt_proxy = crate::pins::i2c::CriticalSectionDevice::new(I2C_BUS.as_ref().unwrap());
+                    let alt_proxy = crate::pins::i2c::AtomicDevice::new(
+                        unsafe { I2C_BUS.as_ref().unwrap() },
+                        &I2C_BUSY,
+                    );
 
                     altimeter::BMP388Wrapper::new(alt_proxy, &mut delay)
-                    // let mut icm = IcmImu::new(i2c, 0x68).unwrap();
-                    // icm.enable_acc().unwrap();
-                    // icm.enable_gyro().unwrap();
-                    // todo!()
                 })
             }
 
             #[cfg(feature = "target-maxi")]
             {
-                let mut bmp = crate::bmp581::BMP581::new(i2c).unwrap();
+                let alt_proxy =
+                    crate::pins::i2c::AtomicDevice::new(unsafe { I2C_BUS.as_ref().unwrap() }, &I2C_BUSY);
+                let mut bmp = crate::bmp581::BMP581::new(alt_proxy).unwrap();
                 bmp.enable_pressure_temperature().unwrap();
                 bmp.setup_fifo().unwrap();
                 Some(bmp)
             }
+        } else {
+            None
+        };
+        let icm = if role != Role::Ground {
+            let icm_proxy = crate::pins::i2c::AtomicDevice::new(
+                unsafe { I2C_BUS.as_ref().unwrap() },
+                &I2C_BUSY,
+            );
+            let mut icm = IcmImu::new(icm_proxy, 0x68).unwrap();
+            icm.enable_acc().unwrap();
+            icm.enable_gyro().unwrap();
+            Some(icm)
         } else {
             None
         };
@@ -333,13 +348,11 @@ async fn main(_spawner: Spawner) {
         let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
-        static SPI_BUS: Option<critical_section::Mutex<RefCell<Spi<SPI1>>>> = None;
-        critical_section::with(|cs| {
-            SPI_BUS.as_ref().unwrap().borrow(cs).replace(spi1);
-        });
+        static mut SPI_BUS: Option<critical_section::Mutex<RefCell<Spi<SPI1>>>> = None;
+        unsafe { SPI_BUS.replace(critical_section::Mutex::new(RefCell::new(spi1))) };
 
         let mut spi1_device = embedded_hal_bus::spi::CriticalSectionDevice::new(
-            &SPI_BUS.as_ref().unwrap(),
+            unsafe { SPI_BUS.as_ref().unwrap() },
             lora_nss,
             delay,
         )
@@ -384,7 +397,13 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        mission::begin(bmp, dp.TIM12.counter(&clocks)).await;
+        mission::begin(
+            bmp,
+            dp.TIM12.counter(&clocks),
+            icm,
+            dp.TIM10.counter(&clocks),
+        )
+        .await;
     }
 }
 

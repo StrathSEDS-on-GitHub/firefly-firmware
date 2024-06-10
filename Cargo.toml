@@ -51,6 +51,7 @@ bmp388 = { version="0.1.0", path="bmp388" }
 icm20948_driver = { version="0.2", path="icm20948_driver"}
 embedded-hal-bus = "0.2.0"
 critical-section = "1.1.2"
+atomic_enum = "0.3.0"
 
 [dependencies.stm32f4xx-hal]
 version = "0.20"
