@@ -174,10 +174,9 @@ async fn main(_spawner: Spawner) {
         );
 
         neopixel::new_neopixel(Ws2812::new(neopixel_spi));
-        neopixel::update_pixel(0, [0, 255, 0]);
+        neopixel::update_pixel(0, [255, 255, 0]);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
-        rtc.enable_wakeup(1000u32.millis().into());
 
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
@@ -284,7 +283,7 @@ async fn main(_spawner: Spawner) {
         let rx_stream = streams.0;
         let i2c = dp
             .I2C1
-            .i2c((gpio.b.pb8, gpio.b.pb7), 100.kHz(), &clocks)
+            .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
             .use_dma(tx_stream, rx_stream);
 
         static mut I2C_BUS: Option<UnsafeCell<I2c1Handle>> = None;

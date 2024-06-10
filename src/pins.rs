@@ -10,7 +10,7 @@ use stm32f4xx_hal::{
         dma::{I2CMasterDma, RxDMA, TxDMA},
         I2c,
     },
-    pac::{DMA1, I2C1, SPI2, SPI3},
+    pac::{DMA1, I2C1, SPI2, SPI3}, timer::Delay,
 };
 
 use crate::altimeter::BMP388Wrapper;
@@ -49,10 +49,10 @@ pub type I2c1Handle =
 
 pub mod i2c {
     use core::{
-        cell::{RefCell, UnsafeCell},
-        sync::atomic::{AtomicBool, Ordering},
+        cell::{RefCell, UnsafeCell}, fmt::Write, sync::atomic::{AtomicBool, Ordering}
     };
-    use embedded_hal::i2c::{ErrorType, I2c};
+    use cortex_m_semihosting::hprintln;
+    use embedded_hal::{delay::DelayNs, i2c::{ErrorType, I2c}};
     use embedded_hal_bus::i2c::AtomicError;
     use stm32f4xx_hal::i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA};
 
@@ -102,7 +102,7 @@ pub mod i2c {
                 .map_err(|_| embedded_hal_bus::i2c::AtomicError::Busy)?;
             let result = f(unsafe { &mut *self.bus.get() });
 
-            self.busy.store(BusyState::Free, Ordering::Release);
+            self.busy.store(BusyState::Free, Ordering::SeqCst);
 
             result.map_err(AtomicError::Other)
         }

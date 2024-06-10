@@ -430,8 +430,8 @@ async fn pressure_temp_handler(
             let frames;
             (frames, sensor) = read_altimeter_fifo(sensor).await;
             for frame in &frames {
-                let pressure = frame.pressure as f32 / libm::powf(2.0, 6.0);
-                let temperature = frame.temperature as f32 / libm::powf(2.0, 16.0);
+                let pressure = frame.pressure;
+                let temperature = frame.temperature;
 
                 // Send every fourth frame (10Hz).
                 if i % 4 == 0 && i < 4 * 8 {
@@ -753,6 +753,7 @@ pub async fn begin(
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(
+                usb_handler(),
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),

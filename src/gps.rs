@@ -6,6 +6,7 @@ use core::{
 
 use cortex_m::interrupt::Mutex;
 use fugit::ExtU32;
+use futures::poll;
 use hal::{
     dma::{traits::StreamISR, Stream2, Stream7, StreamsTuple, Transfer},
     gpio::{self, Input},
@@ -231,7 +232,7 @@ fn set_rtc(time: Time) {
             Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
             time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
         )).unwrap();
-        rtc.enable_wakeup(50u32.millis().into());
+        rtc.enable_wakeup(30u32.millis().into());
 
         NVIC::unpend(pac::Interrupt::RTC_WKUP);
         unsafe { NVIC::unmask(pac::Interrupt::RTC_WKUP); }
@@ -356,6 +357,8 @@ async fn gps_rx_complete() {
 }
 
 pub async fn tx(tx_buf: &[u8]) {
+    let mut fut = crate::futures::gps_tx_wake::future();
+    let _ = poll!(&mut fut);
     cortex_m::interrupt::free(|cs| {
         let mut tx_transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
         let tx_transfer = tx_transfer_ref.as_mut().unwrap();
@@ -368,7 +371,7 @@ pub async fn tx(tx_buf: &[u8]) {
                 .unwrap();
         }
     });
-    gps_tx_complete().await;
+    fut.await;
 }
 
 pub async fn rx(rx_buf: &mut [u8]) -> usize {

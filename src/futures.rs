@@ -1,7 +1,7 @@
 use core::{
     future::Future,
     pin,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
 };
 use thingbuf::mpsc::{errors::TrySendError, StaticSender};
@@ -106,6 +106,7 @@ macro_rules! interrupt_wake_channel {
                 crate::futures::InterruptFuture {
                     flag: &FLAG,
                     sender,
+                    sent_waker: core::sync::atomic::AtomicBool::new(false),
                 }
             }
         }
@@ -128,8 +129,8 @@ macro_rules! interrupt_wake {
 
             while let Ok(waker) = receiver.try_recv() {
                 if let Some(waker) = waker {
-                    waker.wake();
                     path::FLAG.fetch_add(1, core::sync::atomic::Ordering::Release);
+                    waker.wake();
                 }
             }
         });
@@ -145,6 +146,7 @@ interrupt_wake_channel!(bmp_wake);
 pub struct InterruptFuture {
     pub flag: &'static AtomicUsize,
     pub sender: StaticSender<Option<Waker>>,
+    pub sent_waker: AtomicBool,
 }
 
 impl Future for InterruptFuture {
@@ -166,7 +168,11 @@ impl Future for InterruptFuture {
             .is_ok()
         {
             core::task::Poll::Ready(())
-        } else {
+        } else if self
+            .sent_waker
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
             match self.sender.try_send(Some(cx.waker().clone())) {
                 Err(TrySendError::Full(_)) => {
                     // No space, so fall back to busy waiting.
@@ -178,6 +184,8 @@ impl Future for InterruptFuture {
                 Ok(_) => {}
             }
 
+            core::task::Poll::Pending
+        } else {
             core::task::Poll::Pending
         }
     }

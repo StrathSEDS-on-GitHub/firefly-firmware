@@ -1,7 +1,7 @@
 use crate::futures::YieldFuture;
 use crate::interrupt_wake;
 use crate::{
-    futures::{bmp_wake, NbFuture},
+    futures::bmp_wake,
     pins::Altimeter,
     I2c1Proxy,
 };
@@ -9,6 +9,7 @@ use bmp388::{
     config::{FifoConfig, OversamplingConfig, SubsamplingFactor},
     Blocking, Oversampling, PowerControl, PowerMode, BMP388,
 };
+use futures::poll;
 use core::{cell::RefCell, ptr::addr_of_mut};
 use cortex_m::interrupt::Mutex;
 use heapless::Vec;
@@ -210,6 +211,8 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     cortex_m::interrupt::free(|cs| {
         BMP.borrow(cs).replace(Some(bmp));
     });
+    let mut fut = bmp_wake::future();
+    let _ = poll(&mut fut);
     unsafe {
         let mut done = false;
         while !done {
@@ -235,7 +238,7 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
             YieldFuture::new().await;
         }
     }
-    crate::futures::bmp_wake::future().await;
+    fut.await;
 
     let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
     unsafe { bmp.dma_complete().expect("Failed to mark DMA complete?") };
