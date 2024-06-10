@@ -279,17 +279,17 @@ async fn main(_spawner: Spawner) {
         unsafe { mission::ROLE = role };
 
         let bmp = if mission::role() != Role::Ground {
+            let streams = StreamsTuple::new(dp.DMA1);
+            let tx_stream = streams.1;
+            let rx_stream = streams.0;
+            let i2c = dp
+                .I2C1
+                .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
+                .use_dma(tx_stream, rx_stream);
+
             #[cfg(feature = "target-mini")]
             {
                 Some({
-                    let streams = StreamsTuple::new(dp.DMA1);
-                    let tx_stream = streams.1;
-                    let rx_stream = streams.0;
-                    let i2c = dp
-                        .I2C1
-                        .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
-                        .use_dma(tx_stream, rx_stream);
-
                     static I2C_BUS: Option<critical_section::Mutex<RefCell<I2c1Handle>>> = None;
                     critical_section::with(|cs| {
                         I2C_BUS.as_ref().unwrap().borrow(cs).replace(i2c);

@@ -648,7 +648,7 @@ dependencies = [
  "bitflags 2.5.0",
  "defmt",
  "defmt-rtt",
- "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
  "libm",
  "nalgebra",
  "num-traits",
