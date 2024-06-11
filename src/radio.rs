@@ -102,6 +102,13 @@ pub enum Message {
         accels: [[f32; 3]; 8],
         gyros: [[f32; 3]; 8],
     }, 
+    Strain {
+        counter: u16,
+        stage: MissionStage,
+        role: Role,
+        time_of_first_packet: EpochTime,
+        strain: [i32; 16],
+    },
     Arm(Role, u8),
     Disarm(Role, u8),
     TestPyro(Role, PyroPin, u32),

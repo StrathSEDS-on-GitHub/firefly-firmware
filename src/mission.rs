@@ -1,7 +1,11 @@
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use embassy_futures::block_on;
-use embedded_hal::{digital::OutputPin, i2c::I2c};
+use embedded_hal::{
+    delay::DelayNs,
+    digital::{InputPin, OutputPin},
+    i2c::I2c,
+};
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;
@@ -467,6 +471,52 @@ async fn pressure_temp_handler(
     }
 }
 
+async fn strain_handler(
+    mut ads_dout: impl InputPin,
+    mut ads_sclk: impl OutputPin,
+    mut ads_delay: impl DelayNs,
+) {
+    loop {
+        let mut buffer = [0i32; 16];
+
+        for i in 0..16 {
+            while ads_dout.is_high().unwrap() {
+                YieldFuture::new().await;
+            }
+
+            let mut data = 0u32;
+            for i in 0..24usize {
+                ads_sclk.set_high().unwrap();
+                ads_delay.delay_us(1u32);
+                data |= (ads_dout.is_high().unwrap() as u32) << (23 - i);
+                ads_sclk.set_low().unwrap();
+                ads_delay.delay_us(1u32);
+            }
+
+            // Sign extend the 24-bit value to 32 bits
+            // https://stackoverflow.com/a/42536138
+            let sx_24_32 = |i: u32| {
+                let m = 1 << 23;
+                return ((i ^ m).wrapping_sub(m)) as i32;
+            };
+
+            let data = sx_24_32(data);
+            buffer[i] = data;
+        }
+
+        get_logger().log(format_args!("strain,{:?}", buffer)).await;
+
+        let message = Message::Strain {
+            counter: radio::next_counter(),
+            stage: current_stage(),
+            role: role(),
+            time_of_first_packet: current_rtc_time().into(),
+            strain: buffer,
+        };
+
+        radio::queue_packet(message);
+    }
+}
 async fn handle_incoming_packets() -> ! {
     let mut idempotency_counter = 0;
     loop {
@@ -545,6 +595,27 @@ async fn handle_incoming_packets() -> ! {
                             time_of_first_packet,
                             accels,
                             gyros
+                        )
+                        .unwrap();
+                        let rssi = radio::get_packet_status().rssi_pkt();
+
+                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
+                    }
+                    Message::Strain {
+                        counter,
+                        stage,
+                        role,
+                        time_of_first_packet,
+                        strain,
+                    } => {
+                        writeln!(
+                            get_serial(),
+                            "strain,{:?},{:?},{},{:?},{:?}",
+                            role,
+                            stage,
+                            counter,
+                            time_of_first_packet,
+                            strain
                         )
                         .unwrap();
                         let rssi = radio::get_packet_status().rssi_pkt();
@@ -698,7 +769,10 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-async fn imu_handler(mut imu: IcmImu<impl I2c, NoDmp>, mut imu_timer: Counter<impl timer::Instance, 100000>) -> ! {
+async fn imu_handler(
+    mut imu: IcmImu<impl I2c, NoDmp>,
+    mut imu_timer: Counter<impl timer::Instance, 100000>,
+) -> ! {
     let mut acc_buffer = [[0.0f32; 3]; 8];
     let mut gyro_buffer = [[0.0f32; 3]; 8];
 
@@ -721,7 +795,7 @@ async fn imu_handler(mut imu: IcmImu<impl I2c, NoDmp>, mut imu_timer: Counter<im
             *acc = acc_data;
             *gyro = gyro_data;
             imu_timer.start(10.millis()).unwrap();
-            NbFuture::new(||imu_timer.wait()).await.unwrap();
+            NbFuture::new(|| imu_timer.wait()).await.unwrap();
         }
 
         let message = Message::IMUBroadcast {
@@ -741,6 +815,9 @@ pub async fn begin(
     pr_timer: Counter<TIM12, 10000>,
     imu: Option<IcmImu<impl I2c, NoDmp>>,
     imu_timer: Counter<impl timer::Instance, 100000>,
+    ads_sclk: impl OutputPin,
+    ads_dout: impl InputPin,
+    ads_delay: impl DelayNs,
 ) -> ! {
     match unsafe { ROLE } {
         Role::Ground =>
@@ -753,8 +830,8 @@ pub async fn begin(
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             #[allow(unreachable_code)]
             join!(
-                usb_handler(),
                 buzzer_controller(),
+                strain_handler(ads_dout, ads_sclk, ads_delay),
                 gps_handler(),
                 gps_broadcast(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),

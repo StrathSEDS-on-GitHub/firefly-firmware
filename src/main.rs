@@ -396,11 +396,18 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
+        let ads_dout = gpio.b.pb4.into_pull_up_input();
+        let ads_sclk = gpio.a.pa8.into_push_pull_output_in_state(gpio::PinState::Low);
+        let ads_delay = dp.TIM4.delay::<100000>(&clocks);
+
         mission::begin(
             bmp,
             dp.TIM12.counter(&clocks),
             icm,
             dp.TIM10.counter(&clocks),
+            ads_sclk,
+            ads_dout,
+            ads_delay,
         )
         .await;
     }
