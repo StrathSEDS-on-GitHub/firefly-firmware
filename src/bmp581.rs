@@ -124,7 +124,7 @@ impl<I2C: I2c + I2CMasterHandleIT + I2CMasterWriteReadDMA> AltimeterFifoDMA<{BMP
         self.com.handle_dma_interrupt();
     }
 
-    fn process_fifo_buffer(
+    async fn process_fifo_buffer(
         &self,
         data: [u8; BMP581::BUF_SIZE]
     ) -> Vec<PressureTemp, {BMP581::FRAME_COUNT}> {

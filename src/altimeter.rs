@@ -4,6 +4,7 @@ use crate::{
     futures::bmp_wake,
     pins::Altimeter,
     I2c1Proxy,
+    sdio::get_logger
 };
 use bmp388::{
     config::{FifoConfig, OversamplingConfig, SubsamplingFactor},
@@ -74,7 +75,7 @@ pub trait AltimeterFifoDMA<const FRAMES: usize, const BUF_SIZE: usize>:
     const ADDRESS: u8;
 
     fn dma_interrupt(&mut self);
-    fn process_fifo_buffer(&self, data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
+    async fn process_fifo_buffer(&self, data: [u8; BUF_SIZE]) -> Vec<PressureTemp, FRAMES>;
 
     fn decode_frame(pres: &[u8], temp: &[u8]) -> (u32, u32) {
         (
@@ -94,7 +95,7 @@ impl AltimeterFifoDMA<{ BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE 
         self.bmp.com.handle_dma_interrupt();
     }
 
-    fn process_fifo_buffer(
+    async fn process_fifo_buffer(
         &self,
         data: [u8; BMP388Wrapper::BUF_SIZE],
     ) -> Vec<PressureTemp, { BMP388Wrapper::FRAME_COUNT }> {
@@ -108,25 +109,26 @@ impl AltimeterFifoDMA<{ BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE 
             let p = (fh_param & 1) != 0;
             let t = ((fh_param >> 2) & 1) != 0;
             let s = ((fh_param >> 3) & 1) != 0;
+            let logger = get_logger();
 
             // TODO: log invalid frames
             match fh_mode {
                 0b01 => {
-                    // Config change or error
+                    logger.log_str("bmp,found config change frame").await;
                     i += 2;
                 }
                 0b10 => match (s, t, p) {
                     // Data frame
                     (true, false, false) => {
-                        // sensortime
+                        logger.log_str("bmp,found sensortime frame").await;
                         i += 4;
                     }
                     (false, true, false) => {
-                        // temp only
+                        logger.log_str("bmp,found temp only frame").await;
                         i += 4;
                     }
                     (false, false, true) => {
-                        // pressure only
+                        logger.log_str("bmp,found pressure only frame").await;
                         i += 4;
                     }
                     (false, true, true) => {
@@ -144,16 +146,16 @@ impl AltimeterFifoDMA<{ BMP388Wrapper::FRAME_COUNT }, { BMP388Wrapper::BUF_SIZE 
                         i += 7;
                     }
                     (false, false, false) => {
-                        // Empty
+                        logger.log_str("bmp,found empty frame").await;
                         i += 2;
                     }
                     _ => {
-                        // Invalid
+                        logger.log_str("bmp,found invalid data frame").await;
                         break;
                     }
                 },
                 _ => {
-                    // Invalid
+                    logger.log_str("bmp,found invalid frame").await;
                     break;
                 }
             }
@@ -242,6 +244,6 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
 
     let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
     unsafe { bmp.dma_complete().expect("Failed to mark DMA complete?") };
-    let frames = bmp.process_fifo_buffer(unsafe { DATA });
+    let frames = bmp.process_fifo_buffer(unsafe { DATA }).await;
     (frames, bmp)
 }
