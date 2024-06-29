@@ -16,7 +16,6 @@ use crate::Dio1PinRefMut;
 use cortex_m::interrupt::Mutex;
 use dummy_pin::DummyPin;
 use embedded_hal::spi::SpiDevice;
-use embedded_hal_bus::spi::CriticalSectionDevice;
 use heapless::Deque;
 use serde::Deserialize;
 use serde::Serialize;
@@ -56,7 +55,7 @@ fn EXTI4() {
                             .combine(IrqMaskBit::TxDone),
                     )
                     .unwrap();
-                radio.radio.wait_on_busy().unwrap();
+                radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                 if let RadioState::Tx(transmitter) = RADIO_STATE.borrow(cs).get() {
                     return transmitter != mission::role()
                         && (transmitter == Role::Ground || mission::role() == Role::Ground);
@@ -101,7 +100,7 @@ pub enum Message {
         time_of_first_packet: EpochTime,
         accels: [[f32; 3]; 8],
         gyros: [[f32; 3]; 8],
-    }, 
+    },
     Strain {
         counter: u16,
         stage: MissionStage,
@@ -133,7 +132,8 @@ static RADIO: Mutex<
     >,
 > = Mutex::new(RefCell::new(None));
 
-pub type Spi1Device = CriticalSectionDevice<'static, Spi<SPI1>, Pin<'A', 4, Output>, SysDelay>;
+pub type Spi1Device =
+    embedded_hal_bus::spi::AtomicDevice<'static, Spi<SPI1>, Pin<'A', 4, Output>, SysDelay>;
 pub type RadioDevice<'a> = Radio<
     Spi1Device,
     Pin<'B', 0, Output>,
@@ -141,14 +141,19 @@ pub type RadioDevice<'a> = Radio<
     DummyPin<dummy_pin::level::High>,
     Dio1PinRefMut<'a>,
 >;
-pub struct Radio<TSPI: SpiDevice, TNRST, TBUSY, TANT, TDIO1>
-{
+pub struct Radio<TSPI: SpiDevice, TNRST, TBUSY, TANT, TDIO1> {
     radio: sx126x::SX126x<TSPI, TNRST, TBUSY, TANT, TDIO1>,
     spi: TSPI,
 }
 impl RadioDevice<'static> {
     pub fn init(
-        radio: sx126x::SX126x<Spi1Device, Pin<'B', 0, Output>, Pin<'C', 5>, DummyPin<dummy_pin::level::High>, Dio1PinRefMut<'static>>,
+        radio: sx126x::SX126x<
+            Spi1Device,
+            Pin<'B', 0, Output>,
+            Pin<'C', 5>,
+            DummyPin<dummy_pin::level::High>,
+            Dio1PinRefMut<'static>,
+        >,
         spi: Spi1Device,
     ) {
         cortex_m::interrupt::free(|cs| {
@@ -228,10 +233,7 @@ fn receive_message() {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
         let radio = radio_ref.as_mut().unwrap();
         let mut buf = [0u8; MAX_PAYLOAD_SIZE];
-        let rx_buf_status = radio
-            .radio
-            .get_rx_buffer_status(&mut radio.spi)
-            .unwrap();
+        let rx_buf_status = radio.radio.get_rx_buffer_status(&mut radio.spi).unwrap();
         let size = rx_buf_status.payload_length_rx() as usize;
         radio
             .radio
@@ -292,15 +294,14 @@ fn set_radio() {
                 if let Some(msg) = queued_packets.pop_front() {
                     let mut buf = [0u8; MAX_PAYLOAD_SIZE];
                     let bytes = postcard::to_slice(&msg, &mut buf).unwrap();
-                    radio
-                        .radio
-                        .write_buffer(&mut radio.spi, 0, bytes)
-                        .unwrap();
+                    radio.radio.write_buffer(&mut radio.spi, 0, bytes).unwrap();
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                     radio
                         .radio
                         .set_tx(&mut radio.spi, RxTxTimeout::from_ms(5000))
                         .unwrap();
-                    radio.radio.wait_on_busy().unwrap();
+
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
 
                     TRANSMISSION_IN_PROGRESS.store(true, Ordering::Relaxed);
                 } else {
@@ -321,10 +322,12 @@ fn set_radio() {
                 cortex_m::interrupt::free(|cs| {
                     let mut radio_ref = RADIO.borrow(cs).borrow_mut();
                     let radio = radio_ref.as_mut().unwrap();
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                     radio
                         .radio
                         .set_rx(&mut radio.spi, RxTxTimeout::from_ms(5000))
                         .unwrap();
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                     TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
                     LISTEN_IN_PROGRESS.store(true, Ordering::Relaxed);
                 });
@@ -334,13 +337,12 @@ fn set_radio() {
                 cortex_m::interrupt::free(|cs| {
                     let mut radio_ref = RADIO.borrow(cs).borrow_mut();
                     let radio = radio_ref.as_mut().unwrap();
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                     radio
                         .radio
-                        .set_standby(
-                            &mut radio.spi,
-                            sx126x::op::StandbyConfig::StbyRc,
-                        )
+                        .set_standby(&mut radio.spi, sx126x::op::StandbyConfig::StbyRc)
                         .unwrap();
+                    radio.radio.wait_on_busy(&mut radio.spi).unwrap();
                 });
                 TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
                 LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
@@ -353,9 +355,7 @@ pub fn get_packet_status() -> PacketStatus {
     cortex_m::interrupt::free(|cs| {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
         let radio = radio_ref.as_mut().unwrap();
-        radio
-            .radio
-            .get_packet_status(&mut radio.spi)
-            .unwrap()
+        radio.radio.wait_on_busy(&mut radio.spi).unwrap();
+        radio.radio.get_packet_status(&mut radio.spi).unwrap()
     })
 }

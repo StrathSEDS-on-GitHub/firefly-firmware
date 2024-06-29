@@ -25,3 +25,6 @@
 [submodule "icm20948_driver"]
 	path = icm20948_driver
 	url = https://github.com/Zolkin1/icm20948_driver
+[submodule "embedded-hal"]
+	path = embedded-hal
+	url = https://github.com/rust-embedded/embedded-hal

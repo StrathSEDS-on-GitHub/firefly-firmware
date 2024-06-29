@@ -828,6 +828,17 @@ pub async fn begin(
         Role::Avionics => {
             static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
             let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
+            let imu_task = {
+                #[cfg(feature = "target-mini")]
+                {
+                    imu_handler(imu.unwrap(), imu_timer)
+                }
+                #[cfg(feature = "target-maxi")]
+                {
+                    let _ = (imu, imu_timer);
+                    futures::future::ready(())
+                }
+            };
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
@@ -836,8 +847,8 @@ pub async fn begin(
                 gps_broadcast(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
-                imu_handler(imu.unwrap(), imu_timer),
-                stage_update_handler(pressure_receiver)
+                stage_update_handler(pressure_receiver),
+                imu_task
             )
             .0
         }

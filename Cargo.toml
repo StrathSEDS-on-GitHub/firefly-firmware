@@ -10,6 +10,9 @@ msc = []
 target-mini = []
 target-maxi = []
 
+[profile.release]
+debug = true # No harm in enabling symbols, they're not loaded onto the mcu
+
 [profile.dev.package.ws2812-spi]
 opt-level = 3
 
@@ -49,7 +52,7 @@ sequential-storage = { version= "1.0.0" }
 storage-types = { version="0.1.0", path="storage-types" }
 bmp388 = { version="0.1.0", path="bmp388" }
 icm20948_driver = { version="0.2", path="icm20948_driver"}
-embedded-hal-bus = "0.2.0"
+embedded-hal-bus = { version="0.2.0" }
 critical-section = "1.1.2"
 atomic_enum = "0.3.0"
 

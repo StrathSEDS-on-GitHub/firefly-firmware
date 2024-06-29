@@ -10,7 +10,8 @@ use stm32f4xx_hal::{
         dma::{I2CMasterDma, RxDMA, TxDMA},
         I2c,
     },
-    pac::{DMA1, I2C1, SPI2, SPI3}, timer::Delay,
+    pac::{DMA1, I2C1, SPI2, SPI3},
+    timer::Delay,
 };
 
 use crate::altimeter::BMP388Wrapper;
@@ -49,10 +50,15 @@ pub type I2c1Handle =
 
 pub mod i2c {
     use core::{
-        cell::{RefCell, UnsafeCell}, fmt::Write, sync::atomic::{AtomicBool, Ordering}
+        cell::{RefCell, UnsafeCell},
+        fmt::Write,
+        sync::atomic::{AtomicBool, Ordering},
     };
     use cortex_m_semihosting::hprintln;
-    use embedded_hal::{delay::DelayNs, i2c::{ErrorType, I2c}};
+    use embedded_hal::{
+        delay::DelayNs,
+        i2c::{ErrorType, I2c},
+    };
     use embedded_hal_bus::i2c::AtomicError;
     use stm32f4xx_hal::i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA};
 
@@ -72,7 +78,6 @@ pub mod i2c {
     }
 
     impl<'a, T> AtomicDevice<'a, T> {
-        /// Create a new `CriticalSectionDevice`.
         #[inline]
         pub fn new(bus: &'a UnsafeCell<T>, busy: &'a AtomicBusyState) -> Self {
             busy.store(BusyState::Free, Ordering::Relaxed);
@@ -108,12 +113,15 @@ pub mod i2c {
         }
 
         pub unsafe fn dma_complete(&self) -> Result<(), ()> {
-            self.busy.compare_exchange(
-                BusyState::BusyDMA,
-                BusyState::Free,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ).map_err(|_| ()).map(|_| ())
+            self.busy
+                .compare_exchange(
+                    BusyState::BusyDMA,
+                    BusyState::Free,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .map_err(|_| ())
+                .map(|_| ())
         }
     }
 
@@ -154,7 +162,7 @@ pub mod i2c {
     impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for AtomicDevice<'a, T> {
         fn handle_dma_interrupt(&mut self) {
             match self.busy.load(Ordering::Relaxed) {
-                BusyState::BusyDMA  => {
+                BusyState::BusyDMA => {
                     let bus = unsafe { &mut *self.bus.get() };
                     bus.handle_dma_interrupt();
                 }
@@ -164,7 +172,7 @@ pub mod i2c {
 
         fn handle_error_interrupt(&mut self) {
             match self.busy.load(Ordering::Relaxed) {
-                BusyState::BusyDMA  => {
+                BusyState::BusyDMA => {
                     let bus = unsafe { &mut *self.bus.get() };
                     bus.handle_error_interrupt();
                 }
@@ -264,6 +272,19 @@ macro_rules! gps_pins {
                 $gpio_buses.a.pa15.into_alternate(),
                 $gpio_buses.a.pa10.into_alternate(),
             )
+        }
+    }};
+}
+#[macro_export]
+macro_rules! i2c1_pins {
+    ($gpio_buses:ident) => {{
+        #[cfg(feature = "target-mini")]
+        {
+            ($gpio_buses.b.pb8, $gpio_buses.b.pb7)
+        }
+        #[cfg(feature = "target-maxi")]
+        {
+            ($gpio_buses.b.pb8, $gpio_buses.b.pb9)
         }
     }};
 }

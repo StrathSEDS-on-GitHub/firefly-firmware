@@ -23,6 +23,7 @@ use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::ErrorType;
+use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
 use hal::adc::config::AdcConfig;
@@ -283,7 +284,7 @@ async fn main(_spawner: Spawner) {
         let rx_stream = streams.0;
         let i2c = dp
             .I2C1
-            .i2c((gpio.b.pb8, gpio.b.pb7), 400.kHz(), &clocks)
+            .i2c(i2c1_pins!(gpio), 400.kHz(), &clocks)
             .use_dma(tx_stream, rx_stream);
 
         static mut I2C_BUS: Option<UnsafeCell<I2c1Handle>> = None;
@@ -306,8 +307,10 @@ async fn main(_spawner: Spawner) {
 
             #[cfg(feature = "target-maxi")]
             {
-                let alt_proxy =
-                    crate::pins::i2c::AtomicDevice::new(unsafe { I2C_BUS.as_ref().unwrap() }, &I2C_BUSY);
+                let alt_proxy = crate::pins::i2c::AtomicDevice::new(
+                    unsafe { I2C_BUS.as_ref().unwrap() },
+                    &I2C_BUSY,
+                );
                 let mut bmp = crate::bmp581::BMP581::new(alt_proxy).unwrap();
                 bmp.enable_pressure_temperature().unwrap();
                 bmp.setup_fifo().unwrap();
@@ -316,7 +319,7 @@ async fn main(_spawner: Spawner) {
         } else {
             None
         };
-        let icm = if role != Role::Ground {
+        let icm = if role != Role::Ground && cfg!(feature = "target-mini") {
             let icm_proxy = crate::pins::i2c::AtomicDevice::new(
                 unsafe { I2C_BUS.as_ref().unwrap() },
                 &I2C_BUSY,
@@ -347,10 +350,12 @@ async fn main(_spawner: Spawner) {
         let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
-        static mut SPI_BUS: Option<critical_section::Mutex<RefCell<Spi<SPI1>>>> = None;
-        unsafe { SPI_BUS.replace(critical_section::Mutex::new(RefCell::new(spi1))) };
+        static mut SPI_BUS: Option<AtomicCell<Spi<SPI1>>> = None;
+        unsafe {
+            SPI_BUS.replace(AtomicCell::new(spi1));
+        }
 
-        let mut spi1_device = embedded_hal_bus::spi::CriticalSectionDevice::new(
+        let mut spi1_device = embedded_hal_bus::spi::AtomicDevice::new(
             unsafe { SPI_BUS.as_ref().unwrap() },
             lora_nss,
             delay,
@@ -397,7 +402,10 @@ async fn main(_spawner: Spawner) {
         }
 
         let ads_dout = gpio.b.pb4.into_pull_up_input();
-        let ads_sclk = gpio.a.pa8.into_push_pull_output_in_state(gpio::PinState::Low);
+        let ads_sclk = gpio
+            .a
+            .pa8
+            .into_push_pull_output_in_state(gpio::PinState::Low);
         let ads_delay = dp.TIM4.delay::<100000>(&clocks);
 
         mission::begin(
