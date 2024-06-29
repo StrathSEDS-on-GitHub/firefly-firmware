@@ -355,7 +355,7 @@ async fn main(_spawner: Spawner) {
             SPI_BUS.replace(AtomicCell::new(spi1));
         }
 
-        let mut spi1_device = embedded_hal_bus::spi::AtomicDevice::new(
+        let spi1_device = embedded_hal_bus::spi::AtomicDevice::new(
             unsafe { SPI_BUS.as_ref().unwrap() },
             lora_nss,
             delay,
@@ -390,10 +390,10 @@ async fn main(_spawner: Spawner) {
             setup_logger(wrapper).unwrap();
         }
 
-        let mut lora = SX126x::new(lora_pins);
-        lora.init(&mut spi1_device, conf).unwrap();
+        let mut lora = SX126x::new(spi1_device, lora_pins);
+        lora.init(conf).unwrap();
 
-        Radio::init(lora, spi1_device);
+        Radio::init(lora);
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
             pac::NVIC::unmask(pac::Interrupt::EXTI4);
