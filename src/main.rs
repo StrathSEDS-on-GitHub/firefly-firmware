@@ -12,6 +12,13 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
+use bno080::interface::I2cInterface;
+use bno080::wrapper::BNO080;
+use cortex_m_semihosting::hprintln;
+use stm32f4xx_hal::gpio::Input;
+use stm32f4xx_hal::gpio::Output;
+use stm32f4xx_hal::gpio::Pin;
+use usb_logger::get_serial;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -331,6 +338,49 @@ async fn main(_spawner: Spawner) {
         } else {
             None
         };
+        let mut bno080: Option<BNO080<I2cInterface<stm32f4xx_hal::i2c::I2c<pac::I2C3> >>> = {
+            #[cfg(feature = "target-maxi")]
+            {
+                dp.I2C3.cr1.modify(|_, w| w.swrst().set_bit());
+                delay.delay_ms(10);
+                dp.I2C3.cr1.modify(|_, w| w.swrst().clear_bit());
+
+                let mut delay = dp.TIM6.delay::<100000>(&clocks);
+                let i2c = dp.I2C3.i2c(
+                    (
+                        gpio.a.pa8.into_alternate()
+                        .internal_pull_up(true)
+                        .set_open_drain(),
+                        gpio.b.pb4
+                        .into_alternate()
+                        .internal_pull_up(true)
+                        .set_open_drain()
+                    ),
+                    100.kHz(),
+                    &clocks,
+                );
+                let mut bno = BNO080::new_with_interface(I2cInterface::alternate(i2c));
+
+                delay.delay_ms(10);
+
+                bno.init(&mut delay).unwrap();
+                delay.delay_ms(10);
+
+                bno.enable_gyro(200).unwrap();
+                bno.handle_all_messages(&mut delay, 5u8);
+                bno.enable_linear_accel(200).unwrap();
+                bno.handle_all_messages(&mut delay, 5u8);
+                bno.enable_rotation_vector(10).unwrap();
+                bno.handle_all_messages(&mut delay, 5u8);
+
+                Some(bno)
+            }
+
+            #[cfg(feature = "target-mini")]
+            {
+                None
+            }
+        };
 
         // ===== Init SPI1 =====
         let spi1_mode = spi::Mode {
@@ -401,11 +451,30 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        let ads_dout = gpio.b.pb4.into_pull_up_input();
-        let ads_sclk = gpio
-            .a
-            .pa8
-            .into_push_pull_output_in_state(gpio::PinState::Low);
+        let ads_dout: Option<Pin<'B', 4, Input>> = {
+            #[cfg(feature = "target-mini")]
+            {
+                Some(gpio.b.pb4.into_pull_up_input())
+            }
+            #[cfg(feature = "target-maxi")]
+            {
+                None
+            }
+        };
+        let ads_sclk: Option<Pin<'A', 8, Output>> = {
+            #[cfg(feature = "target-mini")]
+            {
+                Some(
+                    gpio.a
+                        .pa8
+                        .into_push_pull_output_in_state(gpio::PinState::Low),
+                )
+            }
+            #[cfg(feature = "target-maxi")]
+            {
+                None
+            }
+        };
         let ads_delay = dp.TIM4.delay::<100000>(&clocks);
 
         mission::begin(

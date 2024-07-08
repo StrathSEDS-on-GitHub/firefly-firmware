@@ -815,8 +815,8 @@ pub async fn begin(
     pr_timer: Counter<TIM12, 10000>,
     imu: Option<IcmImu<impl I2c, NoDmp>>,
     imu_timer: Counter<impl timer::Instance, 100000>,
-    ads_sclk: impl OutputPin,
-    ads_dout: impl InputPin,
+    ads_sclk: Option<impl OutputPin>,
+    ads_dout: Option<impl InputPin>,
     ads_delay: impl DelayNs,
 ) -> ! {
     match unsafe { ROLE } {
@@ -839,10 +839,22 @@ pub async fn begin(
                     futures::future::ready(())
                 }
             };
+
+            let strain_task = {
+                #[cfg(feature = "target-mini")]
+                {
+                    strain_handler(ads_dout.unwrap(), ads_sclk.unwrap(), ads_delay)
+                }
+                #[cfg(feature = "target-maxi")]
+                {
+                    let _ = (ads_dout, ads_sclk, ads_delay);
+                    futures::future::ready(())
+                }
+            };
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
-                strain_handler(ads_dout, ads_sclk, ads_delay),
+                strain_task,
                 gps_handler(),
                 gps_broadcast(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),

@@ -55,6 +55,7 @@ icm20948_driver = { version="0.2", path="icm20948_driver"}
 embedded-hal-bus = { version="0.2.0" }
 critical-section = "1.1.2"
 atomic_enum = "0.3.0"
+bno080 = { version="0.1.3", git="https://github.com/tstellanova/bno080" }
 
 [dependencies.stm32f4xx-hal]
 version = "0.20"
