@@ -1245,11 +1245,11 @@ dependencies = [
 [[package]]
 name = "tmc2209"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2552dbf5901e37abcd381f930731432d2c952245fe277eadcf3e03ac438a2783"
+source = "git+https://github.com/mitchmindtree/tmc2209#5c94959094a44b4173a7db6b3270eed0b574f512"
 dependencies = [
  "bitfield",
- "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
+ "embedded-io",
 ]
 
 [[package]]

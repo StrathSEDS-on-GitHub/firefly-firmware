@@ -41,7 +41,6 @@ fugit = {version = "0.3.6", features = []}
 f4-w25q = {version = "0.1.0", path="f4-w25q", features=["embedded-storage"]}
 serde = { version = "1.0", features = ["derive"], default-features = false }    
 serde-big-array = "0.5.1"
-tmc2209 = "0.2.2"
 postcard = "1.0.4"
 usbd_mass_storage = { version="0.1.0", path="stm32-usb.rs/firmware/usbd_mass_storage" }
 usbd_scsi = {version = "0.1.0", path="stm32-usb.rs/firmware/usbd_scsi"}
@@ -56,6 +55,7 @@ embedded-hal-bus = { version="0.2.0" }
 critical-section = "1.1.2"
 atomic_enum = "0.3.0"
 bno080 = { version="0.1.3", git="https://github.com/tstellanova/bno080" }
+tmc2209 = { version="0.2.2", git="https://github.com/mitchmindtree/tmc2209" }
 
 [dependencies.stm32f4xx-hal]
 version = "0.20"

@@ -1,5 +1,7 @@
-use core::{cell::Cell, convert::Infallible, fmt::Write};
+use core::{borrow::BorrowMut, cell::Cell, convert::Infallible, fmt::Write};
+use bno080::{interface::SensorInterface, wrapper::BNO080};
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use embassy_futures::block_on;
 use embedded_hal::{
     delay::DelayNs,
@@ -11,12 +13,12 @@ use futures::join;
 use heapless::Vec;
 use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
     pac::{ADC1, TIM12},
-    timer::{self, Counter},
+    timer::{self, Counter, Instance},
     ClearFlags,
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
@@ -622,6 +624,22 @@ async fn handle_incoming_packets() -> ! {
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
+                    Message::BNOBroadcast { counter, stage, role, time_of_first_packet, accels, rots } => {
+                        writeln!(
+                            get_serial(),
+                            "bno,{:?},{:?},{},{:?},{:?},{:?}",
+                            role,
+                            stage,
+                            counter,
+                            time_of_first_packet,
+                            accels,
+                            rots
+                        )
+                        .unwrap();
+                        let rssi = radio::get_packet_status().rssi_pkt();
+
+                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
+                    }
                 },
                 _ => match packet {
                     Message::Disarm(r, i) if r == role() && i > idempotency_counter => {
@@ -810,6 +828,50 @@ async fn imu_handler(
     }
 }
 
+async fn bno_handler<SI, SE>(
+    mut bno: BNO080<SI>,
+    delay: Counter<impl Instance, 100000>
+) where
+    SI: SensorInterface<SensorError = SE>,
+    SE: core::fmt::Debug {
+    let mut delay = delay.release().delay();
+    loop {
+        let mut acc_buffer = [[0.0f32; 3]; 8];
+        let mut quat_buffer= [[0.0f32; 4]; 8];
+
+
+        for i in 0..(8 * 8) {
+            let (acc, quat) =  loop {
+                YieldFuture::new().await;
+                bno.handle_all_messages(&mut delay, 3);
+                if let (Ok(acc), Ok(rot)) =  (bno.linear_accel(), bno.rotation_quaternion()) {
+                    break (acc, rot);
+                }
+            };
+            if i % 8 == 0 {
+                acc_buffer[i/8] = acc;
+                quat_buffer[i/8] = quat;
+            }
+            get_logger().log(format_args!("bno,{:?},{:?}", acc, quat)).await;
+            let mut timer = delay.release().counter();
+            timer.start(10u32.millis()).unwrap();
+            NbFuture::new(|| timer.wait()).await.unwrap();
+            delay = timer.release().delay();
+        }
+
+        let message = Message::BNOBroadcast {
+            counter: radio::next_counter(),
+            stage: current_stage(),
+            role: role(),
+            time_of_first_packet: current_rtc_time().into(),
+            accels: acc_buffer,
+            rots: quat_buffer,
+        };
+
+        radio::queue_packet(message);
+    }
+}
+
 pub async fn begin(
     pressure_sensor: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
@@ -817,6 +879,7 @@ pub async fn begin(
     imu_timer: Counter<impl timer::Instance, 100000>,
     ads_sclk: Option<impl OutputPin>,
     ads_dout: Option<impl InputPin>,
+    bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
     ads_delay: impl DelayNs,
 ) -> ! {
     match unsafe { ROLE } {
@@ -835,8 +898,7 @@ pub async fn begin(
                 }
                 #[cfg(feature = "target-maxi")]
                 {
-                    let _ = (imu, imu_timer);
-                    futures::future::ready(())
+                    bno_handler(bno_imu.unwrap(), imu_timer)
                 }
             };
 

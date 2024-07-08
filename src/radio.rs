@@ -100,6 +100,14 @@ pub enum Message {
         accels: [[f32; 3]; 8],
         gyros: [[f32; 3]; 8],
     },
+    BNOBroadcast {
+        counter: u16,
+        stage: MissionStage,
+        role: Role,
+        time_of_first_packet: EpochTime,
+        accels: [[f32; 3]; 8],
+        rots: [[f32; 4]; 8],
+    },
     Strain {
         counter: u16,
         stage: MissionStage,

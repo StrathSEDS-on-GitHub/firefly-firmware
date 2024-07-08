@@ -14,11 +14,8 @@ use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
-use cortex_m_semihosting::hprintln;
-use stm32f4xx_hal::gpio::Input;
-use stm32f4xx_hal::gpio::Output;
-use stm32f4xx_hal::gpio::Pin;
-use usb_logger::get_serial;
+use cortex_m::register::basepri::read;
+use tmc2209::reg::VACTUAL;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -26,6 +23,7 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::delay::DelayNs;
@@ -56,7 +54,11 @@ use hal::timer::PwmHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
+use stm32f4xx_hal::gpio::Input;
+use stm32f4xx_hal::gpio::Output;
+use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::pac::SPI1;
+use stm32f4xx_hal::serial::Config;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -109,6 +111,46 @@ static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
 
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
+
+struct WriteAdapter<T: _embedded_hal_serial_nb_Write>(T);
+impl<T: _embedded_hal_serial_nb_Write> usbd_serial::embedded_io::ErrorType for WriteAdapter<T> {
+    type Error = Infallible;
+}
+impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Write> usbd_serial::embedded_io::Write
+    for WriteAdapter<T>
+{
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        for w in buf {
+            nb::block!(self.0.write(*w));
+        }
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+struct ReadAdapter<T: _embedded_hal_serial_nb_Read>(T);
+impl<T: _embedded_hal_serial_nb_Read> usbd_serial::embedded_io::ErrorType for ReadAdapter<T> {
+    type Error = Infallible;
+}
+impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Read> usbd_serial::embedded_io::Read
+    for ReadAdapter<T>
+{
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let mut i = 0;
+        while i < buf.len() {
+            if let Ok(b) = self.0.read() {
+                buf[i] = b;
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        Ok(i)
+    }
+}
 
 fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayNs>(
     channel: &mut PwmHz<TIM3, P>,
@@ -338,7 +380,8 @@ async fn main(_spawner: Spawner) {
         } else {
             None
         };
-        let mut bno080: Option<BNO080<I2cInterface<stm32f4xx_hal::i2c::I2c<pac::I2C3> >>> = {
+
+        let bno080: Option<BNO080<I2cInterface<stm32f4xx_hal::i2c::I2c<pac::I2C3>>>> = {
             #[cfg(feature = "target-maxi")]
             {
                 dp.I2C3.cr1.modify(|_, w| w.swrst().set_bit());
@@ -348,13 +391,16 @@ async fn main(_spawner: Spawner) {
                 let mut delay = dp.TIM6.delay::<100000>(&clocks);
                 let i2c = dp.I2C3.i2c(
                     (
-                        gpio.a.pa8.into_alternate()
-                        .internal_pull_up(true)
-                        .set_open_drain(),
-                        gpio.b.pb4
-                        .into_alternate()
-                        .internal_pull_up(true)
-                        .set_open_drain()
+                        gpio.a
+                            .pa8
+                            .into_alternate()
+                            .internal_pull_up(true)
+                            .set_open_drain(),
+                        gpio.b
+                            .pb4
+                            .into_alternate()
+                            .internal_pull_up(true)
+                            .set_open_drain(),
                     ),
                     100.kHz(),
                     &clocks,
@@ -381,6 +427,16 @@ async fn main(_spawner: Spawner) {
                 None
             }
         };
+
+        let mut spi2 = dp.SPI2.spi(
+            (gpio.b.pb13, gpio.c.pc2, gpio.c.pc3),
+            spi::Mode {
+                polarity: spi::Polarity::IdleLow,
+                phase: spi::Phase::CaptureOnFirstTransition,
+            },
+            1.MHz(),
+            &clocks,
+        );
 
         // ===== Init SPI1 =====
         let spi1_mode = spi::Mode {
@@ -484,6 +540,7 @@ async fn main(_spawner: Spawner) {
             dp.TIM10.counter(&clocks),
             ads_sclk,
             ads_dout,
+            bno080,
             ads_delay,
         )
         .await;

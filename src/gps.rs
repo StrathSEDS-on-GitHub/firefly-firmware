@@ -5,6 +5,7 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
 use futures::poll;
 use hal::{
@@ -250,7 +251,8 @@ pub async fn poll_for_sentences() -> ! {
     let mut start = 0;
 
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
-    let mut rtc_set = false;
+
+    let mut fix_packets = 0;
 
     loop {
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
@@ -261,11 +263,11 @@ pub async fn poll_for_sentences() -> ! {
                     ..
                 })) = parse_result.clone()
                 {
-                    // update_timer(time.seconds);
-                    if !rtc_set {
+                    // Update our internal time once in a while;
+                    if fix_packets % 500 == 0 {
                         set_rtc(time);
-                        rtc_set = true;
                     }
+                    fix_packets += 1;
                 }
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
