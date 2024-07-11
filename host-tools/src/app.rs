@@ -812,6 +812,16 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
                         };
                         app.focus(Focus::Popup);
                     }
+                    "logs.csv" => {
+                        let mut file = OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .open("logs.csv")
+                            .unwrap();
+
+                        file.write_all(app.logs.own.string.as_ref().as_bytes())
+                            .unwrap();
+                    }
                     _ => {
                         println!("Selected: {}", item);
                     }
