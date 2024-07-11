@@ -14,8 +14,6 @@ use crate::radio::Radio;
 use crate::sdio::setup_logger;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
-use cortex_m::register::basepri::read;
-use tmc2209::reg::VACTUAL;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -23,11 +21,11 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::ErrorType;
+use embedded_hal_bus::spi::NoDelay;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
@@ -54,11 +52,10 @@ use hal::timer::PwmHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use stm32f4xx_hal::gpio::Input;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::pac::SPI1;
-use stm32f4xx_hal::serial::Config;
+use stm32f4xx_hal::pac::SPI2;
 use storage_types::U64Item;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -121,7 +118,7 @@ impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Write> usbd_serial::embe
 {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         for w in buf {
-            nb::block!(self.0.write(*w));
+            nb::block!(self.0.write(*w)).unwrap();
         }
 
         Ok(buf.len())
@@ -227,7 +224,6 @@ async fn main(_spawner: Spawner) {
         neopixel::update_pixel(0, [255, 255, 0]);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
-
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
 
         cortex_m::interrupt::free(|cs| {
@@ -245,6 +241,24 @@ async fn main(_spawner: Spawner) {
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });
+
+        // let serial : Serial<_, u8>= dp.USART2.serial(
+        //     (gpio.a.pa2, gpio.a.pa3),
+        //     Config::default().baudrate(9600.bps()),
+        //     &clocks,
+        // ).unwrap();
+
+        // let (tx, mut rx) = serial.split();
+        // let mut tx = WriteAdapter(tx);
+        // let mut gconf = tmc2209::reg::GCONF::default();
+        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
+        // gconf.set_pdn_disable(true);
+        // tmc2209::send_write_request(0, gconf, &mut tx).unwrap();
+        // tmc2209::send_write_request(0, vactual, &mut tx).unwrap();
+        // loop {
+        //     vactual.set(1000);
+        //     tmc2209::send_write_request(0, vactual, &mut tx).unwrap();
+        // }
 
         #[cfg(not(feature = "msc"))]
         {
@@ -322,7 +336,7 @@ async fn main(_spawner: Spawner) {
         .await;
 
         let role = match board_id.unwrap().unwrap().1 {
-            5 => Role::Ground,
+            5 => Role::GroundMain,
             3 | 4 => Role::Avionics,
             _ => Role::Cansat,
         };
@@ -341,7 +355,7 @@ async fn main(_spawner: Spawner) {
         // SAFETY: This is the only mutation of I2C_BUS so we have exclusive mutable access
         unsafe { I2C_BUS = Some(UnsafeCell::new(i2c)) };
 
-        let bmp = if mission::role() != Role::Ground {
+        let bmp = if mission::role() != Role::GroundMain {
             #[cfg(feature = "target-mini")]
             {
                 Some({
@@ -368,7 +382,7 @@ async fn main(_spawner: Spawner) {
         } else {
             None
         };
-        let icm = if role != Role::Ground && cfg!(feature = "target-mini") {
+        let icm = if role != Role::GroundMain && cfg!(feature = "target-mini") {
             let icm_proxy = crate::pins::i2c::AtomicDevice::new(
                 unsafe { I2C_BUS.as_ref().unwrap() },
                 &I2C_BUSY,
@@ -428,15 +442,41 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        let mut spi2 = dp.SPI2.spi(
-            (gpio.b.pb13, gpio.c.pc2, gpio.c.pc3),
-            spi::Mode {
-                polarity: spi::Polarity::IdleLow,
-                phase: spi::Phase::CaptureOnFirstTransition,
-            },
-            1.MHz(),
-            &clocks,
-        );
+        let spi2 = if role == Role::Cansat {
+            #[cfg(feature = "target-maxi")]
+            {
+                let bus = dp.SPI2.spi(
+                    (gpio.b.pb13, gpio.c.pc2, gpio.c.pc3),
+                    spi::Mode {
+                        polarity: spi::Polarity::IdleLow,
+                        phase: spi::Phase::CaptureOnFirstTransition,
+                    },
+                    1.MHz(),
+                    &clocks,
+                );
+                static mut SPI2_BUS: Option<AtomicCell<Spi<SPI2>>> = None;
+                unsafe {
+                    SPI2_BUS.replace(AtomicCell::new(bus));
+                }
+                let device = embedded_hal_bus::spi::AtomicDevice::new(
+                    unsafe { SPI2_BUS.as_ref().unwrap() },
+                    gpio.e.pe12.into_push_pull_output(),
+                    NoDelay,
+                )
+                .unwrap();
+                Some(device)
+            }
+
+            #[cfg(feature = "target-mini")]
+            {
+                panic!("Mini is not supposed to be cansat")
+            }
+        } else {
+            let none: Option<
+                embedded_hal_bus::spi::AtomicDevice<'_, Spi<SPI2>, Pin<'E', 12, Output>, NoDelay>,
+            > = None;
+            none
+        };
 
         // ===== Init SPI1 =====
         let spi1_mode = spi::Mode {
@@ -492,7 +532,7 @@ async fn main(_spawner: Spawner) {
 
         let conf = build_config(&mut wrapper).await;
 
-        if role != Role::Ground {
+        if role != Role::GroundMain {
             setup_logger(wrapper).unwrap();
         }
 
@@ -507,40 +547,15 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        let ads_dout: Option<Pin<'B', 4, Input>> = {
-            #[cfg(feature = "target-mini")]
-            {
-                Some(gpio.b.pb4.into_pull_up_input())
-            }
-            #[cfg(feature = "target-maxi")]
-            {
-                None
-            }
-        };
-        let ads_sclk: Option<Pin<'A', 8, Output>> = {
-            #[cfg(feature = "target-mini")]
-            {
-                Some(
-                    gpio.a
-                        .pa8
-                        .into_push_pull_output_in_state(gpio::PinState::Low),
-                )
-            }
-            #[cfg(feature = "target-maxi")]
-            {
-                None
-            }
-        };
-        let ads_delay = dp.TIM4.delay::<100000>(&clocks);
+        let ads_delay = dp.TIM4.counter::<100000>(&clocks);
 
         mission::begin(
             bmp,
             dp.TIM12.counter(&clocks),
             icm,
             dp.TIM10.counter(&clocks),
-            ads_sclk,
-            ads_dout,
             bno080,
+            spi2,
             ads_delay,
         )
         .await;
@@ -697,10 +712,14 @@ pub fn panic(info: &PanicInfo) -> ! {
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
     timer.start(4.Hz()).ok();
+    let mut buzzer = unsafe { BUZZER.take() }.unwrap();
 
     loop {
+        buzzer.toggle();
         neopixel::update_pixel(1, [255, 0, 0]);
         nb::block!(timer.wait()).ok();
+
+        buzzer.toggle();
         neopixel::update_pixel(1, [0, 0, 0]);
         nb::block!(timer.wait()).ok();
     }

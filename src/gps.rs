@@ -5,7 +5,6 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
 use futures::poll;
 use hal::{
@@ -264,7 +263,7 @@ pub async fn poll_for_sentences() -> ! {
                 })) = parse_result.clone()
                 {
                     // Update our internal time once in a while;
-                    if fix_packets % 500 == 0 {
+                    if fix_packets % 200 == 0 {
                         set_rtc(time);
                     }
                     fix_packets += 1;

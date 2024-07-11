@@ -57,7 +57,7 @@ fn EXTI4() {
                 radio.radio.wait_on_busy().unwrap();
                 if let RadioState::Tx(transmitter) = RADIO_STATE.borrow(cs).get() {
                     return transmitter != mission::role()
-                        && (transmitter == Role::Ground || mission::role() == Role::Ground);
+                        && (transmitter == Role::GroundMain || mission::role() == Role::GroundMain);
                 }
             }
 
@@ -117,8 +117,9 @@ pub enum Message {
     },
     Arm(Role, u8),
     Disarm(Role, u8),
-    TestPyro(Role, PyroPin, u32),
+    TestPyro(u8, Role, PyroPin, u32),
     SetStage(Role, MissionStage, u8),
+    SpeedSound { counter: u16, detected_offset: u16 },
 }
 
 pub fn next_counter() -> u16 {
@@ -196,8 +197,8 @@ static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
 const TDM_CONFIG: [(RadioState, u32); 4] = [
-    (RadioState::Buffer(Role::Ground), 100),
-    (RadioState::Tx(Role::Ground), 600),
+    (RadioState::Buffer(Role::GroundMain), 100),
+    (RadioState::Tx(Role::GroundMain), 600),
     (RadioState::Buffer(Role::Avionics), 100),
     (RadioState::Tx(Role::Avionics), 1200),
 ];
@@ -270,12 +271,12 @@ fn set_radio() {
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
 
     let r = match state {
-        RadioState::Buffer(_) | RadioState::Tx(Role::Ground) => 55,
+        RadioState::Buffer(_) | RadioState::Tx(Role::GroundMain) => 55,
         _ => 0,
     };
 
     let g = match state {
-        RadioState::Tx(Role::Avionics) | RadioState::Tx(Role::Ground) => 55,
+        RadioState::Tx(Role::Avionics) | RadioState::Tx(Role::GroundMain) => 55,
         _ => 0,
     };
 
@@ -318,7 +319,7 @@ fn set_radio() {
         }
         RadioState::Tx(other) | RadioState::Buffer(other) => {
             // Someone else is transmitting
-            if mission::role() == Role::Ground || other == Role::Ground {
+            if mission::role() == Role::GroundMain || other == Role::GroundMain {
                 if LISTEN_IN_PROGRESS.load(Ordering::Relaxed) {
                     return;
                 }

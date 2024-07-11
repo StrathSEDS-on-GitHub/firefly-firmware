@@ -181,7 +181,8 @@ impl Future for InterruptFuture {
                 Err(e) => {
                     panic!("Receiver dropped {:?}?", e);
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                }
             }
 
             core::task::Poll::Pending

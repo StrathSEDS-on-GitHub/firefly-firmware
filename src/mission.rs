@@ -1,19 +1,19 @@
-use core::{borrow::BorrowMut, cell::Cell, convert::Infallible, fmt::Write};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
+use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use embassy_futures::block_on;
 use embedded_hal::{
     delay::DelayNs,
     digital::{InputPin, OutputPin},
     i2c::I2c,
+    spi::SpiDevice,
 };
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;
 use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
-use serde::{de, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     adc::{config::SampleTime, Adc},
     gpio::{Analog, Output, Pin},
@@ -44,7 +44,9 @@ pub static mut PYRO_FIRE1: Option<Pin<'D', 5, Output>> = None;
 pub enum Role {
     Cansat,
     Avionics,
-    Ground,
+    CansatBackup,
+    GroundMain,
+    GroundBackup,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -237,7 +239,7 @@ fn parse_role(s: &[u8]) -> Option<Role> {
     } else if s.starts_with(b"avionics") {
         Some(Role::Avionics)
     } else if s.starts_with(b"ground") {
-        Some(Role::Ground)
+        Some(Role::GroundMain)
     } else {
         None
     }
@@ -266,7 +268,7 @@ pub async fn usb_handler() -> ! {
         } else if split.len() > 1 && split[0].starts_with(b"arm") {
             match parse_role(split[1]) {
                 Some(role) => {
-                    for _ in 0..10 {
+                    for _ in 0..50 {
                         radio::queue_packet(Message::Arm(role, idempotency_counter));
                     }
                     writeln!(get_serial(), "Sent arm packet!").unwrap();
@@ -287,15 +289,18 @@ pub async fn usb_handler() -> ! {
                     continue;
                 };
 
-                radio::queue_packet(Message::TestPyro(
-                    role,
-                    pin,
-                    core::str::from_utf8(split[3])
-                        .unwrap()
-                        .trim()
-                        .parse()
-                        .unwrap(),
-                ));
+                for _ in 0..50 {
+                    radio::queue_packet(Message::TestPyro(
+                        idempotency_counter,
+                        role,
+                        pin,
+                        core::str::from_utf8(split[3])
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap(),
+                    ));
+                }
             } else {
                 writeln!(get_serial(), "Invalid test-pyro role").unwrap();
             }
@@ -376,7 +381,7 @@ async fn gps_broadcast() -> ! {
 
         let mut i = 0;
         let mut start_time = None;
-        while i < 20 {
+        while i < 10 * 2 {
             if i == 0 {
                 let time = current_rtc_time();
                 start_time = Some(time.into());
@@ -432,7 +437,9 @@ async fn pressure_temp_handler(
 
         let mut i = 0;
 
-        while i < 4 * 8 {
+        let nth = if role() == Role::CansatBackup { 8 } else { 4 };
+
+        while i < nth * 8 {
             let frames;
             (frames, sensor) = read_altimeter_fifo(sensor).await;
             for frame in &frames {
@@ -440,9 +447,9 @@ async fn pressure_temp_handler(
                 let temperature = frame.temperature;
 
                 // Send every fourth frame (10Hz).
-                if i % 4 == 0 && i < 4 * 8 {
-                    pressures[i / 4] = pressure;
-                    temperatures[i / 4] = temperature;
+                if i % nth == 0 && i < nth * 8 {
+                    pressures[i / nth] = pressure;
+                    temperatures[i / nth] = temperature;
                 }
 
                 get_logger()
@@ -526,7 +533,7 @@ async fn handle_incoming_packets() -> ! {
             RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut().pop_front()
         }) {
             match role() {
-                Role::Ground => match packet {
+                Role::GroundMain => match packet {
                     Message::GpsBroadCast {
                         counter,
                         stage,
@@ -624,7 +631,14 @@ async fn handle_incoming_packets() -> ! {
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
-                    Message::BNOBroadcast { counter, stage, role, time_of_first_packet, accels, rots } => {
+                    Message::BNOBroadcast {
+                        counter,
+                        stage,
+                        role,
+                        time_of_first_packet,
+                        accels,
+                        rots,
+                    } => {
                         writeln!(
                             get_serial(),
                             "bno,{:?},{:?},{},{:?},{:?},{:?}",
@@ -640,6 +654,15 @@ async fn handle_incoming_packets() -> ! {
 
                         writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
+                    Message::SpeedSound {
+                        counter,
+                        detected_offset,
+                    } => {
+                        writeln!(get_serial(), "sound,{},{:?}", counter, detected_offset).unwrap();
+                        let rssi = radio::get_packet_status().rssi_pkt();
+
+                        writeln!(get_serial(), "rssi,{}", rssi).unwrap();
+                    }
                 },
                 _ => match packet {
                     Message::Disarm(r, i) if r == role() && i > idempotency_counter => {
@@ -650,7 +673,8 @@ async fn handle_incoming_packets() -> ! {
                         idempotency_counter = i;
                         arm().await;
                     }
-                    Message::TestPyro(r, pin, duration) if r == role() => {
+                    Message::TestPyro(i, r, pin, duration) if r == role() && i > idempotency_counter => {
+                        idempotency_counter = i;
                         fire_pyro(pin, duration).await;
                     }
                     Message::SetStage(r, stage, i) if r == role() && i > idempotency_counter => {
@@ -702,23 +726,23 @@ pub async fn fire_pyro(pin: PyroPin, duration: u32) {
     while time > 0 {
         buzz.set_high();
         timer.start(200u32.millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
+        nb::block!(timer.wait()).unwrap();
         buzz.set_low();
         timer.start((time as u32).millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
+        nb::block!(timer.wait()).unwrap();
         time = (time as f32 * 0.8 - 5.0) as i32;
     }
 
     buzz.set_high();
 
     timer.start(500u32.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
+    nb::block!(timer.wait()).unwrap();
     buzz.set_low();
     for fire in &mut pyro_fires {
         fire.set_high().unwrap();
     }
     timer.start(duration.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
+    nb::block!(timer.wait()).unwrap();
     for fire in &mut pyro_fires {
         fire.set_low().unwrap();
     }
@@ -824,35 +848,37 @@ async fn imu_handler(
             accels: acc_buffer,
             gyros: gyro_buffer,
         };
-        radio::queue_packet(message);
+        if role() == Role::Avionics {
+            radio::queue_packet(message);
+        }
     }
 }
 
-async fn bno_handler<SI, SE>(
-    mut bno: BNO080<SI>,
-    delay: Counter<impl Instance, 100000>
-) where
+async fn bno_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>)
+where
     SI: SensorInterface<SensorError = SE>,
-    SE: core::fmt::Debug {
+    SE: core::fmt::Debug,
+{
     let mut delay = delay.release().delay();
     loop {
         let mut acc_buffer = [[0.0f32; 3]; 8];
-        let mut quat_buffer= [[0.0f32; 4]; 8];
-
+        let mut quat_buffer = [[0.0f32; 4]; 8];
 
         for i in 0..(8 * 8) {
-            let (acc, quat) =  loop {
+            let (acc, quat) = loop {
                 YieldFuture::new().await;
                 bno.handle_all_messages(&mut delay, 3);
-                if let (Ok(acc), Ok(rot)) =  (bno.linear_accel(), bno.rotation_quaternion()) {
+                if let (Ok(acc), Ok(rot)) = (bno.linear_accel(), bno.rotation_quaternion()) {
                     break (acc, rot);
                 }
             };
             if i % 8 == 0 {
-                acc_buffer[i/8] = acc;
-                quat_buffer[i/8] = quat;
+                acc_buffer[i / 8] = acc;
+                quat_buffer[i / 8] = quat;
             }
-            get_logger().log(format_args!("bno,{:?},{:?}", acc, quat)).await;
+            get_logger()
+                .log(format_args!("bno,{:?},{:?}", acc, quat))
+                .await;
             let mut timer = delay.release().counter();
             timer.start(10u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
@@ -868,7 +894,33 @@ async fn bno_handler<SI, SE>(
             rots: quat_buffer,
         };
 
+        if role() == Role::Avionics {
+            radio::queue_packet(message);
+        }
+    }
+}
+
+pub async fn coproc_handler(
+    mut coproc_connector: impl SpiDevice,
+    mut coproc_delay: Counter<impl timer::Instance, 100000>,
+) -> ! {
+    loop {
+        let mut buffer = [0x41u8; 258];
+        coproc_connector.transfer_in_place(&mut buffer).unwrap();
+        let detected_offset = u16::from_be_bytes(buffer[0..2].try_into().unwrap());
+        get_logger()
+            .log(format_args!("sound,{},{:?}", detected_offset, &buffer[2..]))
+            .await;
+
+        let message = Message::SpeedSound {
+            counter: radio::next_counter(),
+            detected_offset,
+        };
+
         radio::queue_packet(message);
+
+        coproc_delay.start(1000u32.millis()).unwrap();
+        NbFuture::new(|| coproc_delay.wait()).await.unwrap();
     }
 }
 
@@ -877,20 +929,19 @@ pub async fn begin(
     pr_timer: Counter<TIM12, 10000>,
     imu: Option<IcmImu<impl I2c, NoDmp>>,
     imu_timer: Counter<impl timer::Instance, 100000>,
-    ads_sclk: Option<impl OutputPin>,
-    ads_dout: Option<impl InputPin>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
-    ads_delay: impl DelayNs,
+    coproc_connector: Option<impl SpiDevice>,
+    coproc_timer: Counter<impl timer::Instance, 100000>,
 ) -> ! {
+    static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
+    let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
     match unsafe { ROLE } {
-        Role::Ground =>
+        Role::GroundMain | Role::GroundBackup =>
         {
             #[allow(unreachable_code)]
             join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
         }
         Role::Avionics => {
-            static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
-            let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
             let imu_task = {
                 #[cfg(feature = "target-mini")]
                 {
@@ -898,25 +949,14 @@ pub async fn begin(
                 }
                 #[cfg(feature = "target-maxi")]
                 {
+                    let _ = imu;
                     bno_handler(bno_imu.unwrap(), imu_timer)
                 }
             };
 
-            let strain_task = {
-                #[cfg(feature = "target-mini")]
-                {
-                    strain_handler(ads_dout.unwrap(), ads_sclk.unwrap(), ads_delay)
-                }
-                #[cfg(feature = "target-maxi")]
-                {
-                    let _ = (ads_dout, ads_sclk, ads_delay);
-                    futures::future::ready(())
-                }
-            };
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
-                strain_task,
                 gps_handler(),
                 gps_broadcast(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
@@ -927,15 +967,41 @@ pub async fn begin(
             .0
         }
         Role::Cansat => {
-            static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
-            let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
+            let coproc_connector_task = {
+                #[cfg(feature = "target-maxi")]
+                {
+                    coproc_handler(coproc_connector.unwrap(), coproc_timer)
+                }
+                #[cfg(feature = "target-mini")]
+                {
+                    let (_, _) = (coproc_connector, coproc_timer);
+                    futures::future::ready(())
+                }
+            };
+
             #[allow(unreachable_code)]
             join!(
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
+                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                stage_update_handler(pressure_receiver),
+                bno_handler(bno_imu.unwrap(), imu_timer),
+                coproc_connector_task
+            )
+            .0
+        }
+        Role::CansatBackup =>
+        {
+            #[allow(unreachable_code)]
+            join!(
+                buzzer_controller(),
+                gps_handler(),
+                gps_broadcast(),
+                handle_incoming_packets(),
+                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                imu_handler(imu.unwrap(), imu_timer),
                 stage_update_handler(pressure_receiver),
             )
             .0

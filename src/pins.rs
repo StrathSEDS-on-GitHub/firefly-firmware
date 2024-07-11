@@ -54,7 +54,6 @@ pub mod i2c {
         fmt::Write,
         sync::atomic::{AtomicBool, Ordering},
     };
-    use cortex_m_semihosting::hprintln;
     use embedded_hal::{
         delay::DelayNs,
         i2c::{ErrorType, I2c},

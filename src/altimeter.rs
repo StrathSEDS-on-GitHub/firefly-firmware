@@ -1,10 +1,6 @@
 use crate::futures::YieldFuture;
 use crate::interrupt_wake;
-use crate::{
-    futures::bmp_wake,
-    pins::Altimeter,
-    I2c1Proxy,
-};
+use crate::{futures::bmp_wake, pins::Altimeter, I2c1Proxy};
 use bmp388::{
     config::{FifoConfig, OversamplingConfig, SubsamplingFactor},
     Blocking, Oversampling, PowerControl, PowerMode, BMP388,
@@ -211,25 +207,26 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     cortex_m::interrupt::free(|cs| {
         BMP.borrow(cs).replace(Some(bmp));
     });
-    let mut fut = bmp_wake::future();
-    let _ = poll(&mut fut);
+    let mut fut = core::pin::pin!(bmp_wake::future());
+    let _ = poll!(&mut fut);
     unsafe {
         let mut done = false;
         while !done {
             cortex_m::interrupt::free(|cs| {
                 if let Ok(()) = BMP
-                                    .borrow(cs)
-                                    .borrow_mut()
-                                    .as_mut()
-                                    .unwrap()
-                                    .write_read_dma(
-                                        Altimeter::ADDRESS,
-                                        &[Altimeter::FIFO_READ_REG],
-                                        &mut *addr_of_mut!(DATA),
-                                        Some(|_| {
-                                            interrupt_wake!(bmp_wake);
-                                        }),
-                                    ) {
+                    .borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .write_read_dma(
+                        Altimeter::ADDRESS,
+                        &[Altimeter::FIFO_READ_REG],
+                        &mut *addr_of_mut!(DATA),
+                        Some(|_| {
+                            interrupt_wake!(bmp_wake);
+                        }),
+                    )
+                {
                     done = true
                 }
             });
