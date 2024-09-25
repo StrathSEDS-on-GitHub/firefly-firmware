@@ -12,17 +12,16 @@ use hal::{
     gpio::{self, Input},
     pac::{NVIC, USART1},
     prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxISR, RxListen, SerialExt}};
+    serial::{RxISR, RxListen, SerialExt},
+};
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
-    dma::{
-        self,
-    },
+    dma::{self},
     interrupt, pac,
     serial::{Rx, Tx},
 };
-use time::{PrimitiveDateTime, Date};
+use time::{Date, PrimitiveDateTime};
 
 use crate::{interrupt_wake, neopixel, RTC};
 use stm32f4xx_hal as hal;
@@ -230,15 +229,23 @@ fn set_rtc(time: Time) {
         let rtc = rtc_ref.as_mut().unwrap();
         rtc.set_datetime(&PrimitiveDateTime::new(
             Date::from_calendar_date(2023, time::Month::June, 26).unwrap(),
-            time::Time::from_hms_milli(time.hours, time.minutes, time.seconds as u8, (time.seconds * 1000.0) as u16 % 1000).unwrap(),
-        )).unwrap();
-        rtc.enable_wakeup(30u32.millis().into());
+            time::Time::from_hms_milli(
+                time.hours,
+                time.minutes,
+                time.seconds as u8,
+                (time.seconds * 1000.0) as u16 % 1000,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+        rtc.enable_wakeup(20u32.millis().into());
 
         NVIC::unpend(pac::Interrupt::RTC_WKUP);
-        unsafe { NVIC::unmask(pac::Interrupt::RTC_WKUP); }
+        unsafe {
+            NVIC::unmask(pac::Interrupt::RTC_WKUP);
+        }
 
-        neopixel::update_pixel(1, [0,0,255])
-        
+        neopixel::update_pixel(1, [0, 0, 255])
     });
 }
 
@@ -251,9 +258,9 @@ pub async fn poll_for_sentences() -> ! {
 
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
 
-    let mut fix_packets = 0;
-
+    let mut nth = 0u32;
     loop {
+        let mut last_time = None;
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
                 if let ParseResult::GGA(Some(GGA {
@@ -262,11 +269,7 @@ pub async fn poll_for_sentences() -> ! {
                     ..
                 })) = parse_result.clone()
                 {
-                    // Update our internal time once in a while;
-                    if fix_packets % 200 == 0 {
-                        set_rtc(time);
-                    }
-                    fix_packets += 1;
+                    last_time = Some(time);
                 }
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
@@ -281,6 +284,13 @@ pub async fn poll_for_sentences() -> ! {
                         .unwrap();
                 });
                 start = i + 1;
+            }
+        }
+        nth = nth.wrapping_add(1);
+
+        if let Some(last_time) = last_time {
+            if nth % 20 == 0 {
+                set_rtc(last_time);
             }
         }
 
