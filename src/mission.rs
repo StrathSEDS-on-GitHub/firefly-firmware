@@ -122,6 +122,10 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
             continue;
         }
         let frames = frames.unwrap();
+        if frames.len() < 5 {
+            YieldFuture::new().await;
+            continue;
+        }
         if sea_level_pressure == 0.0 {
             let mut vec: Vec<f32, ALTIMETER_FRAME_COUNT> = frames
                 .iter()
@@ -130,7 +134,8 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 .collect();
             vec.sort_unstable_by(f32::total_cmp);
             // Take the average of the middle 5 values
-            sea_level_pressure = vec[7..12].iter().sum::<f32>() / 5.0;
+            let mid = vec.len() / 2;
+            sea_level_pressure = vec[mid - 2..mid + 3].iter().sum::<f32>() / 5.0;
         }
 
         let stage = current_stage();
