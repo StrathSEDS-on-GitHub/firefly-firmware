@@ -29,6 +29,7 @@ use embedded_hal_bus::spi::NoDelay;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
+use fugit::ExtU64;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
 use hal::dma::StreamsTuple;
@@ -50,6 +51,7 @@ use hal::timer::Counter;
 use hal::timer::CounterHz;
 use hal::timer::PwmHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
+use mission::role;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::gpio::Output;
@@ -94,7 +96,6 @@ static CLOCKS: Mutex<RefCell<Option<hal::rcc::Clocks>>> = Mutex::new(RefCell::ne
 type Dio1Pin = gpio::gpioc::PC4<gpio::Input>;
 static mut DIO1_PIN: Option<Dio1Pin> = None;
 
-const RF_FREQUENCY: u32 = 868_000_000; // 868MHz (EU)
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
 static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
@@ -225,7 +226,6 @@ async fn main(_spawner: Spawner) {
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
-
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
             RTC.borrow(cs).borrow_mut().replace(rtc);
@@ -336,9 +336,11 @@ async fn main(_spawner: Spawner) {
         .await;
 
         let role = match board_id.unwrap().unwrap().1 {
-            5 => Role::GroundMain,
-            3 | 4 => Role::Avionics,
-            _ => Role::Cansat,
+            2|0 => Role::GroundMain,
+            3 => Role::GroundBackup,
+            4 => Role::Cansat,
+            1 => Role::Avionics,
+            _ => panic!("Invalid role"),
         };
 
         unsafe { mission::ROLE = role };
@@ -547,7 +549,17 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        let ads_delay = dp.TIM4.counter::<100000>(&clocks);
+        if matches!(role, Role::CansatBackup | Role::GroundBackup) {
+            cortex_m::interrupt::free(|cs| {
+                RTC.borrow(cs)
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .enable_wakeup(100u64.millis());
+            });
+        }
+
+        let ads_delay = dp.TIM4.counter::<10000>(&clocks);
 
         mission::begin(
             bmp,

@@ -7,6 +7,7 @@ use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
 
 use crate::mission;
+use crate::mission::role;
 use crate::mission::EpochTime;
 use crate::mission::MissionStage;
 use crate::mission::PyroPin;
@@ -57,7 +58,7 @@ fn EXTI4() {
                 radio.radio.wait_on_busy().unwrap();
                 if let RadioState::Tx(transmitter) = RADIO_STATE.borrow(cs).get() {
                     return transmitter != mission::role()
-                        && (transmitter == Role::GroundMain || mission::role() == Role::GroundMain);
+                        && (transmitter == Role::GroundMain || mission::role() == Role::GroundMain || mission::role() == Role::GroundBackup);
                 }
             }
 
@@ -196,11 +197,16 @@ static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-const TDM_CONFIG: [(RadioState, u32); 4] = [
+const TDM_CONFIG_MAIN: [(RadioState, u32); 6] = [
     (RadioState::Buffer(Role::GroundMain), 100),
-    (RadioState::Tx(Role::GroundMain), 600),
+    (RadioState::Tx(Role::GroundMain), 500),
     (RadioState::Buffer(Role::Avionics), 100),
     (RadioState::Tx(Role::Avionics), 1200),
+    (RadioState::Buffer(Role::Cansat), 100),
+    (RadioState::Tx(Role::Cansat), 1000),
+];
+const TDM_CONFIG_BACKUP: [(RadioState, u32); 1] = [
+    (RadioState::Tx(Role::CansatBackup), 3000),
 ];
 
 pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message, 64>>> =
@@ -218,10 +224,15 @@ fn RTC_WKUP() {
             let time = rtc.get_datetime();
 
             let (_, _, s, millis) = time.as_hms_milli();
-            let t_secs = (s as u32 * 1000 + millis as u32) % 2000;
+            let t_secs = (s as u32 * 1000 + millis as u32) % 3000;
 
             let mut offset = 0;
-            for (state, duration) in TDM_CONFIG.iter() {
+            let tdm_config: &[_] = match role() {
+                Role::GroundBackup | Role::CansatBackup => &TDM_CONFIG_BACKUP,
+                _ => &TDM_CONFIG_MAIN,
+                
+            };
+            for (state, duration) in tdm_config.iter() {
                 if t_secs < offset + *duration {
                     RADIO_STATE.borrow(cs).set(*state);
                     break;
@@ -319,7 +330,7 @@ fn set_radio() {
         }
         RadioState::Tx(other) | RadioState::Buffer(other) => {
             // Someone else is transmitting
-            if mission::role() == Role::GroundMain || other == Role::GroundMain {
+            if mission::role() == Role::GroundMain || other == Role::GroundMain || mission::role() == Role::GroundBackup {
                 if LISTEN_IN_PROGRESS.load(Ordering::Relaxed) {
                     return;
                 }

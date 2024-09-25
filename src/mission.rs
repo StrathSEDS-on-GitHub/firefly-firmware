@@ -113,7 +113,7 @@ pub fn update_pyro_state() {
 pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
     let mut start_altitude: f32 = 0.0;
     let mut sea_level_pressure: f32 = 0.0;
-    const MAIN_DEPLOYMENT_HEIGHT: f32 = 3000.0;
+    const MAIN_DEPLOYMENT_HEIGHT: f32 = 300.0;
 
     loop {
         let frames = channel.recv().await;
@@ -177,7 +177,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 // If our velocity is negative, we must be descending
                 let velocities = altitudes.windows(3).map(|w| w[2] - w[0]);
 
-                if velocities.filter(|v| *v < 0.05).count() > 10 {
+                if velocities.filter(|v| *v < 0.015).count() > 10 {
                     get_logger().log_str("stage,detected apogee").await;
                     if role() == Role::Avionics {
                         get_logger().log_str("stage,firing drogue!").await;
@@ -252,7 +252,6 @@ fn parse_role(s: &[u8]) -> Option<Role> {
 
 pub async fn usb_handler() -> ! {
     let mut buf = [0u8; 256];
-    let mut idempotency_counter = 0;
     loop {
         let bytes = get_serial().read(&mut buf).await.unwrap();
 
@@ -263,21 +262,15 @@ pub async fn usb_handler() -> ! {
                     cortex_m::interrupt::free(|cs| {
                         STAGE.borrow(cs).set(MissionStage::Disarmed(0));
                     });
-                    for _ in 0..10 {
-                        radio::queue_packet(Message::Disarm(role, idempotency_counter));
-                    }
-                    idempotency_counter += 1;
+                    radio::queue_packet(Message::Disarm(role, 0));
                 }
                 None => writeln!(get_serial(), "Invalid disarm role").unwrap(),
             }
         } else if split.len() > 1 && split[0].starts_with(b"arm") {
             match parse_role(split[1]) {
                 Some(role) => {
-                    for _ in 0..50 {
-                        radio::queue_packet(Message::Arm(role, idempotency_counter));
-                    }
+                    radio::queue_packet(Message::Arm(role, 0));
                     writeln!(get_serial(), "Sent arm packet!").unwrap();
-                    idempotency_counter += 1;
                 }
                 None => writeln!(get_serial(), "Invalid arm role").unwrap(),
             }
@@ -294,18 +287,16 @@ pub async fn usb_handler() -> ! {
                     continue;
                 };
 
-                for _ in 0..50 {
-                    radio::queue_packet(Message::TestPyro(
-                        idempotency_counter,
-                        role,
-                        pin,
-                        core::str::from_utf8(split[3])
-                            .unwrap()
-                            .trim()
-                            .parse()
-                            .unwrap(),
-                    ));
-                }
+                radio::queue_packet(Message::TestPyro(
+                    0,
+                    role,
+                    pin,
+                    core::str::from_utf8(split[3])
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap(),
+                ));
             } else {
                 writeln!(get_serial(), "Invalid test-pyro role").unwrap();
             }
@@ -336,10 +327,7 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
 
-            for _ in 0..10 {
-                radio::queue_packet(Message::SetStage(role, stage, idempotency_counter));
-            }
-            idempotency_counter += 1;
+            radio::queue_packet(Message::SetStage(role, stage, 0));
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
@@ -532,13 +520,12 @@ async fn strain_handler(
     }
 }
 async fn handle_incoming_packets() -> ! {
-    let mut idempotency_counter = 0;
     loop {
         if let Some(packet) = cortex_m::interrupt::free(|cs| {
             RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut().pop_front()
         }) {
             match role() {
-                Role::GroundMain => match packet {
+                Role::GroundMain | Role::GroundBackup => match packet {
                     Message::GpsBroadCast {
                         counter,
                         stage,
@@ -670,20 +657,16 @@ async fn handle_incoming_packets() -> ! {
                     }
                 },
                 _ => match packet {
-                    Message::Disarm(r, i) if r == role() && i > idempotency_counter => {
-                        idempotency_counter = i;
+                    Message::Disarm(r, _) if r == role() => {
                         disarm().await;
                     }
-                    Message::Arm(r, i) if r == role() && i > idempotency_counter => {
-                        idempotency_counter = i;
+                    Message::Arm(r, _) if r == role() => {
                         arm().await;
                     }
-                    Message::TestPyro(i, r, pin, duration) if r == role() && i > idempotency_counter => {
-                        idempotency_counter = i;
+                    Message::TestPyro(_, r, pin, duration) if r == role() => {
                         fire_pyro(pin, duration).await;
                     }
-                    Message::SetStage(r, stage, i) if r == role() && i > idempotency_counter => {
-                        idempotency_counter = i;
+                    Message::SetStage(r, stage, _) if r == role() => {
                         cortex_m::interrupt::free(|cs| {
                             STAGE.borrow(cs).replace(stage);
                             update_pyro_state();
@@ -788,12 +771,12 @@ pub async fn arm() {
 
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
-    let _buzz = unsafe { BUZZER.as_mut().unwrap() };
-    let _timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-    //buzz.set_high();
-    //timer.start(1000u32.millis()).unwrap();
-    //NbFuture::new(|| timer.wait()).await.unwrap();
-    //buzz.set_low();
+    let buzz = unsafe { BUZZER.as_mut().unwrap() };
+    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+    buzz.set_high();
+    timer.start(1000u32.millis()).unwrap();
+    NbFuture::new(|| timer.wait()).await.unwrap();
+    buzz.set_low();
 
     while !matches!(
         cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get()),
@@ -907,7 +890,7 @@ where
 
 pub async fn coproc_handler(
     mut coproc_connector: impl SpiDevice,
-    mut coproc_delay: Counter<impl timer::Instance, 100000>,
+    mut coproc_delay: Counter<impl timer::Instance, 10000>,
 ) -> ! {
     loop {
         let mut buffer = [0x41u8; 258];
@@ -936,7 +919,7 @@ pub async fn begin(
     imu_timer: Counter<impl timer::Instance, 100000>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
     coproc_connector: Option<impl SpiDevice>,
-    coproc_timer: Counter<impl timer::Instance, 100000>,
+    coproc_timer: Counter<impl timer::Instance, 10000>,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
