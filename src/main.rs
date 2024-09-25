@@ -1,5 +1,6 @@
 #![allow(clippy::empty_loop)]
 #![allow(dead_code)]
+#![allow(static_mut_refs)]
 #![no_main]
 #![no_std]
 
@@ -148,20 +149,6 @@ impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Read> usbd_serial::embed
         }
         Ok(i)
     }
-}
-
-fn play_tone<P: hal::timer::Pins<TIM3>, DELAY: DelayNs>(
-    channel: &mut PwmHz<TIM3, P>,
-    delay: &mut DELAY,
-    freq: fugit::HertzU32,
-    duration: fugit::MillisDurationU32,
-) {
-    let max_duty = channel.get_max_duty();
-    channel.set_duty(hal::timer::Channel::C2, max_duty / 2);
-    channel.enable(hal::timer::Channel::C2);
-    channel.set_period(freq);
-    delay.delay_ms(duration.to_millis());
-    channel.disable(hal::timer::Channel::C2);
 }
 
 #[embassy_executor::main]
@@ -711,7 +698,7 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         dio1_irq_mask,
         dio2_irq_mask: IrqMask::none(),
         dio3_irq_mask: IrqMask::none(),
-        rf_frequency: RF_FREQUENCY,
+        rf_frequency: rf_freq,
         rf_freq,
         tcxo_opts: Some((TcxoVoltage::Volt3_3, [0, 0, 0x64].into())),
     }
