@@ -121,6 +121,7 @@ pub enum Message {
     TestPyro(u8, Role, PyroPin, u32),
     SetStage(Role, MissionStage, u8),
     SpeedSound { counter: u16, detected_offset: u16 },
+    WipeLogs
 }
 
 pub fn next_counter() -> u16 {

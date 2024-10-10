@@ -3,6 +3,7 @@ use core::fmt::{self, Write};
 
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
 use f4_w25q::embedded_storage::W25QSequentialStorage;
+use f4_w25q::embedded_storage::NorFlash;
 use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;
 use sequential_storage::queue;
@@ -131,4 +132,14 @@ impl Logger {
             // Ignore the result, we can't do anything about it.
         }
     }
+
+    pub async fn clear(&mut self) {
+        self.flash 
+            .as_mut()
+            .unwrap()
+            .erase(LOGS_FLASH_RANGE.start, LOGS_FLASH_RANGE.end)
+            .await
+            .unwrap();
+    }
 }
+

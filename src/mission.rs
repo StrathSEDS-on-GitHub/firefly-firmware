@@ -328,6 +328,8 @@ pub async fn usb_handler() -> ! {
             };
 
             radio::queue_packet(Message::SetStage(role, stage, 0));
+        } else if split.len() > 1 && split[0].starts_with(b"wipe") {
+            radio::queue_packet(Message::WipeLogs); 
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
@@ -579,6 +581,7 @@ async fn handle_incoming_packets() -> ! {
                     Message::Disarm(..) => {}
                     Message::TestPyro(..) => {}
                     Message::SetStage(..) => {}
+                    Message::WipeLogs => {}
                     Message::IMUBroadcast {
                         counter,
                         stage,
@@ -671,6 +674,9 @@ async fn handle_incoming_packets() -> ! {
                             STAGE.borrow(cs).replace(stage);
                             update_pyro_state();
                         });
+                    }
+                    Message::WipeLogs => {
+                        get_logger().clear();
                     }
                     _ => {}
                 },
