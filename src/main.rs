@@ -22,6 +22,7 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::delay::DelayNs;
@@ -59,7 +60,8 @@ use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::pac::SPI2;
-use storage_types::U64Item;
+use stm32f4xx_hal::serial::Config;
+use storage_types::ConfigKey;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
@@ -209,7 +211,7 @@ async fn main(_spawner: Spawner) {
         );
 
         neopixel::new_neopixel(Ws2812::new(neopixel_spi));
-        neopixel::update_pixel(0, [255, 255, 0]);
+        neopixel::update_pixel(0, [255, 0, 0]);
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
@@ -312,18 +314,26 @@ async fn main(_spawner: Spawner) {
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         let mut wrapper = W25QSequentialStorage::new(flash);
+        hprintln!("start");
+        let total = sequential_storage::queue::space_left(
+            &mut wrapper,
+            LOGS_FLASH_RANGE,
+            &mut NoCache::new(),
+        )
+        .await;
+        hprintln!("{:?}", total);
 
-        let board_id: Result<Option<U64Item>, _> = map::fetch_item(
+        let board_id: Result<Option<u64>, _> = map::fetch_item(
             &mut wrapper,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 41],
-            "id".try_into().unwrap(),
+            &ConfigKey::try_from("id").unwrap(),
         )
         .await;
 
-        let role = match board_id.unwrap().unwrap().1 {
-            2|0 => Role::GroundMain,
+        let role = match board_id.unwrap().unwrap() {
+            2 | 0 => Role::GroundMain,
             3 => Role::GroundBackup,
             4 => Role::Cansat,
             1 => Role::Avionics,
@@ -548,6 +558,7 @@ async fn main(_spawner: Spawner) {
 
         let ads_delay = dp.TIM4.counter::<10000>(&clocks);
 
+        neopixel::update_pixel(0, [0, 128, 0]);
         mission::begin(
             bmp,
             dp.TIM12.counter(&clocks),
@@ -567,17 +578,17 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         PacketType::LoRa,
     };
 
-    let sf: U64Item = map::fetch_item(
+    let sf: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
-        NoCache::new(),
+        &mut NoCache::new(),
         &mut [0; 128],
-        "sf".try_into().unwrap(),
+        &ConfigKey::try_from("sf").unwrap(),
     )
     .await
     .unwrap()
-    .unwrap_or(U64Item("".try_into().unwrap(), 7));
-    let sf = match sf.1 {
+    .unwrap_or(7);
+    let sf = match sf {
         7 => LoRaSpreadFactor::SF7,
         8 => LoRaSpreadFactor::SF8,
         9 => LoRaSpreadFactor::SF9,
@@ -587,18 +598,18 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         _ => panic!("Invalid spread factor"),
     };
 
-    let bw: U64Item = map::fetch_item(
+    let bw: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
-        NoCache::new(),
+        &mut NoCache::new(),
         &mut [0; 128],
-        "bw".try_into().unwrap(),
+        &ConfigKey::try_from("bw").unwrap(),
     )
     .await
     .unwrap()
-    .unwrap_or(U64Item("".try_into().unwrap(), 250));
+    .unwrap_or(250);
 
-    let bw = match bw.1 {
+    let bw = match bw {
         7 => LoRaBandWidth::BW7,
         10 => LoRaBandWidth::BW10,
         15 => LoRaBandWidth::BW15,
@@ -612,18 +623,18 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         _ => panic!("Invalid bandwidth"),
     };
 
-    let cr: U64Item = map::fetch_item(
+    let cr: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
-        NoCache::new(),
+        &mut NoCache::new(),
         &mut [0; 128],
-        "cr".try_into().unwrap(),
+        &ConfigKey::try_from("cr").unwrap(),
     )
     .await
     .unwrap()
-    .unwrap_or(U64Item("".try_into().unwrap(), 8));
+    .unwrap_or(8);
 
-    let cr = match cr.1 {
+    let cr = match cr {
         5 => LoraCodingRate::CR4_5,
         6 => LoraCodingRate::CR4_6,
         7 => LoraCodingRate::CR4_7,
@@ -631,33 +642,30 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         _ => panic!("Invalid coding rate"),
     };
 
-    let power: U64Item = map::fetch_item(
+    let power: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
-        NoCache::new(),
+        &mut NoCache::new(),
         &mut [0; 128],
-        "power".try_into().unwrap(),
+        &ConfigKey::try_from("power").unwrap(),
     )
     .await
     .unwrap()
-    .unwrap_or(U64Item("".try_into().unwrap(), 22));
-    let power = power.1;
+    .unwrap_or(22);
     if power > 22 {
         panic!("Invalid power");
     }
 
-    let rf_freq: U64Item = map::fetch_item(
+    let rf_freq: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
-        NoCache::new(),
+        &mut NoCache::new(),
         &mut [0; 128],
-        "rf_freq".try_into().unwrap(),
+        &ConfigKey::try_from("rf_freq").unwrap(),
     )
     .await
     .unwrap()
-    .unwrap_or(U64Item("".try_into().unwrap(), 868_000_000));
-
-    let rf_freq = rf_freq.1;
+    .unwrap_or(868_000_000);
 
     let mod_params = LoraModParams::default()
         .set_spread_factor(sf)

@@ -47,7 +47,7 @@ usbd_scsi = {version = "0.1.0", path="stm32-usb.rs/firmware/usbd_scsi"}
 time = {version = "0.3.20", default-features=false, features=["macros"] }
 thingbuf = { version="0.1.0", default-features=false, features=["static"] }
 serde-json-core = "0.5.1"
-sequential-storage = { version= "1.0.0" }
+sequential-storage = { version= "3.0.1" }
 storage-types = { version="0.1.0", path="storage-types" }
 bmp388 = { version="0.1.0", path="bmp388" }
 icm20948_driver = { version="0.2", path="icm20948_driver"}

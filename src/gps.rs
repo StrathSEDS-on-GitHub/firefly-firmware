@@ -1,10 +1,11 @@
 use core::{
     cell::RefCell,
     cmp::min,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
 use futures::poll;
 use hal::{
@@ -245,7 +246,7 @@ fn set_rtc(time: Time) {
             NVIC::unmask(pac::Interrupt::RTC_WKUP);
         }
 
-        neopixel::update_pixel(1, [0, 0, 255])
+        neopixel::update_pixel(1, [0, 255, 128])
     });
 }
 
@@ -259,16 +260,25 @@ pub async fn poll_for_sentences() -> ! {
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
 
     let mut nth = 0u32;
+
+    let mut searching_fix_color = false;
+    let mut got_fix = false;
+
     loop {
         let mut last_time = None;
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
+                searching_fix_color = !searching_fix_color;
+                if !got_fix {
+                    neopixel::update_pixel(1, [searching_fix_color as u8 * 100, searching_fix_color as u8 * 100, 0]);
+                }
                 if let ParseResult::GGA(Some(GGA {
                     time,
                     fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
                     ..
                 })) = parse_result.clone()
                 {
+                    got_fix = true;
                     last_time = Some(time);
                 }
                 cortex_m::interrupt::free(|cs| {

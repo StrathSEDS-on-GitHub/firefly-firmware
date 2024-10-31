@@ -1,34 +1,54 @@
 #![no_std]
 
-use core::convert::Infallible;
+use core::str::FromStr;
 
 use heapless::String;
-use sequential_storage::map::StorageItem;
+use sequential_storage::map::Key;
 
-#[derive(Debug)]
-pub struct U64Item(pub String<32>,pub  u64);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigKey(String<32>);
 
-impl StorageItem for U64Item {
-    type Key = String<32>;
-    type Error = Infallible;
-    fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
-        let len = self.0.len();
-        buffer[0] = len as u8;
-        buffer[1..len + 1].copy_from_slice(&self.0.as_bytes());
-        buffer[len + 1..len + 9].copy_from_slice(&self.1.to_le_bytes());
-        Ok(len + 9)
+impl TryFrom<&str> for ConfigKey {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(ConfigKey(String::from_str(value)?))
+    }
+}
+
+impl Key for ConfigKey {
+    fn serialize_into(
+        &self,
+        buffer: &mut [u8],
+    ) -> Result<usize, sequential_storage::map::SerializationError> {
+        if buffer.len() < 1 + self.0.len() {
+            return Err(sequential_storage::map::SerializationError::BufferTooSmall);
+        }
+        buffer[0] = self.0.len() as u8;
+        buffer[1..].copy_from_slice(&self.0.as_bytes());
+        Ok(1 + self.0.len())
     }
 
-    fn deserialize_from(buffer: &[u8]) -> Result<Self, Self::Error> {
-        let len = buffer[0] as usize;
-        assert!(len <= 32);
-        let key = core::str::from_utf8(&buffer[1..len + 1]).unwrap().try_into().unwrap();
-        let value = u64::from_le_bytes(buffer[len + 1..len + 9].try_into().unwrap());
-        Ok(U64Item(key, value))
-    }
+    fn deserialize_from(
+        buffer: &[u8],
+    ) -> Result<(Self, usize), sequential_storage::map::SerializationError> {
+        let mut key = String::new();
+        let len = buffer
+            .get(0)
+            .cloned()
+            .ok_or(sequential_storage::map::SerializationError::BufferTooSmall)?
+            as usize;
 
-    fn key(&self) -> Self::Key {
-        // FIXME: this shouldn't have to be cloned
-        self.0.clone()
+        if buffer.len() < 1 + len {
+            return Err(sequential_storage::map::SerializationError::BufferTooSmall);
+        }
+
+        key.push_str(
+            core::str::from_utf8(&buffer[1..=len])
+                .map_err(|_| sequential_storage::map::SerializationError::InvalidData)?,
+        )
+        .unwrap();
+
+        Ok((ConfigKey(key), len))
     }
 }

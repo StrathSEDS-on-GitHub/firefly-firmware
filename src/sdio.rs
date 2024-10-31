@@ -127,7 +127,7 @@ impl Logger {
         });
 
         if let Some(ref mut flash) = self.flash {
-            let _ = queue::push(flash, LOGS_FLASH_RANGE, NoCache::new(), &buffer, false).await;
+            let _ = queue::push(flash, LOGS_FLASH_RANGE, &mut NoCache::new(), &buffer, false).await;
             // Ignore the result, we can't do anything about it.
         }
     }
