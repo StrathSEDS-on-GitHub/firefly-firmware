@@ -186,15 +186,21 @@ async fn main(_spawner: Spawner) {
             .require_pll48clk()
             .freeze();
 
+
+        let mut ch1 = gpio.c.pc6.into_push_pull_output();
+        let mut ch2 =gpio.b.pb12.into_push_pull_output();
+
+        let mut delay = cp.SYST.delay(&clocks);
+        let mut buzzer_pin = buzzer_pin!(gpio);
+
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
-            BUZZER.replace(buzzer_pin!(gpio));
+            BUZZER.replace((buzzer_pin));
             BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
 
-        let mut delay = cp.SYST.delay(&clocks);
 
         const LED_NUM: usize = 3;
         let neopixel_spi = Spi::new(
