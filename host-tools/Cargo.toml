@@ -18,7 +18,7 @@ embedded-storage-async = "0.4.1"
 heapless = "0.8.0"
 rand = "0.8.5"
 ratatui = "0.26.1"
-sequential-storage = { version= "1.0.0" }
+sequential-storage = { version= "3.0.1" }
 serde_json = "1.0.117"
 storage-types = {version = "0.1.0", path="../storage-types"}
 syntect = "5.2.0"

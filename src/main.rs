@@ -22,7 +22,6 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::delay::DelayNs;
@@ -314,14 +313,12 @@ async fn main(_spawner: Spawner) {
         gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         let mut wrapper = W25QSequentialStorage::new(flash);
-        hprintln!("start");
         let total = sequential_storage::queue::space_left(
             &mut wrapper,
             LOGS_FLASH_RANGE,
             &mut NoCache::new(),
         )
         .await;
-        hprintln!("{:?}", total);
 
         let board_id: Result<Option<u64>, _> = map::fetch_item(
             &mut wrapper,
@@ -595,7 +592,7 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         10 => LoRaSpreadFactor::SF10,
         11 => LoRaSpreadFactor::SF11,
         12 => LoRaSpreadFactor::SF12,
-        _ => panic!("Invalid spread factor"),
+        _ => LoRaSpreadFactor::SF7,
     };
 
     let bw: u64 = map::fetch_item(
@@ -620,7 +617,7 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         125 => LoRaBandWidth::BW125,
         250 => LoRaBandWidth::BW250,
         500 => LoRaBandWidth::BW500,
-        _ => panic!("Invalid bandwidth"),
+        _ => LoRaBandWidth::BW250
     };
 
     let cr: u64 = map::fetch_item(
@@ -639,10 +636,10 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         6 => LoraCodingRate::CR4_6,
         7 => LoraCodingRate::CR4_7,
         8 => LoraCodingRate::CR4_8,
-        _ => panic!("Invalid coding rate"),
+        _ => LoraCodingRate::CR4_5,
     };
 
-    let power: u64 = map::fetch_item(
+    let mut power: u64 = map::fetch_item(
         flash,
         CONFIG_FLASH_RANGE,
         &mut NoCache::new(),
@@ -653,7 +650,7 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
     .unwrap()
     .unwrap_or(22);
     if power > 22 {
-        panic!("Invalid power");
+        power = 22;
     }
 
     let rf_freq: u64 = map::fetch_item(

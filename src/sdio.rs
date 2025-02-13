@@ -1,52 +1,31 @@
 use core::cell::RefCell;
 use core::fmt::{self, Write};
 
-use embedded_sdmmc::{Block, BlockDevice, BlockIdx, Controller, File, Volume};
+use cortex_m::interrupt::{CriticalSection, Mutex};
+use cortex_m::register::primask::{self, Primask};
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;
-use sequential_storage::queue;
-use stm32f4xx_hal::sdio::{SdCard, Sdio};
+use sequential_storage::{map, queue};
 
 use stm32f4xx_hal as hal;
+use storage_types::ConfigKey;
 
-use crate::{CAPACITY, LOGS_FLASH_RANGE, RTC};
+use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, RTC};
 
-static mut LOGGER: Option<Logger> = Some(Logger {
-    sd_logger: None,
-    flash: None,
-});
+static mut LOGGER: Option<Logger> = Some(Logger { flash: Mutex::new(RefCell::new(None)) });
 
 pub fn setup_logger<'a>(
     flash: W25QSequentialStorage<Bank1, CAPACITY>,
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     unsafe {
-        LOGGER.replace(Logger {
-            sd_logger: None,
-            flash: Some(flash),
-        });
+        LOGGER.replace(Logger { flash: Mutex::new(RefCell::new(Some(flash))) });
     }
     Ok(())
 }
 
 pub fn get_logger() -> &'static mut Logger {
     unsafe { LOGGER.as_mut().unwrap() }
-}
-
-struct DummyTimeSource;
-impl embedded_sdmmc::TimeSource for DummyTimeSource {
-    fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-        embedded_sdmmc::Timestamp::from_fat(0, 0)
-    }
-}
-pub struct SdWrapper {
-    sdio: RefCell<Sdio<SdCard>>,
-}
-
-pub struct SdLogger {
-    cont: Controller<SdWrapper, DummyTimeSource>,
-    vol: Volume,
-    file: File,
 }
 
 pub struct FixedWriter<'a>(pub &'a mut [u8], pub usize);
@@ -64,48 +43,8 @@ impl<'a> Write for FixedWriter<'a> {
     }
 }
 
-impl BlockDevice for SdWrapper {
-    type Error = hal::sdio::Error;
-
-    fn read(
-        &self,
-        blocks: &mut [Block],
-        address: BlockIdx,
-        _reason: &str,
-    ) -> Result<(), Self::Error> {
-        for i in 0..blocks.len() {
-            let addr = address.0 + i as u32;
-            //hprintln!("Reading block {}", addr);
-            self.sdio
-                .borrow_mut()
-                .read_block(addr, &mut blocks[i].contents)?;
-        }
-        Ok(())
-    }
-
-    fn write(&self, buf: &[Block], address: BlockIdx) -> Result<(), Self::Error> {
-        for i in 0..buf.len() {
-            let addr = address.0 + i as u32;
-            //hprintln!("Reading block {}", addr);
-            self.sdio.borrow_mut().write_block(addr, &buf[i])?;
-        }
-        Ok(())
-    }
-
-    fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, Self::Error> {
-        Ok(embedded_sdmmc::BlockCount(
-            self.sdio
-                .borrow()
-                .card()
-                .map(|c| c.block_count() as u32)
-                .unwrap_or(0),
-        ))
-    }
-}
-
 pub struct Logger {
-    sd_logger: Option<SdLogger>,
-    flash: Option<W25QSequentialStorage<Bank1, CAPACITY>>,
+    flash: Mutex<RefCell<Option<W25QSequentialStorage<Bank1, CAPACITY>>>>,
 }
 
 impl Logger {
@@ -113,22 +52,68 @@ impl Logger {
         let mut buf = [0u8; 1024];
         let mut buf = FixedWriter(&mut buf, 0);
         write!(buf, "{}", fmt).unwrap();
-        self.log_str(unsafe { core::str::from_utf8_unchecked(&buf.0[..buf.1]) }).await;
+        self.log_str(unsafe { core::str::from_utf8_unchecked(&buf.0[..buf.1]) })
+            .await;
     }
 
     pub async fn log_str(&mut self, msg: &str) {
         let mut buffer = [0u8; 2048];
         let buffer = cortex_m::interrupt::free(|cs| {
             let mut rtc = RTC.borrow(cs).borrow_mut();
-            let (h,m,s,millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
+            let (h, m, s, millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
             let mut writer = FixedWriter(&mut buffer, 0);
             let _ = write!(writer, "{:02}:{:02}:{:02}.{:03} {}\n", h, m, s, millis, msg);
             &writer.0[..writer.1]
         });
 
-        if let Some(ref mut flash) = self.flash {
-            let _ = queue::push(flash, LOGS_FLASH_RANGE, &mut NoCache::new(), &buffer, false).await;
-            // Ignore the result, we can't do anything about it.
-        }
+        {
+            let mask = primask::read();
+            cortex_m::interrupt::disable();
+            if let Some(flash) = self.flash.borrow(unsafe { &CriticalSection::new() }).borrow_mut().as_mut() {
+                let _ =
+                    queue::push(flash, LOGS_FLASH_RANGE, &mut NoCache::new(), &buffer, false).await;
+                // Ignore the result, we can't do anything about it.
+            }
+            if mask.is_active() { unsafe { cortex_m::interrupt::enable(); }}
+        };
+    }
+
+
+    pub async fn get_logs<'a>(&'a mut self, f: impl Fn(&'_ str)) {
+        {
+            let mask = primask::read();
+            cortex_m::interrupt::disable();
+            if let Some(flash) = self.flash.borrow(unsafe { &CriticalSection::new() }).borrow_mut().as_mut() {
+                let mut no_cache = NoCache::new();
+                let mut iterator = queue::iter(flash, LOGS_FLASH_RANGE, &mut no_cache).await.unwrap();
+                
+                let mut buffer = [0u8; 2048];
+                let next = iterator.next(&mut buffer).await;
+                while let Ok(Some(ref buf)) = next {
+                    let s = unsafe { core::str::from_utf8_unchecked(buf) };
+                    f(s);
+                }
+            }
+            if mask.is_active() { unsafe { cortex_m::interrupt::enable(); }}
+        };
+    }
+
+    pub async fn edit_config(&mut self, key: &ConfigKey, value: u64) {
+        {
+            let mask = primask::read();
+            cortex_m::interrupt::disable();
+            if let Some(flash) = self.flash.borrow(unsafe { &CriticalSection::new() }).borrow_mut().as_mut() {
+                let _ = map::store_item(
+                    flash,
+                    CONFIG_FLASH_RANGE,
+                    &mut NoCache::new(),
+                    &mut [0u8; 2048],
+                    key,
+                    &value,
+                )
+                .await;
+            }
+            if mask.is_active() { unsafe { cortex_m::interrupt::enable(); }}
+        };
     }
 }

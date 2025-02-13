@@ -1,4 +1,5 @@
 use bno080::{interface::SensorInterface, wrapper::BNO080};
+use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use embassy_futures::block_on;
@@ -15,11 +16,7 @@ use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
-    adc::{config::SampleTime, Adc},
-    gpio::{Analog, Output, Pin},
-    pac::{ADC1, TIM12},
-    timer::{self, Counter, Instance},
-    ClearFlags,
+    adc::{config::SampleTime, Adc}, gpio::{Analog, Output, Pin}, pac::{ADC1, TIM12}, serial::Config, timer::{self, Counter, Instance}, ClearFlags
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
@@ -36,9 +33,9 @@ use crate::{
 pub static mut ROLE: Role = Role::Cansat;
 pub static mut PYRO_ADC: Option<Adc<ADC1>> = None;
 pub static mut PYRO_MEASURE_PIN: Option<Pin<'C', 0, Analog>> = None;
-pub static mut PYRO_ENABLE_PIN: Option<Pin<'D', 7, Output>> = None;
-pub static mut PYRO_FIRE2: Option<Pin<'D', 6, Output>> = None;
-pub static mut PYRO_FIRE1: Option<Pin<'D', 5, Output>> = None;
+pub static mut PYRO_ENABLE_PIN: Option<Pin<'B', 4, Output>> = None;
+pub static mut PYRO_FIRE2: Option<Pin<'B', 12, Output>> = None;
+pub static mut PYRO_FIRE1: Option<Pin<'C', 6, Output>> = None;
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Role {
@@ -328,11 +325,35 @@ pub async fn usb_handler() -> ! {
             };
 
             radio::queue_packet(Message::SetStage(role, stage, 0));
+        } else if split[0].starts_with(b"ping") {
+            writeln!(get_serial(), "pong").unwrap();
+        }
+         else if split.len() >= 3 && split[0].starts_with(b"config") {
+            let key = core::str::from_utf8(split[1]).unwrap().trim();
+            let value = core::str::from_utf8(split[2]).unwrap().trim();
+
+
+            // if CONFIG_KEYS.iter().map(|(k, _)| *k).any(|k| k != key) {
+            //     writeln!(get_serial(), "err, invalid config key {}", key).unwrap();
+            //     continue;
+            // }
+
+            let value = match CONFIG_KEYS.iter().find(|(k, _)| *k == key).unwrap().1 {
+                ValueType::U64 => value.parse::<u64>().unwrap(),
+            };
+            let key = ConfigKey::try_from(key).unwrap();
+
+            get_logger().edit_config(&key, value).await;
+            get_serial().log("ok\n").await;
+        } else if split.len() >= 1 && split[0].starts_with(b"logs") {
+            get_logger().get_logs(|s| {
+                writeln!(get_serial(), "{}", s).unwrap();
+            }).await;
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
 
-        writeln!(get_serial(), "Received: {:?}", core::str::from_utf8(bytes)).unwrap();
+        // writeln!(get_serial(), "Received: {:?}", core::str::from_utf8(bytes)).unwrap();
         YieldFuture::new().await;
     }
 }
@@ -944,6 +965,7 @@ pub async fn begin(
 
             #[allow(unreachable_code)]
             join!(
+                usb_handler(),
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
@@ -969,6 +991,7 @@ pub async fn begin(
 
             #[allow(unreachable_code)]
             join!(
+                usb_handler(),
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),
@@ -984,6 +1007,7 @@ pub async fn begin(
         {
             #[allow(unreachable_code)]
             join!(
+                usb_handler(),
                 buzzer_controller(),
                 gps_handler(),
                 gps_broadcast(),

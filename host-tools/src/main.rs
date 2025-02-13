@@ -1,6 +1,3 @@
-#![feature(iter_intersperse)]
-#![feature(iter_repeat_n)]
-
 use std::{
     error::Error,
     io,

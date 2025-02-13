@@ -8,6 +8,19 @@ use sequential_storage::map::Key;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigKey(String<32>);
 
+pub enum ValueType {
+    U64,
+}
+
+pub const CONFIG_KEYS: [(&'static str, ValueType); 6] = [
+    ("id", ValueType::U64),
+    ("rf_freq", ValueType::U64),
+    ("cr", ValueType::U64),
+    ("sf", ValueType::U64),
+    ("bw", ValueType::U64),
+    ("power", ValueType::U64),
+];
+
 impl TryFrom<&str> for ConfigKey {
     type Error = ();
 

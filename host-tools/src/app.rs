@@ -25,9 +25,9 @@ use ratatui::{
     widgets::{List, ListState, Paragraph},
     Terminal,
 };
-use sequential_storage::{cache::NoCache, map, queue};
+use sequential_storage::{cache::NoCache, map, map::Value as _, queue};
 use serde_json::{Map, Value};
-use storage_types::U64Item;
+use storage_types::*;
 use syntect::{
     easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings,
 };
@@ -238,73 +238,74 @@ impl App {
         }
 
         let mut file = FileWrapper::new(cfg).unwrap();
-        let id: Option<U64Item> = map::fetch_item(
+        let id: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "id".try_into().unwrap(),
+            &ConfigKey::try_from("id").unwrap(),
         )
         .await
         .unwrap();
 
-        let sf: Option<U64Item> = map::fetch_item(
+        let sf: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "sf".try_into().unwrap(),
+            &ConfigKey::try_from("sf").unwrap(),
         )
         .await
         .unwrap();
 
-        let bw: Option<U64Item> = map::fetch_item(
+        let bw: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "bw".try_into().unwrap(),
+            &ConfigKey::try_from("bw").unwrap(),
         )
         .await
         .unwrap();
 
-        let cr: Option<U64Item> = map::fetch_item(
+        let cr: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "cr".try_into().unwrap(),
+            &ConfigKey::try_from("cr").unwrap(),
         )
         .await
         .unwrap();
 
-        let power: Option<U64Item> = map::fetch_item(
+        let power: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "power".try_into().unwrap(),
+            &ConfigKey::try_from("power").unwrap(),
         )
         .await
         .unwrap();
 
-        let rf_freq: Option<U64Item> = map::fetch_item(
+        let rf_freq: Option<u64> = map::fetch_item(
             &mut file,
             CONFIG_FLASH_RANGE,
-            NoCache::new(),
+            &mut NoCache::new(),
             &mut [0; 1024],
-            "rf_freq".try_into().unwrap(),
+            &ConfigKey::try_from("rf_freq").unwrap(),
         )
         .await
         .unwrap();
 
-        let mut logs = queue::peek_many(&mut file, LOGS_FLASH_RANGE, NoCache::new())
+        let no_cache = &mut NoCache::new();
+        let mut logs = queue::iter(&mut file, LOGS_FLASH_RANGE, no_cache)
             .await
             .unwrap();
 
         let mut logs_str = String::new();
 
-        while let Ok(Some(log)) = logs.next(&mut [0; 4096]).await {
+        while let Ok(Some(ref log)) = logs.next(&mut [0; 4096]).await {
             logs_str.push_str(&String::from_utf8_lossy(log));
         }
 
@@ -319,12 +320,12 @@ impl App {
     "power": {},
     "rf_freq": {}
 }}"#,
-            id.map(|x| x.1 as u64).unwrap_or(0),
-            sf.map(|x| x.1 as u64).unwrap_or(0),
-            bw.map(|x| x.1 as u64).unwrap_or(0),
-            cr.map(|x| x.1 as u64).unwrap_or(0),
-            power.map(|x| x.1 as u64).unwrap_or(0),
-            rf_freq.map(|x| x.1 as u64).unwrap_or(0),
+            id.unwrap_or(0),
+            sf.unwrap_or(0),
+            bw.unwrap_or(0),
+            cr.unwrap_or(0),
+            power.unwrap_or(0),
+            rf_freq.unwrap_or(0),
         );
 
         let ss = syntect::parsing::SyntaxSet::load_defaults_newlines();
@@ -358,7 +359,7 @@ impl App {
                                     self.error(true, Paragraph::new(format!("{:?}", e)));
                                 });
                             }
-                            Reason::Erase =>  {
+                            Reason::Erase => {
                                 self.erase_device(i).await.unwrap_or_else(|e| {
                                     self.error(true, Paragraph::new(format!("{:?}", e)));
                                 });
@@ -400,7 +401,10 @@ impl App {
         let mut flash_wrapper = FileWrapper::new_no_cache(device_file)?;
 
         tokio::spawn(async move {
-            if let Err(e) = flash_wrapper.erase(CONFIG_FLASH_RANGE.start, LOGS_FLASH_RANGE.end).await {
+            if let Err(e) = flash_wrapper
+                .erase(CONFIG_FLASH_RANGE.start, LOGS_FLASH_RANGE.end)
+                .await
+            {
                 err_channel.0.send((true, format!("{:?}", e))).unwrap();
                 return;
             }
@@ -504,19 +508,16 @@ impl App {
         let total_keys = json.len();
 
         tokio::spawn(async move {
-            for (i, (key, value)) in json.iter().enumerate() {
+            for (i, (key, value)) in json.into_iter().enumerate() {
                 if let Value::Number(value) = value {
                     if let Err(e) = map::store_item(
                         &mut flash_wrapper,
                         CONFIG_FLASH_RANGE,
-                        NoCache::new(),
+                        &mut NoCache::new(),
                         &mut [0; 2048],
-                        &U64Item(
-                            (key as &str)
-                                .try_into()
-                                .expect(&format!("Key {} is too long", key)),
-                            value.as_u64().unwrap(),
-                        ),
+                        &ConfigKey::try_from(&key as &str)
+                            .expect(&format!("Key {} is too long", key)),
+                        &value.as_u64().unwrap() as &u64,
                     )
                     .await
                     {
@@ -831,7 +832,10 @@ pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io
 
         if let Some(ref mut rx) = app.progress_done_channel {
             if let Ok(()) = rx.try_recv() {
-                if matches!(app.popup_phase, PopupPhase::Progress(_, _, Reason::Read | Reason::Erase)) {
+                if matches!(
+                    app.popup_phase,
+                    PopupPhase::Progress(_, _, Reason::Read | Reason::Erase)
+                ) {
                     app.load_flash().await;
                 }
                 app.progress_done_channel = None;
