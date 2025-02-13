@@ -226,12 +226,11 @@ async fn main(_spawner: Spawner) {
             unsafe {
                 PYRO_MEASURE_PIN.replace(gpio.c.pc0.into_analog());
                 PYRO_ENABLE_PIN.replace(
-                    gpio.d
-                        .pd7
+                    gpio.b.pb4
                         .into_push_pull_output_in_state(gpio::PinState::Low),
                 );
-                PYRO_FIRE2.replace(gpio.d.pd6.into_push_pull_output());
-                PYRO_FIRE1.replace(gpio.d.pd5.into_push_pull_output());
+                PYRO_FIRE2.replace(ch2);
+                PYRO_FIRE1.replace(ch1);
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });
