@@ -1,11 +1,10 @@
 use core::{
     cell::RefCell,
     cmp::min,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
 use futures::poll;
 use hal::{

@@ -16,6 +16,7 @@ use stm32f4xx_hal::{
 
 use crate::altimeter::BMP388Wrapper;
 use crate::bmp581::BMP581;
+use crate::hal::gpio::Pin;
 
 pub struct GpioBuses {
     pub a: gpioa::Parts,
@@ -345,6 +346,50 @@ macro_rules! radio_pins {
                 $gpio.b.pb0,
                 $gpio.c.pc5,
                 $gpio.c.pc4,
+            )
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! lrhp_pins {
+    ($gpio:ident) => {{
+        ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3, $gpio.e.pe10)
+    }};
+}
+
+#[cfg(feature = "target-mini")]
+pub type PyroEnable = Pin<'B', 4, Output>;
+#[cfg(feature = "target-mini")]
+pub type PyroFire2 = Pin<'B', 12, Output>;
+#[cfg(feature = "target-mini")]
+pub type PyroFire1 = Pin<'C', 6, Output>;
+
+#[cfg(feature = "target-maxi")]
+pub type PyroEnable = Pin<'D', 7, Output>;
+#[cfg(feature = "target-maxi")]
+pub type PyroFire2 = Pin<'D', 6, Output>;
+#[cfg(feature = "target-maxi")]
+pub type PyroFire1 = Pin<'D', 5, Output>;
+
+#[macro_export]
+macro_rules! pyro_pins {
+    ($gpio:ident) => {{
+        #[cfg(feature = "target-mini")]
+        {
+            (
+                $gpio.b.pb4.into_push_pull_output(),
+                $gpio.b.pb12.into_push_pull_output(),
+                $gpio.c.pc6.into_push_pull_output(),
+            )
+        }
+
+        #[cfg(feature = "target-maxi")]
+        {
+            (
+                $gpio.d.pd7.into_push_pull_output(),
+                $gpio.d.pd6.into_push_pull_output(),
+                $gpio.d.pd5.into_push_pull_output(),
             )
         }
     }};

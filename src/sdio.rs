@@ -2,7 +2,7 @@ use core::cell::RefCell;
 use core::fmt::{self, Write};
 
 use cortex_m::interrupt::{CriticalSection, Mutex};
-use cortex_m::register::primask::{self, Primask};
+use cortex_m::register::primask;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;

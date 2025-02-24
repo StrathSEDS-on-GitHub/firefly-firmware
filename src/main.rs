@@ -24,7 +24,6 @@ use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
-use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::ErrorType;
 use embedded_hal_bus::spi::NoDelay;
 use embedded_hal_bus::util::AtomicCell;
@@ -38,7 +37,6 @@ use hal::gpio;
 use hal::gpio::NoPin;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
-use hal::pac::TIM3;
 use hal::pac::TIM9;
 use hal::qspi::Bank1;
 use hal::qspi::FlashSize;
@@ -50,16 +48,13 @@ use hal::spi;
 use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
-use hal::timer::PwmHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
-use mission::role;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::pac::SPI2;
-use stm32f4xx_hal::serial::Config;
 use storage_types::ConfigKey;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -186,17 +181,13 @@ async fn main(_spawner: Spawner) {
             .require_pll48clk()
             .freeze();
 
-
-        let mut ch1 = gpio.c.pc6.into_push_pull_output();
-        let mut ch2 =gpio.b.pb12.into_push_pull_output();
-
         let mut delay = cp.SYST.delay(&clocks);
-        let mut buzzer_pin = buzzer_pin!(gpio);
+        let buzzer_pin = buzzer_pin!(gpio);
 
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
             PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
-            BUZZER.replace((buzzer_pin));
+            BUZZER.replace(buzzer_pin);
             BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
@@ -224,13 +215,11 @@ async fn main(_spawner: Spawner) {
             CLOCKS.borrow(cs).borrow_mut().replace(clocks);
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
+                let (enable, p2, p1) = pyro_pins!(gpio);
                 PYRO_MEASURE_PIN.replace(gpio.c.pc0.into_analog());
-                PYRO_ENABLE_PIN.replace(
-                    gpio.b.pb4
-                        .into_push_pull_output_in_state(gpio::PinState::Low),
-                );
-                PYRO_FIRE2.replace(ch2);
-                PYRO_FIRE1.replace(ch1);
+                PYRO_ENABLE_PIN.replace(enable);
+                PYRO_FIRE2.replace(p2);
+                PYRO_FIRE1.replace(p1);
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });

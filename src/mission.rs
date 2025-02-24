@@ -2,6 +2,7 @@ use bno080::{interface::SensorInterface, wrapper::BNO080};
 use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
+use crate::pins::{PyroEnable, PyroFire1, PyroFire2};
 use embassy_futures::block_on;
 use embedded_hal::{
     delay::DelayNs,
@@ -16,7 +17,7 @@ use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
-    adc::{config::SampleTime, Adc}, gpio::{Analog, Output, Pin}, pac::{ADC1, TIM12}, serial::Config, timer::{self, Counter, Instance}, ClearFlags
+    adc::{config::SampleTime, Adc}, gpio::{Analog, Pin}, pac::{ADC1, TIM12}, timer::{self, Counter, Instance}, ClearFlags
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
@@ -33,9 +34,9 @@ use crate::{
 pub static mut ROLE: Role = Role::Cansat;
 pub static mut PYRO_ADC: Option<Adc<ADC1>> = None;
 pub static mut PYRO_MEASURE_PIN: Option<Pin<'C', 0, Analog>> = None;
-pub static mut PYRO_ENABLE_PIN: Option<Pin<'B', 4, Output>> = None;
-pub static mut PYRO_FIRE2: Option<Pin<'B', 12, Output>> = None;
-pub static mut PYRO_FIRE1: Option<Pin<'C', 6, Output>> = None;
+pub static mut PYRO_ENABLE_PIN: Option<PyroEnable> = None;
+pub static mut PYRO_FIRE2: Option<PyroFire2> = None;
+pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Role {
