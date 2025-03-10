@@ -269,8 +269,8 @@ macro_rules! gps_pins {
         #[cfg(feature = "target-maxi")]
         {
             (
-                $gpio_buses.a.pa15.into_alternate(),
-                $gpio_buses.a.pa10.into_alternate(),
+                $gpio_buses.a.pa2.into_alternate(),
+                $gpio_buses.a.pa3.into_alternate(),
             )
         }
     }};
