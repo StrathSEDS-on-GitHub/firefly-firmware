@@ -269,23 +269,26 @@ async fn main(_spawner: Spawner) {
             loop {}
         }
         let gps_serial = dp
-            .USART1
+            .USART2
             .serial(
                 gps_pins!(gpio),
                 hal::serial::config::Config {
-                    baudrate: 9600.bps(),
+                    baudrate: 115200.bps(),
                     dma: hal::serial::config::DmaConfig::TxRx,
                     ..Default::default()
                 },
                 &clocks,
             )
             .unwrap();
-
-        gps::setup(dp.DMA2, gps_serial);
-        gps::tx(b"$PMTK251,115200*1F\r\n").await;
-        gps::change_baudrate(115200).await;
-        gps::set_nmea_output().await;
-        gps::tx(b"$PMTK220,100*2F\r\n").await;
+        let streams = StreamsTuple::new(dp.DMA1);
+        let tx_stream = streams.6;
+        let rx_stream = streams.5;
+        gps::setup(tx_stream, rx_stream, gps_serial);
+        gps::init_teseo().await;
+        // gps::tx(b"$PMTK251,115200*1F\r\n").await;
+        // gps::change_baudrate(115200).await;
+        // gps::set_nmea_output().await;
+        // gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         let mut wrapper = W25QSequentialStorage::new(flash);
         let total = sequential_storage::queue::space_left(
@@ -317,7 +320,6 @@ async fn main(_spawner: Spawner) {
         };
 
         unsafe { mission::ROLE = role };
-        let streams = StreamsTuple::new(dp.DMA1);
         let tx_stream = streams.1;
         let rx_stream = streams.0;
         let i2c = dp

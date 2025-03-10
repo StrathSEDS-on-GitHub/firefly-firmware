@@ -58,6 +58,9 @@ bno080 = { version="0.1.3", git="https://github.com/tstellanova/bno080" }
 tmc2209 = { version="0.2.2", git="https://github.com/mitchmindtree/tmc2209" }
 bmi323 = "0.1.0"
 
+[build-dependencies]
+time = {version = "0.3.20", features = ["macros", "formatting"] }
+
 [dependencies.stm32f4xx-hal]
 version = "0.20"
 path="stm32f4xx-hal"

@@ -1,39 +1,40 @@
 use core::{
-    cell::RefCell,
     cmp::min,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    cell::RefCell, cmp::min, sync::atomic::{AtomicUsize, Ordering},
+    fmt::Write as _,
 };
 
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
 use futures::poll;
 use hal::{
-    dma::{traits::StreamISR, Stream2, Stream7, StreamsTuple, Transfer},
+    dma::{traits::StreamISR, Transfer},
     gpio::{self, Input},
-    pac::{NVIC, USART1},
+    pac::{NVIC, USART2},
     prelude::_stm32f4xx_hal_time_U32Ext,
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
-    dma::{self},
-    interrupt, pac,
-    prelude::_embedded_hal_serial_nb_Read,
+    dma::{self, Stream5, Stream6, StreamX},
+    interrupt, pac::{self, DMA1},
     serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{interrupt_wake, neopixel, RTC};
+use crate::{interrupt_wake, neopixel, sdio::FixedWriter, RTC};
 use stm32f4xx_hal as hal;
 
 static TX_TRANSFER: Mutex<
     RefCell<
         Option<
             Transfer<
-                Stream7<pac::DMA2>,
+                Stream6<pac::DMA1>,
                 4,
-                Tx<pac::USART1>,
+                Tx<pac::USART2>,
                 dma::MemoryToPeripheral,
                 &'static mut [u8],
             >,
@@ -45,9 +46,9 @@ static RX_TRANSFER: Mutex<
     RefCell<
         Option<
             Transfer<
-                Stream2<pac::DMA2>,
+                Stream5<pac::DMA1>,
                 4,
-                Rx<pac::USART1>,
+                Rx<pac::USART2>,
                 dma::PeripheralToMemory,
                 &'static mut [u8],
             >,
@@ -64,10 +65,7 @@ static REFINE_TIME: AtomicBool = AtomicBool::new(false);
 
 const RX_BUFFER_SIZE: usize = 1024;
 
-pub fn setup(dma2: pac::DMA2, gps: hal::serial::Serial<USART1>) {
-    let streams = StreamsTuple::new(dma2);
-    let tx_stream = streams.7;
-    let rx_stream = streams.2;
+pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal::serial::Serial<USART2>) {
     let tx_buf_gps = cortex_m::singleton!(:[u8; 128] = [0; 128]).unwrap();
     let rx_buf1_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
@@ -112,7 +110,7 @@ pub fn setup(dma2: pac::DMA2, gps: hal::serial::Serial<USART1>) {
     unsafe {
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA2_STREAM2);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA2_STREAM7);
-        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART1);
+        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART2);
     }
 }
 
@@ -135,13 +133,13 @@ pub async fn change_baudrate(baudrate: u32) {
             let clocks = clocks_ref.as_mut().unwrap();
 
             // FIXME: Holy shit what the fuck is this code
-            let usart1: USART1 = unsafe { core::mem::transmute(()) };
-            let pa10: gpio::Pin<'A', 15, Input> = unsafe { core::mem::transmute(()) };
+            let USART2: USART2 = unsafe { core::mem::transmute(()) };
+            let pa3: gpio::Pin<'A', 3, Input> = unsafe { core::mem::transmute(()) };
 
-            let pa15: gpio::Pin<'A', 10, Input> = unsafe { core::mem::transmute(()) };
-            usart1
+            let pa2: gpio::Pin<'A', 2, Input> = unsafe { core::mem::transmute(()) };
+            USART2
                 .serial(
-                    (pa10.into_alternate(), pa15.into_alternate()),
+                    (pa2.into_alternate(), pa3.into_alternate()),
                     hal::serial::config::Config {
                         baudrate: baudrate.bps(),
                         dma: hal::serial::config::DmaConfig::TxRx,
@@ -209,7 +207,7 @@ pub async fn next_sentence() -> ParseResult {
 
 /// Interrupt for gps DMA TX,
 #[interrupt]
-fn DMA2_STREAM7() {
+fn DMA2_STREAM6() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
@@ -267,6 +265,7 @@ pub async fn poll_for_sentences() -> ! {
     let mut got_fix = false;
 
     loop {
+        let mut last_time = None;
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
                 searching_fix_color = !searching_fix_color;
@@ -318,9 +317,28 @@ pub async fn poll_for_sentences() -> ! {
     }
 }
 
+pub async fn init_teseo() {
+    const GLASGOW_LAT: &'static str = "5551.675,N";
+    const GLASGOW_LONG: &'static str = "00414.616,W";
+
+    let mut command_storage = [0u8; 256];
+    let mut writer = FixedWriter(&mut command_storage, 0);
+    write!(&mut writer, "$PSTMINITGPS,{GLASGOW_LAT},{GLASGOW_LONG},0035,").unwrap();
+    write!(&mut writer, "{}", env!("BUILD_TIME")).unwrap();
+
+    let checksum = writer.0.iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
+    write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
+
+    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1]));
+    tx(&writer.0[..writer.1]).await;
+    let mut buf = [0u8; 128];
+    let bytes = rx(&mut buf).await;
+    hprintln!("{:?}", core::str::from_utf8(&buf[..bytes]));
+}
+
 // Interrupt for radio DMA RX.
 #[interrupt]
-fn DMA2_STREAM2() {
+fn DMA2_STREAM5() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
@@ -346,7 +364,7 @@ fn DMA2_STREAM2() {
 }
 
 #[interrupt]
-fn USART1() {
+fn USART2() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
 

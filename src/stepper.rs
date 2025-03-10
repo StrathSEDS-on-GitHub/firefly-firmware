@@ -1,3 +1,4 @@
+/* 
 use core::{
     cell::RefCell,
     cmp::min,
@@ -239,3 +240,4 @@ pub async fn rx(rx_buf: &mut [u8]) -> usize {
         bytes_copied
     })
 }
+*/
