@@ -20,7 +20,7 @@ use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
     dma::{self, Stream5, Stream6, StreamX},
-    interrupt, pac::{self, DMA1},
+    interrupt, pac::{self, crc::idr, DMA1},
     serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
@@ -318,6 +318,8 @@ pub async fn poll_for_sentences() -> ! {
 }
 
 pub async fn init_teseo() {
+    //$PSTMINITGPS,<Lat>,<LatRef>,<Lon>,<LonRef>,<Alt>,<Day>,<Month>,<Year>,<Hour>,<Minute>,<Second>*<checksum><cr><lf>
+
     const GLASGOW_LAT: &'static str = "5551.675,N";
     const GLASGOW_LONG: &'static str = "00414.616,W";
 
@@ -335,6 +337,48 @@ pub async fn init_teseo() {
     let bytes = rx(&mut buf).await;
     hprintln!("{:?}", core::str::from_utf8(&buf[..bytes]));
 }
+
+pub enum ConfigBlock {
+    ConfigCurrent = 1,
+    ConfigDefault = 2,
+    ConfigNVMStored = 3
+}
+pub enum Mode {
+    Overwrit = 0,
+    OrMask = 1,
+    AndMask = 2
+}
+
+pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode: Option<Mode>) {
+    //$PSTMSETPAR,<ConfigBlock><ID>,<param_value>[,<mode>]*<checksum><cr><lf>
+    const STORAGE_LENGTH: usize = 256;
+
+    let mut command_storage = [0u8; STORAGE_LENGTH];
+    let mut writer = FixedWriter(&mut command_storage, 0);
+    write!(&mut writer, "$PSTMSETPAR,{},{id:03},", config_block as u8).unwrap();
+    
+    let copied_len = min(STORAGE_LENGTH - writer.1, param_value.len());
+    writer.0[writer.1..writer.1 + copied_len].copy_from_slice(&param_value[..copied_len]);
+    writer.1 += copied_len;
+
+    if let Some(mode) = mode {
+        write!(&mut writer, ",{:01}", mode as u8).unwrap();
+    }
+    let checksum = writer.0.iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
+    write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
+
+    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1]));
+    tx(&writer.0[..writer.1]).await;
+
+    let mut buf = [0u8; 128];
+    let bytes = rx(&mut buf).await;
+    hprintln!("{:?}", core::str::from_utf8(&buf[..bytes]));
+}
+
+//cargo run --release --features target-maxi
+
+//cd xpack-openocd-0.12.0-6\bin
+//.\openocd.exe -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init" 
 
 // Interrupt for radio DMA RX.
 #[interrupt]
