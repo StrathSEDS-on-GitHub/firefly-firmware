@@ -96,7 +96,7 @@ pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal:
             .transfer_complete_interrupt(true),
     );
     rx_transfer.start(|_rx| {});
-    tx_transfer.start(|_tx| {});
+    //tx_transfer.start(|_tx| {});
     cortex_m::interrupt::free(|cs| {
         // SAFETY: Mutex makes access of static mutable variable safe
         TX_TRANSFER.borrow(cs).borrow_mut().replace(tx_transfer);
@@ -108,8 +108,8 @@ pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal:
             .replace(Deque::new())
     });
     unsafe {
-        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA2_STREAM2);
-        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA2_STREAM7);
+        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM6);
+        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM5);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART2);
     }
 }
@@ -207,7 +207,7 @@ pub async fn next_sentence() -> ParseResult {
 
 /// Interrupt for gps DMA TX,
 #[interrupt]
-fn DMA2_STREAM6() {
+fn DMA1_STREAM6() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
@@ -331,11 +331,8 @@ pub async fn init_teseo() {
     let checksum = writer.0.iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
     write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
 
-    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1]));
+    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1])); 
     tx(&writer.0[..writer.1]).await;
-    let mut buf = [0u8; 128];
-    let bytes = rx(&mut buf).await;
-    hprintln!("{:?}", core::str::from_utf8(&buf[..bytes]));
 }
 
 pub enum ConfigBlock {
@@ -355,7 +352,7 @@ pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode
 
     let mut command_storage = [0u8; STORAGE_LENGTH];
     let mut writer = FixedWriter(&mut command_storage, 0);
-    write!(&mut writer, "$PSTMSETPAR,{},{id:03},", config_block as u8).unwrap();
+    write!(&mut writer, "$PSTMSETPAR,{}{id:03},", config_block as u8).unwrap();
     
     let copied_len = min(STORAGE_LENGTH - writer.1, param_value.len());
     writer.0[writer.1..writer.1 + copied_len].copy_from_slice(&param_value[..copied_len]);
@@ -369,20 +366,11 @@ pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode
 
     hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1]));
     tx(&writer.0[..writer.1]).await;
-
-    let mut buf = [0u8; 128];
-    let bytes = rx(&mut buf).await;
-    hprintln!("{:?}", core::str::from_utf8(&buf[..bytes]));
 }
 
-//cargo run --release --features target-maxi
 
-//cd xpack-openocd-0.12.0-6\bin
-//.\openocd.exe -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init" 
-
-// Interrupt for radio DMA RX.
 #[interrupt]
-fn DMA2_STREAM5() {
+fn DMA1_STREAM5() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
@@ -497,7 +485,7 @@ pub async fn tx(tx_buf: &[u8]) {
             tx_transfer
                 .next_transfer_with(|buf, _| {
                     buf[..tx_buf.len()].copy_from_slice(&tx_buf);
-                    (buf, ())
+                    (&mut buf[..tx_buf.len()], ())
                 })
                 .unwrap();
         }
