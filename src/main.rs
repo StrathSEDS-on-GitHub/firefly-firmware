@@ -285,6 +285,8 @@ async fn main(_spawner: Spawner) {
         let rx_stream = streams.5;
         gps::setup(tx_stream, rx_stream, gps_serial);
         gps::init_teseo().await;
+        gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, &2u32.to_be_bytes(), None).await;
+        
         // gps::tx(b"$PMTK251,115200*1F\r\n").await;
         // gps::change_baudrate(115200).await;
         // gps::set_nmea_output().await;
