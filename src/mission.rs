@@ -251,7 +251,11 @@ fn parse_role(s: &[u8]) -> Option<Role> {
 pub async fn usb_handler() -> ! {
     let mut buf = [0u8; 256];
     loop {
-        let bytes = get_serial().read(&mut buf).await.unwrap();
+        let Ok(b) = get_serial().read_no_block(&mut buf) else {
+            YieldFuture::new().await;
+            continue;
+        };
+        let bytes = &buf[..b];
 
         let split: Vec<_, 32> = bytes.split(|b| *b == b',').collect();
         if split.len() > 1 && split[0].starts_with(b"disarm") {
