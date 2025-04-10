@@ -173,7 +173,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
             }
             MissionStage::Ascent(s) => {
                 // If our velocity is negative, we must be descending
-                let velocities = altitudes.windows(3).map(|w| w[2] - w[0]);
+                let velocities = altitudes.windows(2).map(|w| w[1] - w[0]);
 
                 if velocities.filter(|v| *v < 0.015).count() > 10 {
                     get_logger().log_str("stage,detected apogee").await;
@@ -276,7 +276,7 @@ pub async fn usb_handler() -> ! {
                 }
                 None => writeln!(get_serial(), "Invalid arm role").unwrap(),
             }
-        } else if split.len() > 3 && split[0].starts_with(b"fire") {
+        } else if split.len() > 2 && split[0].starts_with(b"fire") {
             if let Some(role) = parse_role(split[1]) {
                 let pin = if split[2].starts_with(b"1") {
                     PyroPin::One
@@ -332,8 +332,24 @@ pub async fn usb_handler() -> ! {
             radio::queue_packet(Message::SetStage(role, stage, 0));
         } else if split[0].starts_with(b"ping") {
             writeln!(get_serial(), "pong").unwrap();
-        }
-         else if split.len() >= 3 && split[0].starts_with(b"config") {
+        } else if split[0].starts_with(b"uarm") {
+            arm().await;
+            writeln!(get_serial(), "armed").unwrap();
+        } else if split[0].starts_with(b"ufire") {
+            let pin = if split[2].starts_with(b"1") {
+                PyroPin::One
+            } else if split[2].starts_with(b"2") {
+                PyroPin::Two
+            } else if split[2].starts_with(b"both") {
+                PyroPin::Both
+            } else {
+                writeln!(get_serial(), "Invalid test-pyro pin").unwrap();
+                continue;
+            };
+
+            fire_pyro(pin, 100u32).await;
+            writeln!(get_serial(), "fired").unwrap();
+        } else if split.len() >= 3 && split[0].starts_with(b"config") {
             let key = core::str::from_utf8(split[1]).unwrap().trim();
             let value = core::str::from_utf8(split[2]).unwrap().trim();
 
