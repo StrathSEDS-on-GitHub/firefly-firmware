@@ -74,6 +74,9 @@ fn EXTI4() {
     }
 }
 
+pub const BNO_BROADCAST_BUF_LEN    : usize = 8;
+pub const BNO_BROADCAST_DECIMATION : usize = 4;
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Message {
     GpsBroadCast {
@@ -106,8 +109,8 @@ pub enum Message {
         stage: MissionStage,
         role: Role,
         time_of_first_packet: EpochTime,
-        accels: [[f32; 3]; 8],
-        rots: [[f32; 4]; 8],
+        accels: [[f32; 3]; BNO_BROADCAST_BUF_LEN],
+        rots: [[f32; 4]; BNO_BROADCAST_BUF_LEN],
     },
     Strain {
         counter: u16,

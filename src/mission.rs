@@ -2,7 +2,7 @@ use bno080::{interface::SensorInterface, wrapper::BNO080};
 use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
-use crate::pins::{PyroEnable, PyroFire1, PyroFire2};
+use crate::{pins::{PyroEnable, PyroFire1, PyroFire2}, radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION}};
 use embassy_futures::block_on;
 use embedded_hal::{
     delay::DelayNs,
@@ -884,27 +884,29 @@ async fn imu_handler(
     }
 }
 
-async fn bno_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>)
+async fn bno_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
 where
     SI: SensorInterface<SensorError = SE>,
     SE: core::fmt::Debug,
 {
     let mut delay = delay.release().delay();
     loop {
-        let mut acc_buffer = [[0.0f32; 3]; 8];
-        let mut quat_buffer = [[0.0f32; 4]; 8];
+        let mut acc_buffer = [[0.0f32; 3]; BNO_BROADCAST_BUF_LEN];
+        let mut quat_buffer = [[0.0f32; 4]; BNO_BROADCAST_BUF_LEN];
 
-        for i in 0..(8 * 8) {
+        for i in 0..(BNO_BROADCAST_BUF_LEN * BNO_BROADCAST_DECIMATION) {
             let (acc, quat) = loop {
                 YieldFuture::new().await;
-                bno.handle_all_messages(&mut delay, 3);
+                bno.handle_all_messages(&mut delay, 1);
                 if let (Ok(acc), Ok(rot)) = (bno.linear_accel(), bno.rotation_quaternion()) {
-                    break (acc, rot);
+                    if !acc.iter().all(|&x| x == 0.0) && !rot.iter().all(|&x| x == 0.0) {
+                        break (acc, rot);
+                    }
                 }
             };
-            if i % 8 == 0 {
-                acc_buffer[i / 8] = acc;
-                quat_buffer[i / 8] = quat;
+            if i % BNO_BROADCAST_DECIMATION == 0 {
+                acc_buffer[i / BNO_BROADCAST_DECIMATION] = acc;
+                quat_buffer[i / BNO_BROADCAST_DECIMATION] = quat;
             }
             get_logger()
                 .log(format_args!("bno,{:?},{:?}", acc, quat))
@@ -912,6 +914,7 @@ where
             let mut timer = delay.release().counter();
             timer.start(10u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
+
             delay = timer.release().delay();
         }
 
