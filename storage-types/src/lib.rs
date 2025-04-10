@@ -38,7 +38,7 @@ impl Key for ConfigKey {
             return Err(sequential_storage::map::SerializationError::BufferTooSmall);
         }
         buffer[0] = self.0.len() as u8;
-        buffer[1..].copy_from_slice(&self.0.as_bytes());
+        buffer[1..(self.0.len() + 1)].copy_from_slice(&self.0.as_bytes());
         Ok(1 + self.0.len())
     }
 
@@ -62,6 +62,6 @@ impl Key for ConfigKey {
         )
         .unwrap();
 
-        Ok((ConfigKey(key), len))
+        Ok((ConfigKey(key), 1 + len))
     }
 }

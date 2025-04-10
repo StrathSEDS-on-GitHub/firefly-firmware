@@ -8,4 +8,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 heapless = "0.8.0"
-sequential-storage = { version= "3.0.1" }
+sequential-storage = { version= "4.0.1" }
