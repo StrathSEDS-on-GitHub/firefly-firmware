@@ -35,6 +35,8 @@ use hal::adc::Adc;
 use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::NoPin;
+use hal::gpio::Output;
+use hal::gpio::Pin;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM9;
@@ -51,8 +53,6 @@ use hal::timer::CounterHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use stm32f4xx_hal::gpio::Output;
-use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::pac::SPI2;
 use storage_types::ConfigKey;
@@ -192,7 +192,6 @@ async fn main(_spawner: Spawner) {
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
 
-
         const LED_NUM: usize = 3;
         let neopixel_spi = Spi::new(
             neopixel_spi!(dp),
@@ -223,24 +222,6 @@ async fn main(_spawner: Spawner) {
                 PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
             }
         });
-
-        // let serial : Serial<_, u8>= dp.USART2.serial(
-        //     (gpio.a.pa2, gpio.a.pa3),
-        //     Config::default().baudrate(9600.bps()),
-        //     &clocks,
-        // ).unwrap();
-
-        // let (tx, mut rx) = serial.split();
-        // let mut tx = WriteAdapter(tx);
-        // let mut gconf = tmc2209::reg::GCONF::default();
-        // let mut vactual = tmc2209::reg::VACTUAL::ENABLED_STOPPED;
-        // gconf.set_pdn_disable(true);
-        // tmc2209::send_write_request(0, gconf, &mut tx).unwrap();
-        // tmc2209::send_write_request(0, vactual, &mut tx).unwrap();
-        // loop {
-        //     vactual.set(1000);
-        //     tmc2209::send_write_request(0, vactual, &mut tx).unwrap();
-        // }
 
         #[cfg(not(feature = "msc"))]
         {
@@ -312,7 +293,11 @@ async fn main(_spawner: Spawner) {
             LOGS_FLASH_RANGE,
             &mut NoCache::new(),
         )
-        .await;
+        .await.unwrap();
+
+        if total < 10240 {
+            panic!("Not enough space for logs");
+        }
 
         let board_id: Result<Option<u64>, _> = map::fetch_item(
             &mut wrapper,
@@ -322,13 +307,13 @@ async fn main(_spawner: Spawner) {
             &ConfigKey::try_from("id").unwrap(),
         )
         .await;
-
-        let role = match board_id.unwrap().unwrap() {
+        let board_id = board_id.unwrap().unwrap();
+        let role = match board_id {
             2 | 0 => Role::GroundMain,
             3 => Role::GroundBackup,
             4 => Role::Cansat,
             1 => Role::Avionics,
-            _ => panic!("Invalid role"),
+            _ => panic!("Invalid board ID {}", 2)
         };
 
         unsafe { mission::ROLE = role };
@@ -448,10 +433,10 @@ async fn main(_spawner: Spawner) {
                 unsafe {
                     SPI2_BUS.replace(AtomicCell::new(bus));
                 }
-                let device = embedded_hal_bus::spi::AtomicDevice::new(
+
+                let device = embedded_hal_bus::spi::AtomicDevice::new_no_delay(
                     unsafe { SPI2_BUS.as_ref().unwrap() },
                     gpio.e.pe12.into_push_pull_output(),
-                    NoDelay,
                 )
                 .unwrap();
                 Some(device)
@@ -473,12 +458,9 @@ async fn main(_spawner: Spawner) {
             polarity: spi::Polarity::IdleLow,
             phase: spi::Phase::CaptureOnFirstTransition,
         };
-        let spi1_freq = 100.kHz();
-
+        let spi1_freq = 3.MHz();
         let (nss, sck, miso, mosi, nreset, busy, dio) = radio_pins!(gpio);
-
         let spi1_pins = (sck, miso, mosi);
-
         let spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
 
         let lora_nreset = nreset.into_push_pull_output_in_state(gpio::PinState::High);
@@ -521,10 +503,7 @@ async fn main(_spawner: Spawner) {
         );
 
         let conf = build_config(&mut wrapper).await;
-
-        if role != Role::GroundMain {
-            setup_logger(wrapper).unwrap();
-        }
+        setup_logger(wrapper).unwrap();
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
@@ -537,7 +516,7 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        if matches!(role, Role::CansatBackup | Role::GroundBackup) {
+        if matches!(role, Role::CansatBackup | Role::GroundBackup) || radio::TDM_CONFIG_MAIN.len() == 1 {
             cortex_m::interrupt::free(|cs| {
                 RTC.borrow(cs)
                     .borrow_mut()
@@ -580,6 +559,8 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
     .unwrap()
     .unwrap_or(7);
     let sf = match sf {
+        5 => LoRaSpreadFactor::SF5,
+        6 => LoRaSpreadFactor::SF6,
         7 => LoRaSpreadFactor::SF7,
         8 => LoRaSpreadFactor::SF8,
         9 => LoRaSpreadFactor::SF9,
@@ -611,7 +592,7 @@ async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx1
         125 => LoRaBandWidth::BW125,
         250 => LoRaBandWidth::BW250,
         500 => LoRaBandWidth::BW500,
-        _ => LoRaBandWidth::BW250
+        _ => LoRaBandWidth::BW250,
     };
 
     let cr: u64 = map::fetch_item(

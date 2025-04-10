@@ -281,7 +281,6 @@ pub async fn poll_for_sentences() -> ! {
                     );
                 }
                 if let ParseResult::GGA(Some(GGA {
-                    time,
                     fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
                     ..
                 })) = parse_result.clone()

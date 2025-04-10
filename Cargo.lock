@@ -98,6 +98,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5da9b3d9f6f585199287a473f4f8dfab6566cf827d15c00c219f53c645687ead"
 
 [[package]]
+name = "bmi323"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13d9428cbc8d4673e77310d83d2acfa3c09894a67b2c464289af91015a124dad"
+dependencies = [
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "bmp388"
 version = "0.1.0"
 dependencies = [
@@ -130,6 +139,7 @@ name = "cansat"
 version = "0.1.0"
 dependencies = [
  "atomic_enum",
+ "bmi323",
  "bmp388",
  "bno080",
  "cortex-m 0.7.7",
@@ -998,9 +1008,9 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "sequential-storage"
-version = "3.0.1"
+version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b80693b2169b3fe0f9c68d5fae804490cc437113c0526dbabb75c01e758db597"
+checksum = "8d8e933f534642c25b7341338c10e2250187c8cd198c3957ef6894265eefda86"
 dependencies = [
  "embedded-storage-async",
 ]

@@ -186,7 +186,7 @@ pub fn queue_packet(msg: Message) {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum RadioState {
+pub(crate) enum RadioState {
     Tx(Role),
     // Buffer between transmit windows. The Role is the next role to transmit.
     Buffer(Role),
@@ -200,7 +200,7 @@ static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-const TDM_CONFIG_MAIN: [(RadioState, u32); 6] = [
+pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 6] = [
     (RadioState::Buffer(Role::GroundMain), 100),
     (RadioState::Tx(Role::GroundMain), 500),
     (RadioState::Buffer(Role::Avionics), 100),
