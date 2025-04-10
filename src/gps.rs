@@ -1,7 +1,7 @@
 use core::{
     cell::RefCell,
     cmp::min,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
@@ -19,6 +19,7 @@ use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
     dma::{self},
     interrupt, pac,
+    prelude::_embedded_hal_serial_nb_Read,
     serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
@@ -58,6 +59,8 @@ static RX_BUFFER: Mutex<RefCell<Option<&'static mut [u8; RX_BUFFER_SIZE]>>> =
     Mutex::new(RefCell::new(None));
 
 static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
+
+static REFINE_TIME: AtomicBool = AtomicBool::new(false);
 
 const RX_BUFFER_SIZE: usize = 1024;
 
@@ -233,19 +236,19 @@ fn set_rtc(time: Time) {
                 time.hours,
                 time.minutes,
                 time.seconds as u8,
-                (time.seconds * 1000.0) as u16 % 1000,
+                ((time.seconds % 1.0) * 1000.0) as u16,
             )
             .unwrap(),
         ))
         .unwrap();
-        rtc.enable_wakeup(20u32.millis().into());
+        rtc.enable_wakeup(2u32.millis().into());
 
         NVIC::unpend(pac::Interrupt::RTC_WKUP);
         unsafe {
             NVIC::unmask(pac::Interrupt::RTC_WKUP);
         }
 
-        neopixel::update_pixel(1, [0, 255, 128])
+        neopixel::update_pixel(1, [0, 65, 32])
     });
 }
 
@@ -264,12 +267,18 @@ pub async fn poll_for_sentences() -> ! {
     let mut got_fix = false;
 
     loop {
-        let mut last_time = None;
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
                 searching_fix_color = !searching_fix_color;
                 if !got_fix {
-                    neopixel::update_pixel(1, [searching_fix_color as u8 * 100, searching_fix_color as u8 * 100, 0]);
+                    neopixel::update_pixel(
+                        1,
+                        [
+                            searching_fix_color as u8 * 100,
+                            searching_fix_color as u8 * 100,
+                            0,
+                        ],
+                    );
                 }
                 if let ParseResult::GGA(Some(GGA {
                     time,
@@ -278,7 +287,9 @@ pub async fn poll_for_sentences() -> ! {
                 })) = parse_result.clone()
                 {
                     got_fix = true;
-                    last_time = Some(time);
+                    if !got_fix || nth % 20 == 0 {
+                        REFINE_TIME.store(true, Ordering::Relaxed);
+                    }
                 }
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
@@ -296,12 +307,6 @@ pub async fn poll_for_sentences() -> ! {
             }
         }
         nth = nth.wrapping_add(1);
-
-        if let Some(last_time) = last_time {
-            if nth % 20 == 0 {
-                set_rtc(last_time);
-            }
-        }
 
         // Once we've processed all the bytes, or if the buffer is totally full then reset the buffer.
         // The buffer may be full if none of the bytes were parseable.
@@ -345,26 +350,71 @@ fn DMA2_STREAM2() {
 fn USART1() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
-        let transfer = transfer_ref.as_mut().unwrap();
 
-        let bytes = RX_BUFFER_SIZE as u16 - transfer.number_of_transfers();
-        transfer.pause(|rx| {
+        let bytes = RX_BUFFER_SIZE as u16 - transfer_ref.as_mut().unwrap().number_of_transfers();
+        transfer_ref.as_mut().unwrap().pause(|rx| {
             rx.clear_idle_interrupt();
         });
 
         let mut rx_buf = RX_BUFFER.borrow(cs).borrow_mut().take().unwrap();
 
-        rx_buf = transfer
-            .next_transfer(rx_buf)
-            .unwrap()
-            .0
-            .try_into()
-            .unwrap();
+        if REFINE_TIME.load(Ordering::Relaxed) {
+            // Take this opportunity to refine the time
+            // by performing a single-shot read of the GPS
+            // till we get a GGA sentence, then immediately
+            // set the RTC.
+
+            let (stream, mut rx, rx_buf_data, _) = transfer_ref.take().unwrap().release();
+            let mut parser = nmea0183::Parser::new();
+
+            loop {
+                let c = nb::block!(rx.read()).unwrap();
+                if let Some(Ok(parse_result)) = parser.parse_from_byte(c) {
+                    if let ParseResult::GGA(Some(GGA {
+                        time,
+                        fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
+                        ..
+                    })) = parse_result
+                    {
+                        set_rtc(time);
+                        break;
+                    }
+                }
+            }
+
+            // Release the stream and reinitialize it
+            // to get it back into the DMA RX state.
+
+            transfer_ref.replace(Transfer::init_peripheral_to_memory(
+                stream,
+                rx,
+                rx_buf,
+                None,
+                dma::config::DmaConfig::default()
+                    .memory_increment(true)
+                    .fifo_enable(true)
+                    .fifo_error_interrupt(true)
+                    .transfer_error_interrupt(true)
+                    .direct_mode_error_interrupt(true)
+                    .transfer_complete_interrupt(true),
+            ));
+            rx_buf = rx_buf_data.try_into().unwrap();
+            REFINE_TIME.store(false, Ordering::Relaxed);
+        } else {
+            let transfer = transfer_ref.as_mut().unwrap();
+            rx_buf = transfer
+                .next_transfer(rx_buf)
+                .unwrap()
+                .0
+                .try_into()
+                .unwrap();
+        }
+
         interrupt_wake!(crate::futures::gps_rx_wake);
         RX_BYTES_READ.store(bytes as usize, Ordering::SeqCst);
 
         RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
-        transfer.start(|_| {});
+        transfer_ref.as_mut().unwrap().start(|_| {});
     });
 }
 
