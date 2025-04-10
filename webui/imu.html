@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"
+    integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg=="
+    crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <script src="https://use.fontawesome.com/releases/v5.15.4/js/all.js"
+    integrity="sha384-rOA1PnstxnOBLzCLMcre8ybwbTmemjzdNlILg8O7z1lUkLXozs4DHonlDtnE7fpc"
+    crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="./gauge.min.js"></script>
+
+  <meta charset="utf-8">
+</head>
+
+<body>
+
+  <div class="layout">
+    <main>
+      <div class="sb-panel">
+        <div id="p5-container"></div>
+      </div>
+      <div class="flex-row">
+        <div id="map-container" class="sb-panel">
+          <div id="map"></div>
+        </div>
+        <div class="gauge">
+          <p class="gauge-label">Velocity</p>
+          <div id="cpuSpeed" class="gauge-container"></div>
+        </div>
+        <div class="gauge">
+          <p class="gauge-label">Acceleration</p>
+          <div id="acc" class="gauge-container"></div>
+        </div>
+        <div class="gauge">
+          <p class="gauge-label">Altitude</p>
+          <div id="alt" class="gauge-container"></div>
+        </div>
+      </div>
+    </main>
+
+    <div class="sidebar">
+      <div class="sb-panel">
+        <h4>Devices</h4>
+        <button id="request-access">Request access</button>
+        <p> <i class="fa-brands fa-usb"></i> LOCAL <span class="hl">Ground</span></p>
+        <p> <i class="fa-solid fa-wifi"></i> REMOTE <span class="hl">Avionics</span> <span id="status">ARMED</span></p>
+      </div>
+      <div class="sb-panel">
+        <h4>Pyro state</h4>
+        <p> <i class="fa-solid fa-rocket"></i> Rocket <span class="hl" id="pyro-mv"></span></p>
+      </div>
+      <button class="sb-button" id="arm">Arm</button>
+      <button class="sb-button" id="disarm">Disarm</button>
+      <button class="sb-button" id="fire">Fire</button>
+    </div>
+  </div>
+
+  <script src="sketch.js"></script>
+</body>
+
+</html>

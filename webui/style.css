@@ -1,0 +1,137 @@
+html,
+body {
+    margin: 0;
+    padding: 0;
+    background-color: rgb(33, 33, 39);
+    color: white;
+    font-family: 'Hack Nerd Font';
+}
+
+.layout {
+    display: flex;
+    flex-direction: row;
+}
+
+main {
+    width: 75%;
+    height: 100%;
+}
+
+.sidebar {
+    width: 25%;
+    display: flex;
+    flex-direction: column;
+}
+
+h4,
+p {
+    margin: 0;
+}
+
+.sb-panel {
+    display: flex;
+    flex-direction: column;
+    border-radius: 5px;
+    border: 2pt solid #183174;
+    padding: 10px;
+    margin: 10px;
+    gap: 5px;
+}
+
+.hl {
+    color: #7982ff;
+}
+
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* margin: 15px; */
+    /* outline: 2pt solid #183174; */
+}
+
+button {
+    background-color: #292c35;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 10px;
+    border: 2pt solid #3a5cbb;
+    cursor: pointer;
+    font-family: 'Hack Nerd Font';
+}
+
+#map-container {
+    width: 50%;
+}
+
+#map {
+    height: 600px;
+}
+
+.sb-button {
+    width: calc(100% - 20px);
+    /* margin: auto; */
+    margin-top: 20px;
+    font-size: 1.2em;
+    font-weight: bold;
+}
+
+#arm {
+    margin-top: 100px;
+    border: 2pt solid #3b2294;
+}
+
+#fire {
+    margin-top: 150px;
+    border: 2pt solid #aa1868;
+    color:#cc1479;
+}
+
+.gauge-container {
+    width: 200px;
+    height: 200px;
+    display: block;
+    padding: 10px;
+    border-radius: 5px;
+    border: 2pt solid #183174;
+}
+
+.gauge-container>.gauge .dial {
+    stroke: #eee;
+    stroke-width: 2;
+    fill: rgba(0, 0, 0, 0);
+}
+
+.gauge-container>.gauge .value {
+    stroke: rgb(47, 227, 255);
+    stroke-width: 2;
+    fill: rgba(0, 0, 0, 0);
+}
+
+.gauge-container>.gauge .value-text {
+    fill: rgb(47, 227, 255);
+    font-family: 'Hack Nerd Font';
+    font-weight: bold;
+    font-size: 1em;
+}
+
+.flex-row {
+    display: flex;
+}
+
+.gauge {
+    position: relative;
+    padding: 10px;
+}
+
+.gauge-label {
+    position: absolute;
+    top: 15px;
+    left: 10px;
+    background-color: #142d70;
+    border-radius: 5px;
+    padding-left: 10px;
+    padding-right: 10px;
+    color: white;
+}

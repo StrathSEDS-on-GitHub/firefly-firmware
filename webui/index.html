@@ -1,0 +1,57 @@
+<style>
+    #form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+</style>
+
+<button id="request-access">Request access</button>
+
+<form id="form">
+    <label for="id">Board ID</label>
+    <input type="number" id="id" placeholder="1" value="1">
+
+    <label for="rf_freq">Radio frequency (MHz)</label>
+    <input type="number" id="rf_freq" placeholder="868000000" value="868000000">
+
+    <label for="power">Power (dBm)</label>
+    <input type="number" name="power" id="power" max="22" min="1" placeholder="22" value="22">
+
+    <label for="cr">Coding Rate</label>
+    <select name="cr" id="cr">
+        <option value="4/5">4/5</option>
+        <option value="4/6">4/6</option>
+        <option value="4/7">4/7</option>
+        <option value="4/8">4/8</option>
+    </select>
+
+    <label for="sf">Spreading factor</label>
+    <select name="sf" id="sf">
+        <option value="7">7</option>
+        <option value="8">8</option>
+        <option value="9">9</option>
+        <option value="10">10</option>
+        <option value="11">11</option>
+        <option value="12">12</option>
+    </select>
+
+    <label for="bw">Bandwidth (kHz)</label>
+    <select name="bw" id="bw">
+        <option value="7">7</option>
+        <option value="10">10</option>
+        <option value="15">15</option>
+        <option value="20">20</option>
+        <option value="31">31</option>
+        <option value="41">41</option>
+        <option value="62">62</option>
+        <option value="125">125</option>
+        <option value="250" selected>250</option>
+        <option value="500">500</option>
+    </select>
+</form>
+
+<button id="reconfigure">Configure</button>
+<button id="logs">Load logs</button>
+
+
+<script src="comms.js"></script>
