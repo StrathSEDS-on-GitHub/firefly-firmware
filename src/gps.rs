@@ -290,6 +290,7 @@ pub async fn poll_for_sentences() -> ! {
                     }
                 }
                 cortex_m::interrupt::free(|cs| {
+                    hprintln!("Parse result: {:?}", parse_result);
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
                     let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
                     gps_sentence_buffer
@@ -341,7 +342,7 @@ pub enum ConfigBlock {
     ConfigNVMStored = 3
 }
 pub enum Mode {
-    Overwrit = 0,
+    Overwrite = 0,
     OrMask = 1,
     AndMask = 2
 }
