@@ -15,6 +15,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="./gauge.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <meta charset="utf-8">
 </head>
@@ -23,17 +24,23 @@
 
   <div class="layout">
     <main>
-      <div class="sb-panel">
-        <div id="p5-container"></div>
+      <div class="flex-row">
+        <div class="sb-panel" id="p5-cont-cont">
+          <div id="p5-container"></div>
+        </div>
+        <div id="chart-container" class="sb-panel" style="position: relative;">
+          <p class="gauge-label">Altitude</p>
+          <canvas id="myChart"></canvas>
+        </div>
       </div>
       <div class="flex-row">
         <div id="map-container" class="sb-panel">
           <div id="map"></div>
         </div>
-        <div class="gauge">
+        <!-- <div class="gauge">
           <p class="gauge-label">Velocity</p>
           <div id="cpuSpeed" class="gauge-container"></div>
-        </div>
+        </div> -->
         <div class="gauge">
           <p class="gauge-label">Acceleration</p>
           <div id="acc" class="gauge-container"></div>

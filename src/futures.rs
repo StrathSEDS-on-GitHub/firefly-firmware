@@ -1,10 +1,46 @@
 use core::{
-    future::Future,
-    pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::Waker,
+    convert::Infallible, future::Future, pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::Waker
 };
+use embedded_hal_async::delay::DelayNs;
+use fugit::ExtU32;
+use stm32f4xx_hal::{rcc::Clocks, timer::{self, TimerExt}};
 use thingbuf::mpsc::{errors::TrySendError, StaticSender};
+
+
+pub struct TimerDelay<TIM>
+where
+    TIM: TimerExt,
+{
+    timer: Option<TIM>,
+    clocks: Clocks
+}
+
+impl <TIM> TimerDelay<TIM>
+where
+    TIM: TimerExt,
+{
+    pub fn new(timer: TIM, clocks: Clocks) -> Self {
+        TimerDelay { timer: Some(timer), clocks }
+    }
+}
+
+impl<TIM: TimerExt + timer::Instance> DelayNs for TimerDelay<TIM> {
+    async fn delay_ns(&mut self, _: u32) {
+        self.delay_us(1).await; // Best we can do, we don't have nanosecond timing.
+    }
+    async fn delay_us(&mut self, us: u32) {
+        let mut counter = self.timer.take().unwrap().counter_us(&self.clocks);
+        counter.start(us.micros()).unwrap();
+        NbFuture::new(|| counter.wait()).await.unwrap();
+        self.timer.replace(counter.release().release());
+    }
+    async fn delay_ms(&mut self, ms: u32) {
+        let mut counter = self.timer.take().unwrap().counter_us(&self.clocks);
+        counter.start(ms.millis()).unwrap();
+        NbFuture::new(|| counter.wait()).await.unwrap();
+        self.timer.replace(counter.release().release());
+    }
+}
 
 pub struct NbFuture<T, E, F>
 where

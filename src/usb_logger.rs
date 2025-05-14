@@ -76,6 +76,7 @@ impl<'a> Serial<'a> {
                     }
                 }
                 Err(UsbError::WouldBlock) => {
+                    self.poll();
                     crate::futures::usb_wake::future().await;
                 }
                 Err(_) => {

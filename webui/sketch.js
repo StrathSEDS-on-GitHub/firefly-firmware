@@ -10,10 +10,11 @@ var canvas;
 
 
 var layer;
+var rocket;
 
 function setup() {
     frameRate(120);
-    canvas = createCanvas(800, 400, WEBGL);
+    canvas = createCanvas(200, 400, WEBGL);
     let container = document.getElementById("p5-container");
     canvas.parent(container);
     new ResizeObserver(() => {
@@ -21,7 +22,8 @@ function setup() {
         let h = container.clientHeight;
         resizeCanvas(w, h);
     }).observe(container);
-    
+
+    rocket = loadModel("art.stl", );
 
     cols = w / scl;
     rows = h / scl;
@@ -113,7 +115,28 @@ function quatToAxisAngle(q) {
     return { axis: createVector(z, y, x), angle: angle };
 }
 
-var quats = [];
+var quats = [{ w: 1, x: 0, y: 0, z: 0 }];
+const ctx = document.getElementById('myChart');
+let chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [{
+            label: 'Altitude',
+            data: [],
+            fill: false,
+            borderColor: 'rgb(75, 192, 192)',
+            tension: 0.1
+        }]
+    },
+    options: {
+        plugins: {
+            legend: {
+                display: false
+            },
+        }
+    }
+});
 
 async function parseLines(data) {
     let lines = data.split("\n");
@@ -124,14 +147,59 @@ async function parseLines(data) {
         let key = parts[0];
         if (key === "bno") {
             let state = parts[1].split("(")[0];
-            let mv = parts[2].slice(0,-1);
+            let mv = parts[2].slice(0, -1);
             document.querySelector("#status").innerText = state;
             document.querySelector("#pyro-mv").innerText = mv + "mV";
             let data = parts.slice(3).join(",");
             quats.push(...eval(data));
+        } else if (key === "pressure") {
+            let prs = eval(parts.slice(1, 9).join(","));
+            let tmps = eval(parts.slice(9).join(","));
+            
+            let alts = prs.map((p, i) => {
+                let t = tmps[i];
+                let a = 44330 * (1 - Math.pow(p / 102100, 0.1903));
+                return a;
+            }
+            );
+            let avg = alts.reduce((a, b) => a + b) / alts.length;
+            altGauge.setValue(avg);
+            chart.data.labels.push("");
+            chart.data.datasets[0].data.push(avg);
+
+            if (chart.data.labels.length > 50) {
+                chart.data.labels = chart.data.labels.slice(1);
+                chart.data.datasets[0].data = chart.data.datasets[0].data.slice(1);
+            }
+            
+            chart.update();
+        } else if (key === "bmi323") {
+            let [xacc, yacc, zacc] = eval(parts.slice(1,4).join(","));
+            let total = Math.sqrt(xacc * xacc + yacc * yacc + zacc * zacc);
+            accGauge.setValue(total);
+
+
+            let [x, y, z] = eval(parts.slice(4).join(","));
+            let dt = 0.0001;
+            let dQ = {x: x * dt, y: y * dt, z: z * dt, w: 1};
+            let last = quats[quats.length - 1];
+            let q = multiplyQuat(last, dQ);
+            quats.push(q);
         }
     }
     return lines[lines.length - 1];
+}
+
+function multiplyQuat(q1, q2) {
+    let { x: x1, y: y1, z: z1, w: w1 } = q1;
+    let { x: x2, y: y2, z: z2, w: w2 } = q2;
+    return {
+        x: x1 * w2 + w1 * x2 + y1 * z2 - z1 * y2,
+        y: y1 * w2 + w1 * y2 + z1 * x2 - x1 * z2,
+        z: z1 * w2 + w1 * z2 + x1 * y2 - y1 * x2,
+        w: w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    }
+        
 }
 
 async function readTask(port) {
@@ -178,7 +246,7 @@ document.querySelector("#request-access").addEventListener("click", async () => 
 
 function draw() {
     background(38, 40, 56);
-    if (!layer){
+    if (!layer) {
         layer = createGraphics(w, h, WEBGL);
 
         layer.translate(0, 150, 0);
@@ -187,7 +255,7 @@ function draw() {
         layer.translate(-w / 2, -h / 2);
         for (var y = 0; y < rows - 1; y++) {
             layer.beginShape(TRIANGLE_STRIP);
-            layer.stroke(25, 31, 16 + y*10);
+            layer.stroke(25, 31, 16 + y * 10);
             for (var x = 0; x < cols; x++) {
                 layer.vertex(x * scl, y * scl, terrain[x][y]);
                 layer.vertex(x * scl, (y + 1) * scl, terrain[x][y + 1]);
@@ -197,14 +265,17 @@ function draw() {
     }
 
     translate(0, 0, -100);
-    image(layer, -w/2, -h/2);
+    image(layer, -w / 2, -h / 2);
     translate(0, 0, 100);
 
     // Torus
     push();
     rotateWithFrameCount();
     fill(185, 20, 77);
-    torus(100, 20);
+    // torus(100, 20);
+    scale(2);
+    lights();
+    model(rocket);
     pop();
 }
 
@@ -217,8 +288,10 @@ function rotateWithFrameCount() {
         } else {
             console.log("underfull");
         }
-        let { axis, angle } = quatToAxisAngle({ w: q[0], x: q[1], y: q[2], z: q[3] });
-        rotate(angle, axis);
+        let { axis, angle } = quatToAxisAngle(q);
+        if (!isNaN(angle)) {
+            rotate(angle, axis);
+        }
     }
     if (quats.length > 60) {
         quats = quats.slice(1);
@@ -227,30 +300,32 @@ function rotateWithFrameCount() {
 }
 
 var map = L.map('map', {
-    center: [51.505, -0.09],
-    zoom: 13,
+    center: [55.8616893, -4.246423],
+    zoom: 17,
     attributionControl: false,
     zoomControl: false,
 });
 var Stadia_AlidadeSmoothDark = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.{ext}', {
-	minZoom: 0,
-	maxZoom: 20,
-	attribution: '&copy; <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-	ext: 'png'
+    minZoom: 0,
+    maxZoom: 20,
+    attribution: '&copy; <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    ext: 'png'
 });
 map.addLayer(Stadia_AlidadeSmoothDark);
 
-var Gauge = window.Gauge;
-console.log(Gauge);
+var marker = L.marker([55.8616893, -4.246423]).addTo(map);
 
-var cpuGauge = Gauge(document.getElementById("cpuSpeed"), {
-    max: 100,
-    // custom label renderer
-    label: function(value) {
-      return Math.round(value) + " m/s"
-    },
-    value: 50,
-});
+
+var Gauge = window.Gauge;
+
+// var cpuGauge = Gauge(document.getElementById("cpuSpeed"), {
+//     max: 100,
+//     // custom label renderer
+//     label: function(value) {
+//       return Math.round(value) + " m/s"
+//     },
+//     value: 50,
+// });
 var accGauge = Gauge(document.getElementById("acc"), {
     max: 100,
     // custom label renderer
@@ -259,14 +334,11 @@ var accGauge = Gauge(document.getElementById("acc"), {
     },
     value: 0,
 });
-var accGauge = Gauge(document.getElementById("alt"), {
-    max: 100,
+var altGauge = Gauge(document.getElementById("alt"), {
+    max: 5000,
     // custom label renderer
-    label: function(value) {
-      return Math.round(value) + " m"
+    label: function (value) {
+        return Math.round(value) + "m"
     },
     value: 0,
 });
-
-// Set gauge value
-cpuGauge.setValue(0);

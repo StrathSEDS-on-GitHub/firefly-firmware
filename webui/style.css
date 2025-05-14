@@ -41,6 +41,12 @@ p {
 .hl {
     color: #7982ff;
 }
+#p5-cont-cont {
+    width: 50%;
+}
+#chart-container {
+    width: 50%;
+}
 
 canvas {
     display: block;

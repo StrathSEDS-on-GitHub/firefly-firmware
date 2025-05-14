@@ -13,6 +13,12 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
+use bmi323::AccelConfig;
+use bmi323::AccelerometerRange;
+use bmi323::Bmi323;
+use bmi323::GyroConfig;
+use bmi323::GyroscopeRange;
+use bmi323::OutputDataRate;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
 use core::cell::UnsafeCell;
@@ -25,18 +31,17 @@ use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::digital::ErrorType;
-use embedded_hal_bus::spi::NoDelay;
+use embedded_hal_bus::spi::AtomicDevice;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
 use fugit::ExtU64;
+use futures::TimerDelay;
 use hal::adc::config::AdcConfig;
 use hal::adc::Adc;
 use hal::dma::StreamsTuple;
 use hal::gpio;
 use hal::gpio::NoPin;
-use hal::gpio::Output;
-use hal::gpio::Pin;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
 use hal::pac::TIM9;
@@ -51,10 +56,13 @@ use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
+use ms5607::MS5607;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
+use stm32f4xx_hal::i2c::I2c;
 use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::pac::SPI2;
+use stm32f4xx_hal::pac::TIM6;
 use storage_types::ConfigKey;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -79,6 +87,7 @@ mod bmp581;
 mod futures;
 mod gps;
 mod mission;
+mod ms5607;
 mod neopixel;
 mod pins;
 mod radio;
@@ -234,6 +243,7 @@ async fn main(_spawner: Spawner) {
                 &clocks,
             );
         }
+        delay.delay_ms(1000);
 
         gpio.e.pe3.into_floating_input();
         gpio.e.pe4.into_floating_input();
@@ -298,7 +308,8 @@ async fn main(_spawner: Spawner) {
             LOGS_FLASH_RANGE,
             &mut NoCache::new(),
         )
-        .await.unwrap();
+        .await
+        .unwrap();
 
         if total < 10240 {
             panic!("Not enough space for logs");
@@ -374,31 +385,46 @@ async fn main(_spawner: Spawner) {
             None
         };
 
-        let bno080: Option<BNO080<I2cInterface<stm32f4xx_hal::i2c::I2c<pac::I2C3>>>> = {
-            #[cfg(feature = "target-maxi")]
-            {
-                dp.I2C3.cr1.modify(|_, w| w.swrst().set_bit());
-                delay.delay_ms(10);
-                dp.I2C3.cr1.modify(|_, w| w.swrst().clear_bit());
+        dp.I2C3.cr1.modify(|_, w| w.swrst().set_bit());
+        delay.delay_ms(10);
+        dp.I2C3.cr1.modify(|_, w| w.swrst().clear_bit());
 
+        let i2c3 = dp.I2C3.i2c(
+            (
+                gpio.a
+                    .pa8
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+                gpio.b
+                    .pb4
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+            ),
+            100.kHz(),
+            &clocks,
+        );
+
+        let ms5607: Option<MS5607<I2c<pac::I2C3>, TimerDelay<TIM6>, _>> = {
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                let delay = TimerDelay::new(dp.TIM6, clocks);
+                let ms5607 = MS5607::new(i2c3, 0b1110110, delay).await.unwrap();
+                let ms5607 = ms5607.calibrate().await.unwrap();
+                Some(ms5607)
+            }
+            #[cfg(any(feature = "target-mini", not(feature = "ultra-dev")))]
+            {
+                None
+            }
+        };
+
+        let bno080: Option<BNO080<I2cInterface<I2c<pac::I2C3>>>> = {
+            #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+            {
                 let mut delay = dp.TIM6.delay::<100000>(&clocks);
-                let i2c = dp.I2C3.i2c(
-                    (
-                        gpio.a
-                            .pa8
-                            .into_alternate()
-                            .internal_pull_up(true)
-                            .set_open_drain(),
-                        gpio.b
-                            .pb4
-                            .into_alternate()
-                            .internal_pull_up(true)
-                            .set_open_drain(),
-                    ),
-                    100.kHz(),
-                    &clocks,
-                );
-                let mut bno = BNO080::new_with_interface(I2cInterface::alternate(i2c));
+                let mut bno = BNO080::new_with_interface(I2cInterface::alternate(i2c3));
 
                 delay.delay_ms(10);
 
@@ -415,13 +441,13 @@ async fn main(_spawner: Spawner) {
                 Some(bno)
             }
 
-            #[cfg(feature = "target-mini")]
+            #[cfg(any(feature = "target-mini", feature = "ultra-dev"))]
             {
                 None
             }
         };
 
-        let spi2 = if role == Role::Cansat {
+        let bmi323 = if cfg!(feature = "ultra-dev") {
             #[cfg(feature = "target-maxi")]
             {
                 let bus = dp.SPI2.spi(
@@ -430,31 +456,38 @@ async fn main(_spawner: Spawner) {
                         polarity: spi::Polarity::IdleLow,
                         phase: spi::Phase::CaptureOnFirstTransition,
                     },
-                    1.MHz(),
+                    100.kHz(),
                     &clocks,
                 );
                 static mut SPI2_BUS: Option<AtomicCell<Spi<SPI2>>> = None;
                 unsafe {
                     SPI2_BUS.replace(AtomicCell::new(bus));
                 }
+                let device =
+                    AtomicDevice::new_no_delay(unsafe { SPI2_BUS.as_ref().unwrap() }, gpio.e.pe12.into_push_pull_output()).unwrap();
+                let mut bmi = Bmi323::new_with_spi(device, dp.TIM4.delay_us(&clocks));
+                let accel_config = AccelConfig::builder()
+                    .odr(OutputDataRate::Odr100hz)
+                    .range(AccelerometerRange::G16)
+                    .build();
+                bmi.set_accel_config(accel_config).unwrap();
 
-                let device = embedded_hal_bus::spi::AtomicDevice::new_no_delay(
-                    unsafe { SPI2_BUS.as_ref().unwrap() },
-                    gpio.e.pe12.into_push_pull_output(),
-                )
-                .unwrap();
-                Some(device)
+                // Configure gyroscope
+                let gyro_config = GyroConfig::builder()
+                    .odr(OutputDataRate::Odr100hz)
+                    .range(GyroscopeRange::DPS2000)
+                    .build();
+                bmi.set_gyro_config(gyro_config).unwrap();
+
+                Some(bmi)
             }
 
             #[cfg(feature = "target-mini")]
             {
-                panic!("Mini is not supposed to be cansat")
+                None
             }
         } else {
-            let none: Option<
-                embedded_hal_bus::spi::AtomicDevice<'_, Spi<SPI2>, Pin<'E', 12, Output>, NoDelay>,
-            > = None;
-            none
+            None
         };
 
         // ===== Init SPI1 =====
@@ -520,7 +553,9 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unpend(pac::Interrupt::EXTI4);
         }
 
-        if matches!(role, Role::CansatBackup | Role::GroundBackup) || radio::TDM_CONFIG_MAIN.len() == 1 {
+        if matches!(role, Role::CansatBackup | Role::GroundBackup)
+            || radio::TDM_CONFIG_MAIN.len() == 1
+        {
             cortex_m::interrupt::free(|cs| {
                 RTC.borrow(cs)
                     .borrow_mut()
@@ -530,17 +565,15 @@ async fn main(_spawner: Spawner) {
             });
         }
 
-        let ads_delay = dp.TIM4.counter::<10000>(&clocks);
-
         neopixel::update_pixel(0, [0, 128, 0]);
         mission::begin(
             bmp,
             dp.TIM12.counter(&clocks),
             icm,
-            dp.TIM10.counter(&clocks),
+            TimerDelay::new(dp.TIM10, clocks),
             bno080,
-            spi2,
-            ads_delay,
+            ms5607,
+            bmi323,
         )
         .await;
     }

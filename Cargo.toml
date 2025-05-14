@@ -9,6 +9,7 @@ edition = "2021"
 msc = []
 target-mini = []
 target-maxi = []
+ultra-dev = []
 
 [profile.release]
 debug = true # No harm in enabling symbols, they're not loaded onto the mcu
@@ -56,7 +57,8 @@ critical-section = "1.1.2"
 atomic_enum = "0.3.0"
 bno080 = { version="0.1.3", git="https://github.com/tstellanova/bno080" }
 tmc2209 = { version="0.2.2", git="https://github.com/mitchmindtree/tmc2209" }
-bmi323 = "0.1.0"
+bmi323 = { version = "0.1.0", path="bmi323-rs" }
+embedded-hal-async = "1.0.0"
 
 [build-dependencies]
 time = {version = "0.3.20", features = ["macros", "formatting"] }

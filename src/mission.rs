@@ -1,8 +1,13 @@
+use crate::{
+    altimeter::PressureTemp,
+    ms5607::{Calibrated, MS5607},
+    pins::{PyroEnable, PyroFire1, PyroFire2},
+    radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION},
+};
+use bmi323::{interface::SpiInterface, Bmi323};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
-use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
-use crate::{pins::{PyroEnable, PyroFire1, PyroFire2}, radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION}};
 use embassy_futures::block_on;
 use embedded_hal::{
     delay::DelayNs,
@@ -10,6 +15,7 @@ use embedded_hal::{
     i2c::I2c,
     spi::SpiDevice,
 };
+use embedded_hal_async::delay::DelayNs as _;
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;
@@ -17,8 +23,13 @@ use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
 use nmea0183::{ParseResult, GGA};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
-    adc::{config::SampleTime, Adc}, gpio::{Analog, Pin}, pac::{ADC1, TIM12}, timer::{self, Counter, Instance}, ClearFlags
+    adc::{config::SampleTime, Adc},
+    gpio::{Analog, Pin},
+    pac::{ADC1, TIM12},
+    timer::{self, Counter, Instance},
+    ClearFlags,
 };
+use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
@@ -352,7 +363,6 @@ pub async fn usb_handler() -> ! {
         } else if split.len() >= 3 && split[0].starts_with(b"config") {
             let key = core::str::from_utf8(split[1]).unwrap().trim();
             let value = core::str::from_utf8(split[2]).unwrap().trim();
-
 
             // if CONFIG_KEYS.iter().map(|(k, _)| *k).any(|k| k != key) {
             //     writeln!(get_serial(), "err, invalid config key {}", key).unwrap();
@@ -843,7 +853,7 @@ async fn buzzer_controller() -> ! {
 
 async fn imu_handler(
     mut imu: IcmImu<impl I2c, NoDmp>,
-    mut imu_timer: Counter<impl timer::Instance, 100000>,
+    mut imu_timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
     let mut acc_buffer = [[0.0f32; 3]; 8];
     let mut gyro_buffer = [[0.0f32; 3]; 8];
@@ -866,8 +876,7 @@ async fn imu_handler(
 
             *acc = acc_data;
             *gyro = gyro_data;
-            imu_timer.start(10.millis()).unwrap();
-            NbFuture::new(|| imu_timer.wait()).await.unwrap();
+            imu_timer.delay_ms(10).await;
         }
 
         let message = Message::IMUBroadcast {
@@ -933,27 +942,85 @@ where
     }
 }
 
-pub async fn coproc_handler(
-    mut coproc_connector: impl SpiDevice,
-    mut coproc_delay: Counter<impl timer::Instance, 10000>,
+pub async fn bmi323_handler(
+    mut bmi323: Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>,
+    mut timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
     loop {
-        let mut buffer = [0x41u8; 258];
-        coproc_connector.transfer_in_place(&mut buffer).unwrap();
-        let detected_offset = u16::from_be_bytes(buffer[0..2].try_into().unwrap());
-        get_logger()
-            .log(format_args!("sound,{},{:?}", detected_offset, &buffer[2..]))
-            .await;
+        let mut acc_buffer = [[0.0f32; 3]; 8];
+        let mut gyro_buffer = [[0.0f32; 3]; 8];
 
-        let message = Message::SpeedSound {
+        for (acc, gyro) in acc_buffer.iter_mut().zip(gyro_buffer.iter_mut()) {
+            acc.copy_from_slice(
+                &bmi323
+                    .read_accel_data_scaled()
+                    .map(|it| [it.x, it.y, it.z])
+                    .unwrap(),
+            );
+
+            gyro.copy_from_slice(
+                &bmi323
+                    .read_gyro_data_scaled()
+                    .map(|it| [it.x, it.y, it.z])
+                    .unwrap(),
+            );
+            get_logger()
+                .log(format_args!("bmi323,{:?},{:?}", acc, gyro))
+                .await;
+            writeln!(get_serial(), "bmi323,{:?},{:?}", acc, gyro).unwrap();
+            timer.delay_ms(10).await;
+        }
+
+        let message = Message::IMUBroadcast {
             counter: radio::next_counter(),
-            detected_offset,
+            stage: current_stage(),
+            role: role(),
+            time_of_first_packet: current_rtc_time().into(),
+            accels: acc_buffer,
+            gyros: gyro_buffer,
         };
+        if role() == Role::Avionics {
+            radio::queue_packet(message);
+        }
+    }
+}
 
+pub async fn ms5607_handler(
+    mut ms5607: MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>,
+) -> ! {
+    loop {
+        let mut pressures = [0.0; 8];
+        let mut temperatures = [0.0; 8];
+
+        for i in 0..8 {
+            let PressureTemp {
+                pressure,
+                temperature,
+            } = ms5607
+                .read(crate::ms5607::Oversampling::OSR1024)
+                .await
+                .unwrap();
+            pressures[i] = pressure;
+            temperatures[i] = temperature;
+
+            ms5607.delay_ms(10).await;
+        }
+
+        get_logger()
+            .log(format_args!("pressure,{:?},{:?}", pressures, temperatures))
+            .await;
+        writeln!(get_serial(), "pressure,{:?},{:?}", pressures, temperatures).unwrap();
+        let message = Message::PressureTempBroadCast {
+            counter: radio::next_counter(),
+            stage: current_stage(),
+            role: role(),
+            time_of_first_packet: current_rtc_time().into(),
+            pressures,
+            temperatures,
+        };
         radio::queue_packet(message);
 
-        coproc_delay.start(1000u32.millis()).unwrap();
-        NbFuture::new(|| coproc_delay.wait()).await.unwrap();
+        YieldFuture::new().await;
     }
 }
 
@@ -961,10 +1028,10 @@ pub async fn begin(
     pressure_sensor: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
     imu: Option<IcmImu<impl I2c, NoDmp>>,
-    imu_timer: Counter<impl timer::Instance, 100000>,
+    imu_timer: impl embedded_hal_async::delay::DelayNs,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
-    coproc_connector: Option<impl SpiDevice>,
-    coproc_timer: Counter<impl timer::Instance, 10000>,
+    ms5607: Option<MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>>,
+    bmi323: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
@@ -980,39 +1047,33 @@ pub async fn begin(
                 {
                     imu_handler(imu.unwrap(), imu_timer)
                 }
-                #[cfg(feature = "target-maxi")]
+                #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
                 {
                     let _ = imu;
                     bno_handler(bno_imu.unwrap(), imu_timer)
                 }
+                #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+                {
+                    bmi323_handler(bmi323.unwrap(), imu_timer)
+                }
             };
 
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
-                buzzer_controller(),
+                // buzzer_controller(),
+                imu_task,
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                // pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
-                stage_update_handler(pressure_receiver),
-                imu_task
+                // stage_update_handler(pressure_receiver),
+                ms5607_handler(ms5607.unwrap(),),
+                // imu_task
             )
             .0
         }
         Role::Cansat => {
-            let coproc_connector_task = {
-                #[cfg(feature = "target-maxi")]
-                {
-                    coproc_handler(coproc_connector.unwrap(), coproc_timer)
-                }
-                #[cfg(feature = "target-mini")]
-                {
-                    let (_, _) = (coproc_connector, coproc_timer);
-                    futures::future::ready(())
-                }
-            };
-
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
@@ -1022,8 +1083,7 @@ pub async fn begin(
                 handle_incoming_packets(),
                 pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 stage_update_handler(pressure_receiver),
-                bno_handler(bno_imu.unwrap(), imu_timer),
-                coproc_connector_task
+                // bno_handler(bno_imu.unwrap(), imu_timer),
             )
             .0
         }
