@@ -28,3 +28,6 @@
 [submodule "embedded-hal"]
 	path = embedded-hal
 	url = https://github.com/rust-embedded/embedded-hal
+[submodule "bmi323-rs"]
+	path = bmi323-rs
+	url = ssh://git@github.com/X-yl/bmi323-rs
