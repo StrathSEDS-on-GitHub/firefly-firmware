@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "adxl375"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal-async",
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "aligned"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -100,8 +108,6 @@ checksum = "5da9b3d9f6f585199287a473f4f8dfab6566cf827d15c00c219f53c645687ead"
 [[package]]
 name = "bmi323"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13d9428cbc8d4673e77310d83d2acfa3c09894a67b2c464289af91015a124dad"
 dependencies = [
  "embedded-hal 1.0.0",
 ]
@@ -138,6 +144,7 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 name = "cansat"
 version = "0.1.0"
 dependencies = [
+ "adxl375",
  "atomic_enum",
  "bmi323",
  "bmp388",

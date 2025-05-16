@@ -31,3 +31,6 @@
 [submodule "bmi323-rs"]
 	path = bmi323-rs
 	url = ssh://git@github.com/X-yl/bmi323-rs
+[submodule "adxl375"]
+	path = adxl375
+	url = ssh://git@github.com/X-yl/adxl375-rs

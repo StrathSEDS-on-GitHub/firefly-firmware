@@ -13,6 +13,7 @@ use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::sdio::setup_logger;
+use adxl375::spi::ADXL375;
 use bmi323::AccelConfig;
 use bmi323::AccelerometerRange;
 use bmi323::Bmi323;
@@ -21,6 +22,7 @@ use bmi323::GyroscopeRange;
 use bmi323::OutputDataRate;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
+use cortex_m_semihosting::hprintln;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -329,7 +331,7 @@ async fn main(_spawner: Spawner) {
             3 => Role::GroundBackup,
             4 => Role::Cansat,
             1 => Role::Avionics,
-            _ => panic!("Invalid board ID {}", 2)
+            _ => panic!("Invalid board ID {}", 2),
         };
 
         unsafe { mission::ROLE = role };
@@ -410,9 +412,10 @@ async fn main(_spawner: Spawner) {
             #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
             {
                 let delay = TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = MS5607::new(i2c3, 0b1110110, delay).await.unwrap();
-                let ms5607 = ms5607.calibrate().await.unwrap();
-                Some(ms5607)
+                // let ms5607 = MS5607::new(i2c3, 0b1110110, delay).await.unwrap();
+                // let ms5607 = ms5607.calibrate().await.unwrap();
+                // Some(ms5607)
+                None
             }
             #[cfg(any(feature = "target-mini", not(feature = "ultra-dev")))]
             {
@@ -453,8 +456,8 @@ async fn main(_spawner: Spawner) {
                 let bus = dp.SPI2.spi(
                     (gpio.b.pb13, gpio.c.pc2, gpio.c.pc3),
                     spi::Mode {
-                        polarity: spi::Polarity::IdleLow,
-                        phase: spi::Phase::CaptureOnFirstTransition,
+                        polarity: spi::Polarity::IdleHigh,
+                        phase: spi::Phase::CaptureOnSecondTransition,
                     },
                     100.kHz(),
                     &clocks,
@@ -463,9 +466,10 @@ async fn main(_spawner: Spawner) {
                 unsafe {
                     SPI2_BUS.replace(AtomicCell::new(bus));
                 }
-                let device =
+                let bmidev =
                     AtomicDevice::new_no_delay(unsafe { SPI2_BUS.as_ref().unwrap() }, gpio.e.pe12.into_push_pull_output()).unwrap();
-                let mut bmi = Bmi323::new_with_spi(device, dp.TIM4.delay_us(&clocks));
+
+                let mut bmi = Bmi323::new_with_spi(bmidev, dp.TIM4.delay_us(&clocks));
                 let accel_config = AccelConfig::builder()
                     .odr(OutputDataRate::Odr100hz)
                     .range(AccelerometerRange::G16)
@@ -478,6 +482,16 @@ async fn main(_spawner: Spawner) {
                     .range(GyroscopeRange::DPS2000)
                     .build();
                 bmi.set_gyro_config(gyro_config).unwrap();
+
+
+                let adxldev = AtomicDevice::new_no_delay(
+                    unsafe { SPI2_BUS.as_ref().unwrap() },
+                    gpio.e.pe10.into_push_pull_output(),
+                ).unwrap();
+
+                let mut adxl = ADXL375::new(adxldev);
+                let mut buf = [0; 1];
+                adxl.read(adxl375::Register::DevId, &mut buf).unwrap();
 
                 Some(bmi)
             }

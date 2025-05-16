@@ -18,6 +18,7 @@ debug = true # No harm in enabling symbols, they're not loaded onto the mcu
 opt-level = 3
 
 [dependencies]
+adxl375 = { version = "0.1.0", path="adxl375" }
 embedded-hal="1.0"
 nb = "1"
 cortex-m = {version = "0.7.3", features=["critical-section-single-core"]}
