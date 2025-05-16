@@ -133,11 +133,11 @@ pub async fn change_baudrate(baudrate: u32) {
             let clocks = clocks_ref.as_mut().unwrap();
 
             // FIXME: Holy shit what the fuck is this code
-            let USART2: USART2 = unsafe { core::mem::transmute(()) };
+            let usart2: USART2 = unsafe { core::mem::transmute(()) };
             let pa3: gpio::Pin<'A', 3, Input> = unsafe { core::mem::transmute(()) };
 
             let pa2: gpio::Pin<'A', 2, Input> = unsafe { core::mem::transmute(()) };
-            USART2
+            usart2
                 .serial(
                     (pa2.into_alternate(), pa3.into_alternate()),
                     hal::serial::config::Config {
@@ -207,6 +207,7 @@ pub async fn next_sentence() -> ParseResult {
 
 /// Interrupt for gps DMA TX,
 #[interrupt]
+#[allow(non_snake_case)]
 fn DMA1_STREAM6() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
@@ -371,6 +372,7 @@ pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode
 
 
 #[interrupt]
+#[allow(non_snake_case)]
 fn DMA1_STREAM5() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
@@ -397,6 +399,7 @@ fn DMA1_STREAM5() {
 }
 
 #[interrupt]
+#[allow(non_snake_case)]
 fn USART2() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
