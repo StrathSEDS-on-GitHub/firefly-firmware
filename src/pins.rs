@@ -277,6 +277,17 @@ macro_rules! gps_pins {
         }
     }};
 }
+
+#[macro_export]
+macro_rules! pps_pin {
+    ($gpio_buses:ident) => {{
+        #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+        {
+            $gpio_buses.e.pe11.into_input()
+        }
+    }};
+}
+
 #[macro_export]
 macro_rules! i2c1_pins {
     ($gpio_buses:ident) => {{
