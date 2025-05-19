@@ -29,7 +29,6 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
-use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::digital::ErrorType;

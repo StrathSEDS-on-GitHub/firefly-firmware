@@ -3,7 +3,6 @@ use core::fmt::{self, Write};
 
 use cortex_m::interrupt::{CriticalSection, Mutex};
 use cortex_m::register::primask;
-use cortex_m_semihosting::hprintln;
 use embassy_futures::select::select;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use hal::qspi::Bank1;
@@ -105,7 +104,7 @@ impl Logger {
 
         self.retry_log_impl(writer.data()).await;
     }
-    
+
     async fn retry_log_impl(&self, buffer: &[u8]) {
         loop {
             let mask = primask::read();
@@ -302,7 +301,6 @@ impl Logger {
                 }
             }
         }
-        hprintln!("Loaded {} config keys", config.len());
 
         // Drop the SequentialStorage wrapper to get the underlying flash
         let mut flash = flash.release();
@@ -325,8 +323,6 @@ impl Logger {
         select(pulse, pending).await;
         neopixel::update_pixel(0, [0, 128, 0]);
 
-        hprintln!("Erased chip.");
-
         let mut flash = W25QSequentialStorage::<_, { CAPACITY }>::new(flash);
 
         for (k, v) in config {
@@ -341,8 +337,6 @@ impl Logger {
             )
             .await;
         }
-
-        hprintln!("Restored config keys");
 
         self.return_flash(flash).await;
         Ok(())
