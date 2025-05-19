@@ -1,26 +1,34 @@
 use core::{
-    convert::Infallible, future::Future, pin, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, task::Waker
+    future::Future,
+    pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
 };
 use embedded_hal_async::delay::DelayNs;
 use fugit::ExtU32;
-use stm32f4xx_hal::{rcc::Clocks, timer::{self, TimerExt}};
+use stm32f4xx_hal::{
+    rcc::Clocks,
+    timer::{self, TimerExt},
+};
 use thingbuf::mpsc::{errors::TrySendError, StaticSender};
-
 
 pub struct TimerDelay<TIM>
 where
     TIM: TimerExt,
 {
     timer: Option<TIM>,
-    clocks: Clocks
+    clocks: Clocks,
 }
 
-impl <TIM> TimerDelay<TIM>
+impl<TIM> TimerDelay<TIM>
 where
     TIM: TimerExt,
 {
     pub fn new(timer: TIM, clocks: Clocks) -> Self {
-        TimerDelay { timer: Some(timer), clocks }
+        TimerDelay {
+            timer: Some(timer),
+            clocks,
+        }
     }
 }
 
@@ -112,7 +120,6 @@ macro_rules! interrupt_wake_channel {
     ($name:ident) => {
         pub(crate) mod $name {
             use core::cell::RefCell;
-            use core::sync::atomic::AtomicUsize;
             use core::task::Waker;
             use cortex_m::interrupt::Mutex;
             use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
@@ -120,7 +127,6 @@ macro_rules! interrupt_wake_channel {
             type MutRefOpt<T> = Mutex<RefCell<Option<T>>>;
 
             pub(crate) static WAKERS: StaticChannel<Option<Waker>, 16> = StaticChannel::new();
-            pub(crate) static FLAG: AtomicUsize = AtomicUsize::new(0);
             pub(crate) static SENDER: MutRefOpt<StaticSender<Option<Waker>>> =
                 Mutex::new(RefCell::new(None));
             pub(crate) static RECEIVER: MutRefOpt<StaticReceiver<Option<Waker>>> =
@@ -140,9 +146,9 @@ macro_rules! interrupt_wake_channel {
                     })
                 };
                 crate::futures::InterruptFuture {
-                    flag: &FLAG,
                     sender,
                     sent_waker: core::sync::atomic::AtomicBool::new(false),
+                    name: stringify!($name),
                 }
             }
         }
@@ -165,8 +171,7 @@ macro_rules! interrupt_wake {
 
             while let Ok(waker) = receiver.try_recv() {
                 if let Some(waker) = waker {
-                    path::FLAG.fetch_add(1, core::sync::atomic::Ordering::Release);
-                    waker.wake();
+                    waker.wake_by_ref();
                 }
             }
         });
@@ -180,9 +185,9 @@ interrupt_wake_channel!(bmp_wake);
 
 /// Future that is woken by an interrupt.
 pub struct InterruptFuture {
-    pub flag: &'static AtomicUsize,
     pub sender: StaticSender<Option<Waker>>,
     pub sent_waker: AtomicBool,
+    pub name: &'static str,
 }
 
 impl Future for InterruptFuture {
@@ -193,20 +198,8 @@ impl Future for InterruptFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if self
-            .flag
-            .fetch_update(Ordering::Release, Ordering::Acquire, |x| {
-                if x > 0 {
-                    Some(x - 1)
-                } else {
-                    None
-                }
-            })
-            .is_ok()
-        {
-            core::task::Poll::Ready(())
-        } else if self
             .sent_waker
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             match self.sender.try_send(Some(cx.waker().clone())) {
@@ -217,13 +210,12 @@ impl Future for InterruptFuture {
                 Err(e) => {
                     panic!("Receiver dropped {:?}?", e);
                 }
-                Ok(_) => {
-                }
+                Ok(_) => {}
             }
 
             core::task::Poll::Pending
         } else {
-            core::task::Poll::Pending
+            core::task::Poll::Ready(())
         }
     }
 }
