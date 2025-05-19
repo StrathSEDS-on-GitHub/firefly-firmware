@@ -33,7 +33,7 @@ impl BMP581<()> {
 
 impl BMP581<I2c1Proxy> {
     pub(crate) unsafe fn dma_complete(&self) -> Result<(), ()> {
-        self.com.dma_complete()
+        unsafe { self.com.dma_complete() }
     }
 }
 
@@ -152,7 +152,7 @@ impl<I2C: I2c + I2CMasterWriteReadDMA> I2CMasterWriteReadDMA for BMP581<I2C> {
         buf: &mut [u8],
         callback: Option<I2cCompleteCallback>
     ) -> Result<(), nb::Error<i2c::Error>> {
-        self.com.write_read_dma(addr, bytes, buf, callback)
+        unsafe { self.com.write_read_dma(addr, bytes, buf, callback) }
     }
 }
 

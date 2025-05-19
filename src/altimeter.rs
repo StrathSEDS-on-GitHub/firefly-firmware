@@ -33,7 +33,7 @@ impl BMP388Wrapper {
     pub const BUF_SIZE: usize = 512;
 
     pub(crate) unsafe fn dma_complete(&self) -> Result<(), ()> {
-        self.bmp.com.dma_complete()
+        unsafe { self.bmp.com.dma_complete() }
     }
 
     pub fn new(i2c: I2c1Proxy, delay: &mut SysDelay) -> Self {
@@ -167,7 +167,7 @@ impl I2CMasterWriteReadDMA for BMP388Wrapper {
         buf: &mut [u8],
         callback: Option<I2cCompleteCallback>,
     ) -> Result<(), nb::Error<i2c::Error>> {
-        self.bmp.com.write_read_dma(addr, bytes, buf, callback)
+        unsafe { self.bmp.com.write_read_dma(addr, bytes, buf, callback) }
     }
 }
 

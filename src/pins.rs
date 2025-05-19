@@ -200,8 +200,10 @@ pub mod i2c {
                     Ordering::Relaxed,
                 )
                 .map_err(|_| nb::Error::WouldBlock)?;
-            let bus = &mut *self.bus.get();
-            bus.write_read_dma(addr, bytes, buf, callback)
+            unsafe {
+                let bus = &mut *self.bus.get();
+                bus.write_read_dma(addr, bytes, buf, callback)
+            }
         }
     }
 }
