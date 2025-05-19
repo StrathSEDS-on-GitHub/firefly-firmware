@@ -4,7 +4,7 @@ use crate::{
     pins::{PyroEnable, PyroFire1, PyroFire2},
     radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION},
 };
-use bmi323::{interface::SpiInterface, Bmi323};
+use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
 use core::{cell::Cell, convert::Infallible, fmt::Write};
 use cortex_m::interrupt::Mutex;
@@ -19,27 +19,27 @@ use embedded_hal_async::delay::DelayNs as _;
 use fugit::ExtU32;
 use futures::join;
 use heapless::Vec;
-use icm20948_driver::icm20948::{i2c::IcmImu, NoDmp};
-use nmea0183::{ParseResult, GGA};
+use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
+use nmea0183::{GGA, ParseResult};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
-    adc::{config::SampleTime, Adc},
+    ClearFlags,
+    adc::{Adc, config::SampleTime},
     gpio::{Analog, Pin},
     pac::{ADC1, TIM12},
     timer::{self, Counter, Instance},
-    ClearFlags,
 };
-use storage_types::{ConfigKey, ValueType, CONFIG_KEYS};
+use storage_types::{CONFIG_KEYS, ConfigKey, ValueType};
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    altimeter::{read_altimeter_fifo, FifoFrames, ALTIMETER_FRAME_COUNT},
+    Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
+    altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames, read_altimeter_fifo},
     futures::{NbFuture, YieldFuture},
     gps,
     radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
-    sdio::get_logger,
+    logs::get_logger,
     usb_logger::get_serial,
-    Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
 };
 
 pub static mut ROLE: Role = Role::Cansat;
@@ -376,10 +376,20 @@ pub async fn usb_handler() -> ! {
 
             get_logger().edit_config(&key, value).await;
             get_serial().log("ok\n").await;
+        } else if split.len() >= 1 && split[0].starts_with(b"erase") {
+            if let Err(msg) = get_logger().erase_logs().await {
+                writeln!(get_serial(), "err, {}", msg).unwrap();
+            }
+            get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"logs") {
-            get_logger().get_logs(|s| {
-                writeln!(get_serial(), "{}", s).unwrap();
-            }).await;
+            if let Err(msg) = get_logger()
+                .get_logs(async |s| {
+                    get_serial().log(s).await;
+                })
+                .await
+            {
+                writeln!(get_serial(), "err, {}", msg).unwrap();
+            }
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
@@ -967,7 +977,6 @@ pub async fn bmi323_handler(
             get_logger()
                 .log(format_args!("bmi323,{:?},{:?}", acc, gyro))
                 .await;
-            writeln!(get_serial(), "bmi323,{:?},{:?}", acc, gyro).unwrap();
             timer.delay_ms(10).await;
         }
 
@@ -1009,7 +1018,6 @@ pub async fn ms5607_handler(
         get_logger()
             .log(format_args!("pressure,{:?},{:?}", pressures, temperatures))
             .await;
-        writeln!(get_serial(), "pressure,{:?},{:?}", pressures, temperatures).unwrap();
         let message = Message::PressureTempBroadCast {
             counter: radio::next_counter(),
             stage: current_stage(),

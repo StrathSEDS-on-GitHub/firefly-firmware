@@ -12,7 +12,7 @@ use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
 use crate::pins::*;
 use crate::radio::Radio;
-use crate::sdio::setup_logger;
+use crate::logs::setup_logger;
 use adxl375::spi::ADXL375;
 use bmi323::AccelConfig;
 use bmi323::AccelerometerRange;
@@ -22,7 +22,6 @@ use bmi323::GyroscopeRange;
 use bmi323::OutputDataRate;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
-use cortex_m_semihosting::hprintln;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -30,6 +29,7 @@ use cortex_m::interrupt::Mutex;
 use cortex_m_rt::exception;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_semihosting::hio;
+use cortex_m_semihosting::hprintln;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embedded_hal::digital::ErrorType;
@@ -93,7 +93,7 @@ mod ms5607;
 mod neopixel;
 mod pins;
 mod radio;
-mod sdio;
+mod logs;
 mod stepper;
 mod usb_logger;
 mod usb_msc;
@@ -325,8 +325,16 @@ async fn main(_spawner: Spawner) {
         .await
         .unwrap();
 
-        if total < 10240 {
-            panic!("Not enough space for logs");
+        let res = sequential_storage::queue::push(
+            &mut wrapper,
+            LOGS_FLASH_RANGE,
+            &mut NoCache::new(),
+            b"---- Reset ----\n",
+            false,
+        ).await;
+
+        if total < 10240 || res.is_err() {
+            panic!("Logging failure");
         }
 
         let board_id: Result<Option<u64>, _> = map::fetch_item(
@@ -337,7 +345,7 @@ async fn main(_spawner: Spawner) {
             &ConfigKey::try_from("id").unwrap(),
         )
         .await;
-        let board_id = board_id.unwrap().unwrap();
+        let board_id = 1; // board_id.unwrap().unwrap();
         let role = match board_id {
             2 | 0 => Role::GroundMain,
             3 => Role::GroundBackup,

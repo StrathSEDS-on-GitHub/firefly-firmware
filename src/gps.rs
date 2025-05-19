@@ -264,15 +264,18 @@ pub async fn init_teseo() {
     const GLASGOW_LONG: &'static str = "00414.616,W";
 
     let mut command_storage = [0u8; 256];
-    let mut writer = FixedWriter(&mut command_storage, 0);
-    write!(&mut writer, "$PSTMINITGPS,{GLASGOW_LAT},{GLASGOW_LONG},0035,").unwrap();
+    let mut writer = FixedWriter::new(&mut command_storage);
+    write!(
+        &mut writer,
+        "$PSTMINITGPS,{GLASGOW_LAT},{GLASGOW_LONG},0035,"
+    )
+    .unwrap();
     write!(&mut writer, "{}", env!("BUILD_TIME")).unwrap();
 
-    let checksum = writer.0.iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
+    let checksum = writer.data().iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
     write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
 
-    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1])); 
-    tx(&writer.0[..writer.1]).await;
+    tx(writer.data()).await;
 }
 
 pub enum ConfigBlock {
@@ -291,23 +294,19 @@ pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode
     const STORAGE_LENGTH: usize = 256;
 
     let mut command_storage = [0u8; STORAGE_LENGTH];
-    let mut writer = FixedWriter(&mut command_storage, 0);
+    let mut writer = FixedWriter::new(&mut command_storage);
     write!(&mut writer, "$PSTMSETPAR,{}{id:03},", config_block as u8).unwrap();
-    
-    let copied_len = min(STORAGE_LENGTH - writer.1, param_value.len());
-    writer.0[writer.1..writer.1 + copied_len].copy_from_slice(&param_value[..copied_len]);
-    writer.1 += copied_len;
+
+    writer.copy_from_slice(&param_value);
 
     if let Some(mode) = mode {
         write!(&mut writer, ",{:01}", mode as u8).unwrap();
     }
-    let checksum = writer.0.iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
+    let checksum = writer.data().iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
     write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
 
-    hprintln!("{:?}", core::str::from_utf8(&writer.0[..writer.1]));
-    tx(&writer.0[..writer.1]).await;
+    tx(writer.data()).await;
 }
-
 
 #[interrupt]
 #[allow(non_snake_case)]
