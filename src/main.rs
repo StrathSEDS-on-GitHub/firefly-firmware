@@ -424,10 +424,9 @@ async fn main(_spawner: Spawner) {
             #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
             {
                 let delay = TimerDelay::new(dp.TIM6, clocks);
-                // let ms5607 = MS5607::new(i2c3, 0b1110110, delay).await.unwrap();
-                // let ms5607 = ms5607.calibrate().await.unwrap();
-                // Some(ms5607)
-                None
+                let ms5607 = MS5607::new(i2c3, 0b1110110, delay).await.unwrap();
+                let ms5607 = ms5607.calibrate().await.unwrap();
+                Some(ms5607)
             }
             #[cfg(any(feature = "target-mini", not(feature = "ultra-dev")))]
             {
@@ -478,8 +477,11 @@ async fn main(_spawner: Spawner) {
                 unsafe {
                     SPI2_BUS.replace(AtomicCell::new(bus));
                 }
-                let bmidev =
-                    AtomicDevice::new_no_delay(unsafe { SPI2_BUS.as_ref().unwrap() }, gpio.e.pe12.into_push_pull_output()).unwrap();
+                let bmidev = AtomicDevice::new_no_delay(
+                    unsafe { SPI2_BUS.as_ref().unwrap() },
+                    gpio.e.pe12.into_push_pull_output(),
+                )
+                .unwrap();
 
                 let mut bmi = Bmi323::new_with_spi(bmidev, dp.TIM4.delay_us(&clocks));
                 let accel_config = AccelConfig::builder()
@@ -495,15 +497,23 @@ async fn main(_spawner: Spawner) {
                     .build();
                 bmi.set_gyro_config(gyro_config).unwrap();
 
-
                 let adxldev = AtomicDevice::new_no_delay(
                     unsafe { SPI2_BUS.as_ref().unwrap() },
                     gpio.e.pe10.into_push_pull_output(),
-                ).unwrap();
+                )
+                .unwrap();
 
-                let mut adxl = ADXL375::new(adxldev);
+                let mut adxl = ADXL375::new(adxldev, TimerDelay::new(dp.TIM11, clocks));
                 let mut buf = [0; 1];
-                adxl.read(adxl375::Register::DevId, &mut buf).unwrap();
+                adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
+                adxl.write(adxl375::Register::DataFormat, &[0b01011])
+                    .await
+                    .unwrap();
+                adxl.write(adxl375::Register::PowerCtl, &[0x8])
+                    .await
+                    .unwrap();
+                adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
+                adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
 
                 Some(bmi)
             }
@@ -549,7 +559,6 @@ async fn main(_spawner: Spawner) {
             DIO1_PIN.as_mut().unwrap()
         };
 
-        let mut syscfg = dp.SYSCFG.constrain();
         lora_dio1.make_interrupt_source(&mut syscfg);
         lora_dio1.trigger_on_edge(&mut dp.EXTI, gpio::Edge::Rising);
         lora_dio1.enable_interrupt(&mut dp.EXTI);
