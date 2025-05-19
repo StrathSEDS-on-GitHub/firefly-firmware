@@ -293,12 +293,24 @@ async fn main(_spawner: Spawner) {
             )
             .unwrap();
         let streams = StreamsTuple::new(dp.DMA1);
-        let tx_stream = streams.6;
         let rx_stream = streams.5;
-        gps::setup(tx_stream, rx_stream, gps_serial);
+        gps::setup(rx_stream, gps_serial);
         gps::init_teseo().await;
-        gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, &2u32.to_be_bytes(), None).await;
-        
+        gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
+        gps::set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None).await;
+
+        gps::set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None).await;
+
+        let mut syscfg = dp.SYSCFG.constrain();
+        let mut pps_pin = pps_pin!(gpio);
+        pps_pin.make_interrupt_source(&mut syscfg);
+        pps_pin.trigger_on_edge(&mut dp.EXTI, gpio::Edge::Rising);
+        pps_pin.enable_interrupt(&mut dp.EXTI);
+        unsafe {
+            pac::NVIC::unmask(pac::Interrupt::EXTI15_10);
+        }
+        pac::NVIC::unpend(pac::Interrupt::EXTI15_10);
+
         // gps::tx(b"$PMTK251,115200*1F\r\n").await;
         // gps::change_baudrate(115200).await;
         // gps::set_nmea_output().await;

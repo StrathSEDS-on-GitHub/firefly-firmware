@@ -1,14 +1,12 @@
 use core::{
+    cell::RefCell,
     cmp::min,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    cell::RefCell, cmp::min, sync::atomic::{AtomicUsize, Ordering},
     fmt::Write as _,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprintln;
 use fugit::ExtU32;
-use futures::poll;
 use hal::{
     dma::{traits::StreamISR, Transfer},
     gpio::{self, Input},
@@ -19,28 +17,16 @@ use hal::{
 use heapless::Deque;
 use nmea0183::{datetime::Time, ParseResult, GGA};
 use stm32f4xx_hal::{
-    dma::{self, Stream5, Stream6, StreamX},
-    interrupt, pac::{self, crc::idr, DMA1},
+    dma::{self, Stream5, StreamX},
+    interrupt,
+    pac::{self, DMA1},
+    prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write},
     serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{interrupt_wake, neopixel, sdio::FixedWriter, RTC};
+use crate::{futures::YieldFuture, interrupt_wake, neopixel, logs::FixedWriter, RTC};
 use stm32f4xx_hal as hal;
-
-static TX_TRANSFER: Mutex<
-    RefCell<
-        Option<
-            Transfer<
-                Stream6<pac::DMA1>,
-                4,
-                Tx<pac::USART2>,
-                dma::MemoryToPeripheral,
-                &'static mut [u8],
-            >,
-        >,
-    >,
-> = Mutex::new(RefCell::new(None));
 
 static RX_TRANSFER: Mutex<
     RefCell<
@@ -56,6 +42,7 @@ static RX_TRANSFER: Mutex<
     >,
 > = Mutex::new(RefCell::new(None));
 
+static TX: Mutex<RefCell<Option<Tx<USART2>>>> = Mutex::new(RefCell::new(None));
 static RX_BUFFER: Mutex<RefCell<Option<&'static mut [u8; RX_BUFFER_SIZE]>>> =
     Mutex::new(RefCell::new(None));
 
@@ -63,24 +50,13 @@ static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
 
 static REFINE_TIME: AtomicBool = AtomicBool::new(false);
 
-const RX_BUFFER_SIZE: usize = 1024;
+const RX_BUFFER_SIZE: usize = 2048;
 
-pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal::serial::Serial<USART2>) {
-    let tx_buf_gps = cortex_m::singleton!(:[u8; 128] = [0; 128]).unwrap();
+pub fn setup(rx_stream: StreamX<DMA1, 5>, gps: hal::serial::Serial<USART2>) {
     let rx_buf1_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let (tx, mut rx) = gps.split();
 
-    let mut tx_transfer = Transfer::init_memory_to_peripheral(
-        tx_stream,
-        tx,
-        tx_buf_gps as &mut [u8],
-        None,
-        dma::config::DmaConfig::default()
-            .memory_increment(true)
-            .fifo_enable(true)
-            .transfer_complete_interrupt(true),
-    );
     rx.listen_idle();
     let mut rx_transfer = Transfer::init_peripheral_to_memory(
         rx_stream,
@@ -96,10 +72,8 @@ pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal:
             .transfer_complete_interrupt(true),
     );
     rx_transfer.start(|_rx| {});
-    //tx_transfer.start(|_tx| {});
     cortex_m::interrupt::free(|cs| {
-        // SAFETY: Mutex makes access of static mutable variable safe
-        TX_TRANSFER.borrow(cs).borrow_mut().replace(tx_transfer);
+        TX.borrow(cs).borrow_mut().replace(tx);
         RX_TRANSFER.borrow(cs).borrow_mut().replace(rx_transfer);
         RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf2_gps);
         GPS_SENTENCE_BUFFER
@@ -108,7 +82,6 @@ pub fn setup(tx_stream: StreamX<DMA1, 6>, rx_stream: StreamX<DMA1, 5>, gps: hal:
             .replace(Deque::new())
     });
     unsafe {
-        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM6);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM5);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART2);
     }
@@ -121,11 +94,9 @@ pub async fn set_nmea_output() {
 
 pub async fn change_baudrate(baudrate: u32) {
     cortex_m::interrupt::free(|cs| {
-        let tx_transfer = TX_TRANSFER.borrow(cs).replace(None).unwrap();
         let rx_transfer = RX_TRANSFER.borrow(cs).replace(None).unwrap();
 
         let (rx_stream, _, rx_buf, _) = rx_transfer.release();
-        let (tx_stream, _, tx_buf, _) = tx_transfer.release();
 
         let serial = {
             // Seemingly there's no way to simply rejoin the Tx and Rx and then release so we need to get our hands dirty...
@@ -151,17 +122,6 @@ pub async fn change_baudrate(baudrate: u32) {
         };
         let (tx, mut rx) = serial.split();
         rx.listen_idle();
-        let tx_transfer = Transfer::init_memory_to_peripheral(
-            tx_stream,
-            tx,
-            tx_buf as &mut [u8],
-            None,
-            dma::config::DmaConfig::default()
-                .memory_increment(true)
-                .fifo_enable(true)
-                .transfer_complete_interrupt(true),
-        );
-        rx.listen_idle();
         let mut rx_transfer = Transfer::init_peripheral_to_memory(
             rx_stream,
             rx,
@@ -178,7 +138,7 @@ pub async fn change_baudrate(baudrate: u32) {
         rx_transfer.start(|_rx| {});
 
         RX_BYTES_READ.store(0, Ordering::SeqCst);
-        TX_TRANSFER.borrow(cs).replace(Some(tx_transfer));
+        TX.borrow(cs).borrow_mut().replace(tx);
         RX_TRANSFER.borrow(cs).replace(Some(rx_transfer));
     });
 }
@@ -201,28 +161,8 @@ pub async fn next_sentence() -> ParseResult {
             return x;
         }
 
-        crate::futures::gps_rx_wake::future().await;
+        YieldFuture::new().await;
     }
-}
-
-/// Interrupt for gps DMA TX,
-#[interrupt]
-#[allow(non_snake_case)]
-fn DMA1_STREAM6() {
-    cortex_m::interrupt::free(|cs| {
-        let mut transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
-        let transfer = transfer_ref.as_mut().unwrap();
-
-        // Its important to clear fifo errors as the transfer is paused until it is cleared
-        if transfer.is_fifo_error() {
-            transfer.clear_fifo_error();
-        }
-
-        if transfer.is_transfer_complete() {
-            transfer.clear_transfer_complete();
-            interrupt_wake!(crate::futures::gps_tx_wake);
-        }
-    });
 }
 
 fn set_rtc(time: Time) {
@@ -266,7 +206,6 @@ pub async fn poll_for_sentences() -> ! {
     let mut got_fix = false;
 
     loop {
-        let mut last_time = None;
         for (i, c) in rx_buf[start..bytes].iter().enumerate() {
             if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
                 searching_fix_color = !searching_fix_color;
@@ -291,7 +230,6 @@ pub async fn poll_for_sentences() -> ! {
                     }
                 }
                 cortex_m::interrupt::free(|cs| {
-                    hprintln!("Parse result: {:?}", parse_result);
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
                     let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
                     gps_sentence_buffer
@@ -340,12 +278,12 @@ pub async fn init_teseo() {
 pub enum ConfigBlock {
     ConfigCurrent = 1,
     ConfigDefault = 2,
-    ConfigNVMStored = 3
+    ConfigNVMStored = 3,
 }
 pub enum Mode {
     Overwrite = 0,
     OrMask = 1,
-    AndMask = 2
+    AndMask = 2,
 }
 
 pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode: Option<Mode>) {
@@ -395,6 +333,20 @@ fn DMA1_STREAM5() {
             RX_BYTES_READ.store(rx_buf.len(), Ordering::SeqCst);
             RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
         }
+    });
+}
+
+/// Used for 1PPS
+#[interrupt]
+fn EXTI15_10() {
+    cortex_m::interrupt::free(|cs| {
+        let mut rtc_ref = RTC.borrow(cs).borrow_mut();
+        let rtc = rtc_ref.as_mut().unwrap();
+        let time = rtc.get_datetime().time();
+        rtc.set_time(
+            &time::Time::from_hms_milli(time.hour(), time.minute(), time.second(), 0).unwrap(),
+        )
+        .unwrap();
     });
 }
 
@@ -465,7 +417,6 @@ fn USART2() {
 
         interrupt_wake!(crate::futures::gps_rx_wake);
         RX_BYTES_READ.store(bytes as usize, Ordering::SeqCst);
-
         RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
         transfer_ref.as_mut().unwrap().start(|_| {});
     });
@@ -475,30 +426,18 @@ async fn gps_tx_complete() {
     crate::futures::gps_tx_wake::future().await;
 }
 
-async fn gps_rx_complete() {
-    crate::futures::gps_rx_wake::future().await;
-}
-
-pub async fn tx(tx_buf: &[u8]) {
-    let mut fut = crate::futures::gps_tx_wake::future();
-    let _ = poll!(&mut fut);
+pub async fn tx(buf: &[u8]) {
     cortex_m::interrupt::free(|cs| {
-        let mut tx_transfer_ref = TX_TRANSFER.borrow(cs).borrow_mut();
-        let tx_transfer = tx_transfer_ref.as_mut().unwrap();
-        unsafe {
-            tx_transfer
-                .next_transfer_with(|buf, _| {
-                    buf[..tx_buf.len()].copy_from_slice(&tx_buf);
-                    (&mut buf[..tx_buf.len()], ())
-                })
-                .unwrap();
-        }
+        let mut tx_ref = TX.borrow(cs).borrow_mut();
+        let tx = tx_ref.as_mut().unwrap();
+        buf.iter().for_each(|byte| {
+            nb::block!(tx.write(*byte)).unwrap();
+        });
     });
-    fut.await;
 }
 
 pub async fn rx(rx_buf: &mut [u8]) -> usize {
-    gps_rx_complete().await;
+    crate::futures::gps_rx_wake::future().await;
     cortex_m::interrupt::free(|cs| {
         let mut buf_ref = RX_BUFFER.borrow(cs).borrow_mut();
         let buf = buf_ref.as_mut().unwrap();
