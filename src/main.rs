@@ -4,7 +4,6 @@
 #![no_main]
 #![no_std]
 
-use crate::mission::Role;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
@@ -22,6 +21,7 @@ use bmi323::GyroscopeRange;
 use bmi323::OutputDataRate;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
+use storage_types::Role;
 use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt::Write;
@@ -119,7 +119,7 @@ const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    if let (Some(mut dp), Some(cp)) = (
+    if let (Some(mut dp), Some(mut cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {

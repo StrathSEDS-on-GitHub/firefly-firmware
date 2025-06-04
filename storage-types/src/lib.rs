@@ -4,9 +4,42 @@ use core::str::FromStr;
 
 use heapless::String;
 use sequential_storage::map::Key;
+use serde::{Deserialize, Serialize};
+
+pub mod logs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigKey(String<32>);
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum PyroPin {
+    One,
+    Two,
+    Both
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum Role {
+    Cansat,
+    Avionics,
+    CansatBackup,
+    GroundMain,
+    GroundBackup,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum MissionStage {
+    Disarmed,
+    Armed,
+    Ascent,
+    DescentDrogue,
+    DescentMain,
+    Landed,
+}
+
 
 pub enum ValueType {
     U64,

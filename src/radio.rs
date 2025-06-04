@@ -8,18 +8,12 @@ use core::sync::atomic::Ordering;
 
 use crate::mission;
 use crate::mission::role;
-use crate::mission::EpochTime;
-use crate::mission::MissionStage;
-use crate::mission::PyroPin;
-use crate::mission::Role;
 use crate::neopixel;
 use crate::Dio1PinRefMut;
 use cortex_m::interrupt::Mutex;
 use dummy_pin::DummyPin;
 use embedded_hal::spi::SpiDevice;
 use heapless::Deque;
-use serde::Deserialize;
-use serde::Serialize;
 use stm32f4xx_hal::gpio::Output;
 use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
@@ -28,6 +22,9 @@ use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::timer::SysDelay;
+use storage_types::logs;
+use storage_types::logs::Message;
+use storage_types::Role;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
 use sx126x::op::PacketStatus;
@@ -77,55 +74,6 @@ fn EXTI4() {
 pub const BNO_BROADCAST_BUF_LEN    : usize = 8;
 pub const BNO_BROADCAST_DECIMATION : usize = 4;
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub enum Message {
-    GpsBroadCast {
-        counter: u16,
-        stage: MissionStage,
-        role: Role,
-        time_of_first_packet: EpochTime,
-        latitudes: [f32; 10],
-        longitudes: [f32; 10],
-        altitudes: [f32; 10],
-    },
-    PressureTempBroadCast {
-        counter: u16,
-        stage: MissionStage,
-        role: Role,
-        time_of_first_packet: EpochTime,
-        pressures: [f32; 8],
-        temperatures: [f32; 8],
-    },
-    IMUBroadcast {
-        counter: u16,
-        stage: MissionStage,
-        role: Role,
-        time_of_first_packet: EpochTime,
-        accels: [[f32; 3]; 8],
-        gyros: [[f32; 3]; 8],
-    },
-    BNOBroadcast {
-        counter: u16,
-        stage: MissionStage,
-        role: Role,
-        time_of_first_packet: EpochTime,
-        accels: [[f32; 3]; BNO_BROADCAST_BUF_LEN],
-        rots: [[f32; 4]; BNO_BROADCAST_BUF_LEN],
-    },
-    Strain {
-        counter: u16,
-        stage: MissionStage,
-        role: Role,
-        time_of_first_packet: EpochTime,
-        strain: [i32; 16],
-    },
-    Arm(Role, u8),
-    Disarm(Role, u8),
-    TestPyro(u8, Role, PyroPin, u32),
-    SetStage(Role, MissionStage, u8),
-    SpeedSound { counter: u16, detected_offset: u16 },
-}
-
 pub fn next_counter() -> u16 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
@@ -172,9 +120,9 @@ impl RadioDevice<'static> {
     }
 }
 
-static QUEUED_PACKETS: Mutex<RefCell<Deque<Message, 32>>> = Mutex::new(RefCell::new(Deque::new()));
+static QUEUED_PACKETS: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 32>>> = Mutex::new(RefCell::new(Deque::new()));
 
-pub fn queue_packet(msg: Message) {
+pub fn queue_packet(msg: Message<logs::RadioCtxt>) {
     cortex_m::interrupt::free(|cs| {
         let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
         if let Err(msg) = queued_packets.push_back(msg) {
@@ -212,7 +160,7 @@ const TDM_CONFIG_BACKUP: [(RadioState, u32); 1] = [
     (RadioState::Tx(Role::CansatBackup), 3000),
 ];
 
-pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message, 64>>> =
+pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 64>>> =
     Mutex::new(RefCell::new(Deque::new()));
 
 #[interrupt]
@@ -264,7 +212,7 @@ fn receive_message() {
             )
             .unwrap();
 
-        let message = postcard::from_bytes::<Message>(&buf[..size]).ok();
+        let message = postcard::from_bytes::<Message<logs::RadioCtxt>>(&buf[..size]).ok();
         if let Some(message) = message {
             let mut msg_queue = RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut();
             msg_queue

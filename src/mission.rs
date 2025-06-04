@@ -6,21 +6,18 @@ use crate::{
 };
 use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
-use core::{cell::Cell, convert::Infallible, fmt::Write};
+use sequential_storage::queue;
+use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
+use derive_more::{From, Into};
 use embassy_futures::block_on;
-use embedded_hal::{
-    delay::DelayNs,
-    digital::{InputPin, OutputPin},
-    i2c::I2c,
-    spi::SpiDevice,
-};
+use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
 use embedded_hal_async::delay::DelayNs as _;
 use fugit::ExtU32;
 use futures::join;
-use heapless::Vec;
+use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
-use nmea0183::{GGA, ParseResult};
+use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     ClearFlags,
@@ -29,16 +26,19 @@ use stm32f4xx_hal::{
     pac::{ADC1, TIM12},
     timer::{self, Counter, Instance},
 };
-use storage_types::{CONFIG_KEYS, ConfigKey, ValueType};
+use storage_types::{
+    CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
+    logs::{GPSSample, IMUSample, LocalCtxt, Message, MessageType, PressureTempSample, RadioCtxt},
+};
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
     Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
-    altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames, read_altimeter_fifo},
+    altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames},
     futures::{NbFuture, YieldFuture},
     gps,
-    radio::{self, Message, RECEIVED_MESSAGE_QUEUE},
     logs::get_logger,
+    radio::{self, RECEIVED_MESSAGE_QUEUE},
     usb_logger::get_serial,
 };
 
@@ -49,27 +49,7 @@ pub static mut PYRO_ENABLE_PIN: Option<PyroEnable> = None;
 pub static mut PYRO_FIRE2: Option<PyroFire2> = None;
 pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
 
-#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
-pub enum Role {
-    Cansat,
-    Avionics,
-    CansatBackup,
-    GroundMain,
-    GroundBackup,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum MissionStage {
-    Disarmed(u16),
-    Armed(u16),
-    Ascent(u16),
-    DescentDrogue(u16),
-    DescentMain(u16),
-    Landed(u16),
-}
-
-static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed(0)));
+static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed));
 
 pub fn role() -> Role {
     // SAFETY: Role is mutated once by main prior to mission begin.
@@ -78,27 +58,16 @@ pub fn role() -> Role {
 
 pub fn is_launched() -> bool {
     match current_stage() {
-        MissionStage::Disarmed(_) => false,
-        MissionStage::Armed(_) => false,
+        MissionStage::Disarmed => false,
+        MissionStage::Armed => false,
         _ => true,
     }
 }
 
-fn modify_pyro_state(state: u16) {
-    cortex_m::interrupt::free(|cs| {
-        let stage = STAGE.borrow(cs).get();
-        STAGE.borrow(cs).set(match stage {
-            MissionStage::Disarmed(_) => MissionStage::Disarmed(state),
-            MissionStage::Armed(_) => MissionStage::Armed(state),
-            MissionStage::Ascent(_) => MissionStage::Ascent(state),
-            MissionStage::DescentDrogue(_) => MissionStage::DescentDrogue(state),
-            MissionStage::DescentMain(_) => MissionStage::DescentMain(state),
-            MissionStage::Landed(_) => MissionStage::Landed(state),
-        });
-    });
-}
-
-pub fn update_pyro_state() {
+pub async fn update_pyro_state() {
+    // SAFETY: This is the only place we use these static muts
+    //         and as we are not async, we can guarantee that
+    //         we are not accessing them concurrently.
     let mv = unsafe {
         // Need to disarm pyro to read voltage correctly
         let pyro_enable = PYRO_ENABLE_PIN.as_mut().unwrap();
@@ -114,9 +83,9 @@ pub fn update_pyro_state() {
         adc.sample_to_millivolts(sample)
     };
 
-    modify_pyro_state(mv);
+    // todo!("set pyro state");
     // FIXME: unfortunate. we should be able to submit this to the executor to avoid blocking.
-    block_on(get_logger().log(format_args!("pyro,{}", mv)));
+    block_on(get_logger().log(MessageType::new_pyro(mv).into_message(current_rtc_time())));
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
@@ -166,11 +135,11 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
         }
 
         match stage {
-            MissionStage::Disarmed(s) => {
+            MissionStage::Disarmed => {
                 /* Nothing to update, just wait for arm command */
-                cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Disarmed(s)));
+                cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Disarmed));
             }
-            MissionStage::Armed(s) => {
+            MissionStage::Armed => {
                 // If we're above 10m, we must be ascending
                 if altitudes
                     .iter()
@@ -179,10 +148,10 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                     > 12
                 {
                     get_logger().log_str("stage,detected ascent!").await;
-                    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Ascent(s)));
+                    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Ascent));
                 }
             }
-            MissionStage::Ascent(s) => {
+            MissionStage::Ascent => {
                 // If our velocity is negative, we must be descending
                 let velocities = altitudes.windows(2).map(|w| w[1] - w[0]);
 
@@ -194,11 +163,11 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                         fire_pyro(PyroPin::One, 1000).await;
                     }
                     cortex_m::interrupt::free(|cs| {
-                        STAGE.borrow(cs).set(MissionStage::DescentDrogue(s))
+                        STAGE.borrow(cs).set(MissionStage::DescentDrogue)
                     });
                 }
             }
-            MissionStage::DescentDrogue(s) => {
+            MissionStage::DescentDrogue => {
                 // At 300m, fire main
                 if altitudes
                     .iter()
@@ -212,12 +181,10 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::Two, 1000).await;
                     }
-                    cortex_m::interrupt::free(|cs| {
-                        STAGE.borrow(cs).set(MissionStage::DescentMain(s))
-                    });
+                    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::DescentMain));
                 }
             }
-            MissionStage::DescentMain(s) => {
+            MissionStage::DescentMain => {
                 // If our average velocity is less than 1m/s, we must have landed
                 let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
                 if velocities_abs.clone().filter(|x| *x < 0.02).count() > 12 {
@@ -229,21 +196,20 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                         fire_pyro(PyroPin::Two, 7000).await;
                     }
 
-                    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Landed(s)));
+                    cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Landed));
                 }
             }
-            MissionStage::Landed(_) => {
+            MissionStage::Landed => {
                 // Nothing to do
             }
         };
 
-        update_pyro_state();
+        update_pyro_state().await;
         YieldFuture::new().await;
     }
 }
 
 pub fn current_stage() -> MissionStage {
-    update_pyro_state();
     cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get())
 }
 
@@ -256,6 +222,14 @@ fn parse_role(s: &[u8]) -> Option<Role> {
         Some(Role::GroundMain)
     } else {
         None
+    }
+}
+
+pub fn radio_ctxt() -> RadioCtxt {
+    RadioCtxt {
+        source: role(),
+        stage: current_stage(),
+        counter: radio::next_counter(),
     }
 }
 
@@ -273,16 +247,16 @@ pub async fn usb_handler() -> ! {
             match parse_role(split[1]) {
                 Some(role) => {
                     cortex_m::interrupt::free(|cs| {
-                        STAGE.borrow(cs).set(MissionStage::Disarmed(0));
+                        STAGE.borrow(cs).set(MissionStage::Disarmed);
                     });
-                    radio::queue_packet(Message::Disarm(role, 0));
+                    radio::queue_packet(MessageType::new_disarm(role).into_message(radio_ctxt()));
                 }
                 None => writeln!(get_serial(), "Invalid disarm role").unwrap(),
             }
         } else if split.len() > 1 && split[0].starts_with(b"arm") {
             match parse_role(split[1]) {
                 Some(role) => {
-                    radio::queue_packet(Message::Arm(role, 0));
+                    radio::queue_packet(MessageType::new_arm(role).into_message(radio_ctxt()));
                     writeln!(get_serial(), "Sent arm packet!").unwrap();
                 }
                 None => writeln!(get_serial(), "Invalid arm role").unwrap(),
@@ -300,24 +274,26 @@ pub async fn usb_handler() -> ! {
                     continue;
                 };
 
-                radio::queue_packet(Message::TestPyro(
-                    0,
-                    role,
-                    pin,
-                    core::str::from_utf8(split[3])
-                        .unwrap()
-                        .trim()
-                        .parse()
-                        .unwrap(),
-                ));
+                radio::queue_packet(
+                    MessageType::new_test_pyro(
+                        role,
+                        pin,
+                        core::str::from_utf8(split[3])
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap(),
+                    )
+                    .into_message(radio_ctxt()),
+                );
             } else {
                 writeln!(get_serial(), "Invalid test-pyro role").unwrap();
             }
         } else if split.len() > 1 && split[0].starts_with(b"launch") {
             let new_state = if split[1].starts_with(b"true") {
-                MissionStage::Ascent(0)
+                MissionStage::Ascent
             } else {
-                MissionStage::Disarmed(0)
+                MissionStage::Disarmed
             };
 
             cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(new_state));
@@ -328,19 +304,19 @@ pub async fn usb_handler() -> ! {
             };
 
             let stage = if split[2].starts_with(b"ascent") {
-                MissionStage::Ascent(0)
+                MissionStage::Ascent
             } else if split[1].starts_with(b"descent-drogue") {
-                MissionStage::DescentDrogue(0)
+                MissionStage::DescentDrogue
             } else if split[2].starts_with(b"descent-main") {
-                MissionStage::DescentMain(0)
+                MissionStage::DescentMain
             } else if split[2].starts_with(b"landed") {
-                MissionStage::Landed(0)
+                MissionStage::Landed
             } else {
                 writeln!(get_serial(), "Invalid stage").unwrap();
                 continue;
             };
 
-            radio::queue_packet(Message::SetStage(role, stage, 0));
+            radio::queue_packet(MessageType::new_set_stage(role, stage).into_message(radio_ctxt()));
         } else if split[0].starts_with(b"ping") {
             writeln!(get_serial(), "pong").unwrap();
         } else if split[0].starts_with(b"uarm") {
@@ -381,10 +357,118 @@ pub async fn usb_handler() -> ! {
                 writeln!(get_serial(), "err, {}", msg).unwrap();
             }
             get_serial().log("ok\n").await;
+        } else if split.len() >= 1 && split[0].starts_with(b"free") {
+            let free = get_logger().space_left().await;
+            if let Ok(free) = free {
+                writeln!(get_serial(), "free,{:.02}%", free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0).unwrap();
+            } else {
+                writeln!(get_serial(), "err, {}", free.unwrap_err()).unwrap();
+        }
         } else if split.len() >= 1 && split[0].starts_with(b"logs") {
             if let Err(msg) = get_logger()
-                .get_logs(async |s| {
-                    get_serial().log(s).await;
+                .get_logs(async |s| match &s.message {
+                    MessageType::Log { timestamp, message } => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local log] {message}",
+                            Into::<String<12>>::into(EpochTime(*timestamp))
+                        )
+                        .unwrap();
+                    }
+                    MessageType::Gps(gps_compressed) => {
+                        for sample in gps_compressed.decompress() {
+                            if let Ok(GPSSample {
+                                timestamp,
+                                latitude,
+                                longitude,
+                                altitude,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [Local gps] {latitude},{longitude},{altitude}",
+                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::PressureTemp(pressure_temp_compressed) => {
+                        for sample in pressure_temp_compressed.decompress() {
+                            if let Ok(PressureTempSample {
+                                timestamp,
+                                pressure,
+                                temperature,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [Local prt] {pressure},{temperature}",
+                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::Imu(imu_compressed) => {
+                        for sample in imu_compressed.decompress() {
+                            if let Ok(IMUSample {
+                                acceleration,
+                                angular_velocity,
+                                timestamp,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [Local imu] {:?},{:?}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    acceleration,
+                                    angular_velocity
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::Arm(role) => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local log] Arm command from {role:?}",
+                            current_rtc_time::<String<12>>()
+                        )
+                        .unwrap();
+                    }
+                    MessageType::Disarm(role) => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local log] Disarm command from {role:?}",
+                            current_rtc_time::<String<12>>()
+                        )
+                        .unwrap();
+                    }
+                    MessageType::TestPyro(role, pyro_pin, _) => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local log] Test pyro command to {role:?} on pin {pyro_pin:?}",
+                            current_rtc_time::<String<12>>()
+                        )
+                        .unwrap();
+                    }
+                    MessageType::SetStage(role, mission_stage) => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local log] Set stage command to {role:?} to {mission_stage:?}",
+                            current_rtc_time::<String<12>>()
+                        )
+                        .unwrap();
+                    }
+                    MessageType::Pyro(mv) => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [Local pyro] {mv}",
+                            current_rtc_time::<String<12>>()
+                        )
+                        .unwrap();
+                    }
                 })
                 .await
             {
@@ -404,18 +488,48 @@ async fn gps_handler() -> ! {
 }
 
 pub type RTCTime = (u8, u8, u8, u16);
-fn current_rtc_time() -> RTCTime {
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, From, Into)]
+#[repr(transparent)]
+pub struct EpochTime(u32);
+
+impl From<EpochTime> for String<12> {
+    fn from(value: EpochTime) -> Self {
+        let mut s = String::new();
+        let millis = value.0 % 1000;
+        let seconds = (value.0 / 1000) % 60;
+        let minutes = (value.0 / 60_000) % 60;
+        let hours = (value.0 / 3_600_000) % 24;
+
+        write!(s, "{hours:02}:{minutes:02}:{seconds:02}.{millis:03}").unwrap();
+        s
+    }
+}
+
+pub fn current_rtc_time<T: From<EpochTime>>() -> T {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
         let date_time = rtc.get_datetime();
-        date_time.as_hms_milli()
+        EpochTime::from(date_time.as_hms_milli()).into()
     })
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
-#[repr(transparent)]
-pub struct EpochTime(u32);
+impl From<EpochTime> for LocalCtxt {
+    fn from(value: EpochTime) -> Self {
+        LocalCtxt { timestamp: value.0 }
+    }
+}
+
+impl From<Time> for EpochTime {
+    fn from(time: Time) -> Self {
+        EpochTime(
+            time.hours as u32 * 3_600_000
+                + time.minutes as u32 * 60_000
+                + time.seconds as u32 * 1000
+                + ((time.seconds % 1.0) * 1000.0) as u32,
+        )
+    }
+}
 
 impl From<RTCTime> for EpochTime {
     fn from(time: RTCTime) -> Self {
@@ -430,48 +544,40 @@ impl From<RTCTime> for EpochTime {
 
 async fn gps_broadcast() -> ! {
     loop {
-        let mut latitudes = [0.0; 10];
-        let mut longitudes = [0.0; 10];
-        let mut altitudes = [0.0; 10];
+        let mut samples = [GPSSample::default(); 80];
 
-        let mut i = 0;
-        let mut start_time = None;
-        while i < 10 * 2 {
-            if i == 0 {
-                let time = current_rtc_time();
-                start_time = Some(time.into());
-            }
+        for sample in samples.iter_mut() {
             let fix = gps::next_sentence().await;
-            if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
-                if i % 2 == 0 {
-                    // Send every other fix (5Hz).
-                    latitudes[i / 2] = gga.latitude.as_f64() as f32;
-                    longitudes[i / 2] = gga.longitude.as_f64() as f32;
-                    altitudes[i / 2] = gga.altitude.meters;
-                }
-
-                get_logger()
-                    .log(format_args!(
-                        "gps,{},{},{}",
-                        gga.latitude.as_f64(),
-                        gga.longitude.as_f64(),
-                        gga.altitude.meters
-                    ))
-                    .await;
-                i += 1;
+            if let ParseResult::GGA(Some(GGA {
+                fix: Some(gga),
+                time,
+                ..
+            })) = fix
+            {
+                *sample = GPSSample {
+                    timestamp: EpochTime::from(time).0,
+                    latitude: gga.latitude.as_f64() as f32,
+                    longitude: gga.longitude.as_f64() as f32,
+                    altitude: gga.altitude.meters as f32,
+                };
             }
         }
-        let message = Message::GpsBroadCast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: start_time.unwrap(),
-            latitudes,
-            longitudes,
-            altitudes,
-        };
+        let radio_msg = MessageType::new_gps(samples.iter().cloned().enumerate().filter_map(
+            |(i, sample)| {
+                if i % 2 == 0 { Some(sample) } else { None }
+            },
+        ))
+        .into_message(radio_ctxt());
 
-        radio::queue_packet(message);
+        get_logger()
+            .log(
+                MessageType::new_gps(samples)
+                    .clone()
+                    .into_message(current_rtc_time::<LocalCtxt>()),
+            )
+            .await;
+
+        radio::queue_packet(radio_msg)
     }
 }
 
@@ -485,254 +591,176 @@ async fn pressure_temp_handler(
     timer.start(550.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     loop {
-        let mut pressures = [0.0; 8];
-        let mut temperatures = [0.0; 8];
+        const NTH: usize = 4;
+        let mut samples = [PressureTempSample::default(); 40 * NTH];
 
-        let start_time = current_rtc_time().into();
-
-        let mut i = 0;
-
-        let nth = if role() == Role::CansatBackup { 8 } else { 4 };
-
-        while i < nth * 8 {
-            let frames;
-            (frames, sensor) = read_altimeter_fifo(sensor).await;
+        for sample in samples.iter_mut() {
+            let frames = sensor.read_fifo().unwrap();
             for frame in &frames {
                 let pressure = frame.pressure;
                 let temperature = frame.temperature;
 
-                // Send every fourth frame (10Hz).
-                if i % nth == 0 && i < nth * 8 {
-                    pressures[i / nth] = pressure;
-                    temperatures[i / nth] = temperature;
-                }
-
-                get_logger()
-                    .log(format_args!("pressure,{},{}", pressure, temperature))
-                    .await;
-
-                i += 1;
+                *sample = PressureTempSample {
+                    timestamp: current_rtc_time(),
+                    pressure,
+                    temperature,
+                };
             }
-            pressure_sender.send(frames.into()).await.unwrap();
+            // pressure_sender.send(frames.into()).await.unwrap();
             timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
             // FIXME: Use interrupt to wait for FIFO to fill up.
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
 
-        let message = Message::PressureTempBroadCast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: start_time,
-            pressures,
-            temperatures,
-        };
+        // _logger().log(format_args!("bmp,{:?}", samples)).await;
 
-        // writeln!(get_serial(), "Sending: {:?}", message).unwrap();
+        let radio_msg = MessageType::new_pressure_temp(samples.into_iter().enumerate().filter_map(
+            |(i, sample)| {
+                if i % NTH == 0 { Some(sample) } else { None }
+            },
+        ))
+        .into_message(radio_ctxt());
 
-        radio::queue_packet(message);
+        get_logger()
+            .log(
+                MessageType::new_pressure_temp(samples)
+                    .clone()
+                    .into_message(current_rtc_time()),
+            )
+            .await;
+        radio::queue_packet(radio_msg);
     }
 }
 
-async fn strain_handler(
-    mut ads_dout: impl InputPin,
-    mut ads_sclk: impl OutputPin,
-    mut ads_delay: impl DelayNs,
-) {
-    loop {
-        let mut buffer = [0i32; 16];
-
-        for i in 0..16 {
-            while ads_dout.is_high().unwrap() {
-                YieldFuture::new().await;
-            }
-
-            let mut data = 0u32;
-            for i in 0..24usize {
-                ads_sclk.set_high().unwrap();
-                ads_delay.delay_us(1u32);
-                data |= (ads_dout.is_high().unwrap() as u32) << (23 - i);
-                ads_sclk.set_low().unwrap();
-                ads_delay.delay_us(1u32);
-            }
-
-            // Sign extend the 24-bit value to 32 bits
-            // https://stackoverflow.com/a/42536138
-            let sx_24_32 = |i: u32| {
-                let m = 1 << 23;
-                return ((i ^ m).wrapping_sub(m)) as i32;
-            };
-
-            let data = sx_24_32(data);
-            buffer[i] = data;
-        }
-
-        get_logger().log(format_args!("strain,{:?}", buffer)).await;
-
-        let message = Message::Strain {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: current_rtc_time().into(),
-            strain: buffer,
-        };
-
-        radio::queue_packet(message);
-    }
-}
 async fn handle_incoming_packets() -> ! {
     loop {
         if let Some(packet) = cortex_m::interrupt::free(|cs| {
             RECEIVED_MESSAGE_QUEUE.borrow(cs).borrow_mut().pop_front()
         }) {
+            let RadioCtxt {
+                source,
+                counter: _counter,
+                stage: _stage,
+            } = packet.context;
             match role() {
-                Role::GroundMain | Role::GroundBackup => match packet {
-                    Message::GpsBroadCast {
-                        counter,
-                        stage,
-                        role,
-                        time_of_first_packet,
-                        latitudes,
-                        longitudes,
-                        altitudes,
-                    } => {
+                Role::GroundMain | Role::GroundBackup => match packet.message {
+                    MessageType::Log { timestamp, message } => {
                         writeln!(
                             get_serial(),
-                            "gps,{:?},{:?},{},{:?},{:?},{:?},{:?}",
-                            role,
-                            stage,
-                            counter,
-                            time_of_first_packet,
-                            latitudes,
-                            longitudes,
-                            altitudes
+                            "[{}] [{source:?} log] {message}",
+                            Into::<String<12>>::into(EpochTime(timestamp))
                         )
                         .unwrap();
-
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
-                    Message::PressureTempBroadCast {
-                        counter,
-                        stage,
-                        role,
-                        time_of_first_packet,
-                        pressures,
-                        temperatures,
-                    } => {
+                    MessageType::Gps(bit_buffer) => {
+                        for sample in bit_buffer.decompress() {
+                            if let Ok(GPSSample {
+                                timestamp,
+                                latitude,
+                                longitude,
+                                altitude,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [{source:?} gps] {latitude},{longitude},{altitude}",
+                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::PressureTemp(bit_buffer) => {
+                        for sample in bit_buffer.decompress() {
+                            if let Ok(PressureTempSample {
+                                timestamp,
+                                pressure,
+                                temperature,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [{source:?} prt] {pressure},{temperature}",
+                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::Imu(bit_buffer) => {
+                        for sample in bit_buffer.decompress() {
+                            if let Ok(IMUSample {
+                                acceleration,
+                                angular_velocity,
+                                timestamp,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [{source:?} imu] {:?},{:?}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    acceleration,
+                                    angular_velocity
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
+                    MessageType::Arm(_) => {
                         writeln!(
                             get_serial(),
-                            "pressuretemp,{:?},{:?},{},{:?},{:?},{:?}",
-                            role,
-                            stage,
-                            counter,
-                            time_of_first_packet,
-                            pressures,
-                            temperatures
+                            "[{}] [{:?} log] Out of turn arm command from {source:?}",
+                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                            role()
                         )
                         .unwrap();
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
-                    Message::Arm(..) => {}
-                    Message::Disarm(..) => {}
-                    Message::TestPyro(..) => {}
-                    Message::SetStage(..) => {}
-                    Message::IMUBroadcast {
-                        counter,
-                        stage,
-                        role,
-                        time_of_first_packet,
-                        accels,
-                        gyros,
-                    } => {
+                    MessageType::Disarm(role) => {
                         writeln!(
                             get_serial(),
-                            "imu,{:?},{:?},{},{:?},{:?},{:?}",
-                            role,
-                            stage,
-                            counter,
-                            time_of_first_packet,
-                            accels,
-                            gyros
+                            "[{}] [{:?} log] Out of turn disarm command from {source:?}",
+                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                            role
                         )
                         .unwrap();
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
                     }
-                    Message::Strain {
-                        counter,
-                        stage,
-                        role,
-                        time_of_first_packet,
-                        strain,
-                    } => {
+                    MessageType::TestPyro(role, pyro_pin, _) => {
+                        writeln!(
+                                            get_serial(),
+                                            "[{}] [{:?} log] Out of turn test pyro command from {source:?} on pin {pyro_pin:?}",
+                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                                            role
+                                        )
+                                        .unwrap();
+                    }
+                    MessageType::SetStage(role, mission_stage) => {
+                        writeln!(
+                                            get_serial(),
+                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
+                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                                            role
+                                        )
+                                        .unwrap();
+                    }
+                    MessageType::Pyro(mv) => {
                         writeln!(
                             get_serial(),
-                            "strain,{:?},{:?},{},{:?},{:?}",
-                            role,
-                            stage,
-                            counter,
-                            time_of_first_packet,
-                            strain
+                            "[{}] [{source:?} pyro] {mv}",
+                            current_rtc_time::<String<12>>()
                         )
                         .unwrap();
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
-                    }
-                    Message::BNOBroadcast {
-                        counter,
-                        stage,
-                        role,
-                        time_of_first_packet,
-                        accels,
-                        rots,
-                    } => {
-                        writeln!(
-                            get_serial(),
-                            "bno,{:?},{:?},{},{:?},{:?},{:?}",
-                            role,
-                            stage,
-                            counter,
-                            time_of_first_packet,
-                            accels,
-                            rots
-                        )
-                        .unwrap();
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{:?},{}", role, rssi).unwrap();
-                    }
-                    Message::SpeedSound {
-                        counter,
-                        detected_offset,
-                    } => {
-                        writeln!(get_serial(), "sound,{},{:?}", counter, detected_offset).unwrap();
-                        let rssi = radio::get_packet_status().rssi_pkt();
-
-                        writeln!(get_serial(), "rssi,{}", rssi).unwrap();
                     }
                 },
-                _ => match packet {
-                    Message::Disarm(r, _) if r == role() => {
-                        disarm().await;
-                    }
-                    Message::Arm(r, _) if r == role() => {
+                _ => match packet.message {
+                    MessageType::Arm(r) if role() == r => {
                         arm().await;
                     }
-                    Message::TestPyro(_, r, pin, duration) if r == role() => {
-                        fire_pyro(pin, duration).await;
+                    MessageType::Disarm(r) if role() == r => {
+                        disarm().await;
                     }
-                    Message::SetStage(r, stage, _) if r == role() => {
-                        cortex_m::interrupt::free(|cs| {
-                            STAGE.borrow(cs).replace(stage);
-                            update_pyro_state();
-                        });
+                    MessageType::TestPyro(r, pyro_pin, duration) if r == role() => {
+                        fire_pyro(pyro_pin, duration).await;
                     }
                     _ => {}
                 },
@@ -741,12 +769,6 @@ async fn handle_incoming_packets() -> ! {
 
         YieldFuture::new().await;
     }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PyroPin {
-    One,
-    Two,
-    Both,
 }
 
 pub async fn fire_pyro(pin: PyroPin, duration: u32) {
@@ -776,23 +798,23 @@ pub async fn fire_pyro(pin: PyroPin, duration: u32) {
     while time > 0 {
         buzz.set_high();
         timer.start(200u32.millis()).unwrap();
-        nb::block!(timer.wait()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
         buzz.set_low();
         timer.start((time as u32).millis()).unwrap();
-        nb::block!(timer.wait()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
         time = (time as f32 * 0.8 - 5.0) as i32;
     }
 
     buzz.set_high();
 
     timer.start(500u32.millis()).unwrap();
-    nb::block!(timer.wait()).unwrap();
+    NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low();
     for fire in &mut pyro_fires {
         fire.set_high().unwrap();
     }
     timer.start(duration.millis()).unwrap();
-    nb::block!(timer.wait()).unwrap();
+    NbFuture::new(|| timer.wait()).await.unwrap();
     for fire in &mut pyro_fires {
         fire.set_low().unwrap();
     }
@@ -805,9 +827,9 @@ pub async fn disarm() {
     buzz.set_high();
     pyro_enable.set_low();
     cortex_m::interrupt::free(|cs| {
-        STAGE.borrow(cs).replace(MissionStage::Disarmed(0));
-        update_pyro_state();
+        STAGE.borrow(cs).replace(MissionStage::Disarmed);
     });
+    update_pyro_state().await;
 
     timer.clear_flags(timer::Flag::Update);
     timer.start(300u32.millis()).unwrap();
@@ -822,28 +844,60 @@ pub async fn arm() {
     buzz.set_high();
     pyro_enable.set_high();
     cortex_m::interrupt::free(|cs| {
-        STAGE.borrow(cs).replace(MissionStage::Armed(0));
-        update_pyro_state();
+        STAGE.borrow(cs).replace(MissionStage::Armed);
     });
+    update_pyro_state().await;
     timer.clear_flags(timer::Flag::Update);
     timer.start(300u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
     buzz.set_low()
 }
 
-async fn buzzer_controller() -> ! {
-    // Buzz 1s on startup
+pub async fn buzz_number(number: u32) {
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-    buzz.set_high();
-    timer.start(1000u32.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
-    buzz.set_low();
 
-    while !matches!(
-        cortex_m::interrupt::free(|cs| STAGE.borrow(cs).get()),
-        MissionStage::Landed(_)
-    ) {
+    let short = 100u32.millis();
+    let long = 1000u32.millis();
+
+    let mut number = number;
+    let digits = core::iter::from_fn(|| {
+        if number == 0 {
+            None
+        } else {
+            let digit = number % 10;
+            number /= 10;
+            Some(digit as u8)
+        }
+    })
+    .collect::<Vec<_, 10>>(); // 10 = log10(u32::MAX) + 1 (I wish it were a const fn)
+
+    for &digit in digits.iter().rev() {
+        for _ in 0..digit {
+            buzz.set_high();
+            timer.start(short).unwrap();
+            NbFuture::new(|| timer.wait()).await.unwrap();
+            buzz.set_low();
+            timer.start(short).unwrap();
+            NbFuture::new(|| timer.wait()).await.unwrap();
+        }
+        timer.start(long).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
+    }
+}
+
+async fn buzzer_controller() -> ! {
+    // Buzz 1s on startup
+    {
+        let buzz = unsafe { BUZZER.as_mut().unwrap() };
+        let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+        buzz.set_high();
+        timer.start(1000u32.millis()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
+        buzz.set_low();
+    }
+
+    while !matches!(current_stage(), MissionStage::Landed) {
         YieldFuture::new().await;
     }
 
@@ -865,42 +919,57 @@ async fn imu_handler(
     mut imu: IcmImu<impl I2c, NoDmp>,
     mut imu_timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
-    let mut acc_buffer = [[0.0f32; 3]; 8];
-    let mut gyro_buffer = [[0.0f32; 3]; 8];
+    let mut samples = [IMUSample::default(); 20];
 
     loop {
-        // SAFETY: We're in a loop, so we're guaranteed to get a value.
-        let mut start_time = None;
-
-        for (acc, gyro) in acc_buffer.iter_mut().zip(gyro_buffer.iter_mut()) {
+        for sample in samples.iter_mut() {
             let (acc_data, gyro_data) = loop {
                 if let Ok(x) = imu.read_acc().and_then(|a| imu.read_gyro().map(|g| (a, g))) {
-                    start_time.get_or_insert(current_rtc_time().into());
-                    get_logger()
-                        .log(format_args!("imu,{:?},{:?}", x.0, x.1))
-                        .await;
                     break x;
                 };
                 YieldFuture::new().await;
             };
 
-            *acc = acc_data;
-            *gyro = gyro_data;
+            *sample = IMUSample {
+                timestamp: current_rtc_time(),
+                acceleration: acc_data,
+                angular_velocity: gyro_data,
+            };
             imu_timer.delay_ms(10).await;
         }
 
-        let message = Message::IMUBroadcast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: start_time.unwrap(),
-            accels: acc_buffer,
-            gyros: gyro_buffer,
-        };
+        let message = MessageType::new_imu(samples.into_iter());
         if role() == Role::Avionics {
-            radio::queue_packet(message);
+            radio::queue_packet(message.clone().into_message(radio_ctxt()));
         }
+
+        get_logger()
+            .log(message.into_message(current_rtc_time()))
+            .await;
     }
+}
+
+/// https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles#Source_code_2
+fn quaternion_to_euler(quat: [f32; 4]) -> [f32; 3] {
+    let [w, x, y, z] = quat;
+    let mut angles = [0.0f32; 3];
+    let [roll, pitch, yaw] = &mut angles;
+
+    let sinr_cosp = 2.0 * (w * x + y * z);
+    let cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
+    *roll = libm::atan2f(sinr_cosp, cosr_cosp);
+
+    // pitch (y-axis rotation)
+    let sinp = libm::sqrtf(1.0 + 2.0 * (w * y - x * z));
+    let cosp = libm::sqrtf(1.0 - 2.0 * (w * y - x * z));
+    *pitch = 2.0 * libm::atan2f(sinp, cosp) - PI / 2.0;
+
+    // yaw (z-axis rotation)
+    let siny_cosp = 2.0 * (w * z + x * y);
+    let cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
+    *yaw = libm::atan2f(siny_cosp, cosy_cosp);
+
+    return angles;
 }
 
 async fn bno_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
@@ -910,8 +979,7 @@ where
 {
     let mut delay = delay.release().delay();
     loop {
-        let mut acc_buffer = [[0.0f32; 3]; BNO_BROADCAST_BUF_LEN];
-        let mut quat_buffer = [[0.0f32; 4]; BNO_BROADCAST_BUF_LEN];
+        let mut samples = [IMUSample::default(); 20];
 
         for i in 0..(BNO_BROADCAST_BUF_LEN * BNO_BROADCAST_DECIMATION) {
             let (acc, quat) = loop {
@@ -924,12 +992,12 @@ where
                 }
             };
             if i % BNO_BROADCAST_DECIMATION == 0 {
-                acc_buffer[i / BNO_BROADCAST_DECIMATION] = acc;
-                quat_buffer[i / BNO_BROADCAST_DECIMATION] = quat;
+                samples[i / BNO_BROADCAST_DECIMATION] = IMUSample {
+                    timestamp: current_rtc_time(),
+                    acceleration: acc,
+                    angular_velocity: quaternion_to_euler(quat),
+                };
             }
-            get_logger()
-                .log(format_args!("bno,{:?},{:?}", acc, quat))
-                .await;
             let mut timer = delay.release().counter();
             timer.start(10u32.millis()).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
@@ -937,18 +1005,15 @@ where
             delay = timer.release().delay();
         }
 
-        let message = Message::BNOBroadcast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: current_rtc_time().into(),
-            accels: acc_buffer,
-            rots: quat_buffer,
-        };
+        let message = MessageType::new_imu(samples.into_iter());
 
         if role() == Role::Avionics {
-            radio::queue_packet(message);
+            radio::queue_packet(message.clone().into_message(radio_ctxt()));
         }
+
+        get_logger()
+            .log(message.into_message(current_rtc_time()))
+            .await;
     }
 }
 
@@ -957,40 +1022,35 @@ pub async fn bmi323_handler(
     mut timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
     loop {
-        let mut acc_buffer = [[0.0f32; 3]; 8];
-        let mut gyro_buffer = [[0.0f32; 3]; 8];
+        let mut samples = [IMUSample::default(); 20];
 
-        for (acc, gyro) in acc_buffer.iter_mut().zip(gyro_buffer.iter_mut()) {
-            acc.copy_from_slice(
+        for sample in samples.iter_mut() {
+            sample.timestamp = current_rtc_time();
+            sample.acceleration.copy_from_slice(
                 &bmi323
                     .read_accel_data_scaled()
                     .map(|it| [it.x, it.y, it.z])
                     .unwrap(),
             );
 
-            gyro.copy_from_slice(
+            sample.angular_velocity.copy_from_slice(
                 &bmi323
                     .read_gyro_data_scaled()
                     .map(|it| [it.x, it.y, it.z])
                     .unwrap(),
             );
-            get_logger()
-                .log(format_args!("bmi323,{:?},{:?}", acc, gyro))
-                .await;
             timer.delay_ms(10).await;
         }
 
-        let message = Message::IMUBroadcast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: current_rtc_time().into(),
-            accels: acc_buffer,
-            gyros: gyro_buffer,
-        };
+        let message = MessageType::new_imu(samples.into_iter());
+        let radio_msg = message.clone().into_message(radio_ctxt());
         if role() == Role::Avionics {
-            radio::queue_packet(message);
+            radio::queue_packet(radio_msg);
         }
+
+        get_logger()
+            .log(message.into_message(current_rtc_time()))
+            .await;
     }
 }
 
@@ -998,10 +1058,9 @@ pub async fn ms5607_handler(
     mut ms5607: MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>,
 ) -> ! {
     loop {
-        let mut pressures = [0.0; 8];
-        let mut temperatures = [0.0; 8];
+        let mut samples = [PressureTempSample::default(); 40];
 
-        for i in 0..8 {
+        for i in 0..samples.len() {
             let PressureTemp {
                 pressure,
                 temperature,
@@ -1009,24 +1068,21 @@ pub async fn ms5607_handler(
                 .read(crate::ms5607::Oversampling::OSR1024)
                 .await
                 .unwrap();
-            pressures[i] = pressure;
-            temperatures[i] = temperature;
-
+            samples[i] = PressureTempSample {
+                timestamp: current_rtc_time(),
+                pressure,
+                temperature,
+            };
             ms5607.delay_ms(10).await;
         }
 
+        let message = MessageType::new_pressure_temp(samples.into_iter());
+        let radio_msg = message.clone().into_message(radio_ctxt());
+        radio::queue_packet(radio_msg);
+
         get_logger()
-            .log(format_args!("pressure,{:?},{:?}", pressures, temperatures))
+            .log(message.into_message(current_rtc_time()))
             .await;
-        let message = Message::PressureTempBroadCast {
-            counter: radio::next_counter(),
-            stage: current_stage(),
-            role: role(),
-            time_of_first_packet: current_rtc_time().into(),
-            pressures,
-            temperatures,
-        };
-        radio::queue_packet(message);
 
         YieldFuture::new().await;
     }
@@ -1073,7 +1129,7 @@ pub async fn begin(
                 imu_task,
                 gps_handler(),
                 gps_broadcast(),
-                // pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
                 // stage_update_handler(pressure_receiver),
                 ms5607_handler(ms5607.unwrap(),),

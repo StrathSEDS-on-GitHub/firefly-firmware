@@ -7,5 +7,10 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-heapless = "0.8.0"
+heapless = { version = "0.8.0", features = ["serde"] }
 sequential-storage = { version= "4.0.1" }
+gortsz = { version="^0.1.5", features=["serde"] }
+serde = { version = "1.0.219", default-features = false, features = ["derive", "serde_derive"] }
+cortex-m-semihosting = "0.5.0"
+bitvec = { version = "1.0.1", default-features = false }
+derive_more = { version = "2.0.1", default-features = false, features = ["from", "into"] }

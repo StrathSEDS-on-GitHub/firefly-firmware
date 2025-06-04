@@ -10,10 +10,12 @@ use sequential_storage::cache::NoCache;
 use sequential_storage::{map, queue};
 
 use stm32f4xx_hal as hal;
+use storage_types::logs::{LocalCtxt, Message, MessageType};
 use storage_types::{CONFIG_KEYS, ConfigKey};
 
 use crate::futures::YieldFuture;
-use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, RTC, neopixel};
+use crate::mission::current_rtc_time;
+use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, neopixel};
 
 static LOGGER: Logger = Logger {
     flash: Mutex::new(RefCell::new(None)),
@@ -73,36 +75,20 @@ pub struct Logger {
 impl Logger {
     /// Best-effort log. May silently discard the log if another task is
     /// using the flash.
-    pub async fn log(&self, fmt: fmt::Arguments<'_>) {
+    pub async fn log(&self, msg: Message<LocalCtxt>) {
         let mut buf = [0u8; 2048];
-        let mut writer = FixedWriter(&mut buf, 0);
-
-        cortex_m::interrupt::free(|cs| {
-            let mut rtc = RTC.borrow(cs).borrow_mut();
-            let (h, m, s, millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
-            let _ = write!(writer, "{:02}:{:02}:{:02}.{:03} ", h, m, s, millis);
-        });
-
-        write!(writer, "{}\n", fmt).unwrap();
-
-        self.log_impl(writer.data()).await;
+        if let Ok(msg) = postcard::to_slice(&msg, &mut buf) {
+            self.log_impl(msg).await;
+        }
     }
 
     /// For important logs that shouldn't be discarded, will
     /// retry obtaining the flash if it is busy.
-    pub async fn retry_log(&self, fmt: fmt::Arguments<'_>) {
+    pub async fn retry_log(&self, msg: Message<LocalCtxt>) {
         let mut buf = [0u8; 2048];
-        let mut writer = FixedWriter(&mut buf, 0);
-
-        cortex_m::interrupt::free(|cs| {
-            let mut rtc = RTC.borrow(cs).borrow_mut();
-            let (h, m, s, millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
-            let _ = write!(writer, "{:02}:{:02}:{:02}.{:03} [HIGH] ", h, m, s, millis);
-        });
-
-        write!(writer, "{}\n", fmt).unwrap();
-
-        self.retry_log_impl(writer.data()).await;
+        if let Ok(msg) = postcard::to_slice(&msg, &mut buf) {
+            self.retry_log_impl(msg).await;
+        }
     }
 
     async fn retry_log_impl(&self, buffer: &[u8]) {
@@ -171,16 +157,13 @@ impl Logger {
     /// Best-effort log. May silently discard the log if another task is
     /// using the flash.
     pub async fn log_str(&self, msg: &str) {
-        let mut buffer = [0u8; 2048];
-        let mut writer = FixedWriter::new(&mut buffer);
-
-        cortex_m::interrupt::free(|cs| {
-            let mut rtc = RTC.borrow(cs).borrow_mut();
-            let (h, m, s, millis) = rtc.as_mut().unwrap().get_datetime().as_hms_milli();
-            let _ = write!(writer, "{:02}:{:02}:{:02}.{:03} {}\n", h, m, s, millis, msg);
-        });
-
-        self.log_impl(writer.data()).await;
+        let time: u32 = current_rtc_time();
+        self.log(
+            MessageType::new_log(time, msg)
+                .unwrap()
+                .into_message(LocalCtxt { timestamp: time }),
+        )
+        .await;
     }
 
     /// Try to take exclusive control of the flash. Other writers will fail
@@ -251,7 +234,7 @@ impl Logger {
 
     pub async fn get_logs<'a>(
         &'a self,
-        mut f: impl AsyncFnMut(&'_ str),
+        mut f: impl AsyncFnMut(&'_ Message<LocalCtxt>),
     ) -> Result<(), &'static str> {
         let mut no_cache = NoCache::new();
         let mut flash = self.take_flash().await;
@@ -266,8 +249,11 @@ impl Logger {
 
         let mut buffer = [0u8; 2048];
         while let Ok(Some(ref buf)) = iterator.next(&mut buffer).await {
-            let s = core::str::from_utf8(buf).unwrap_or("[Corrupted line]\n");
-            f(s).await;
+            let msg: Message<LocalCtxt> = match postcard::from_bytes(buf) {
+                Ok(msg) => msg,
+                Err(_) => continue, // Skip invalid messages
+            };
+            f(&msg).await;
         }
 
         self.return_flash(flash).await;
@@ -378,6 +364,36 @@ impl Logger {
             unsafe {
                 cortex_m::interrupt::enable();
             }
+        }
+    }
+
+    pub async fn space_left(&self) -> Result<u32, &'static str> {
+        let mask = primask::read();
+        cortex_m::interrupt::disable();
+        let cs = unsafe { CriticalSection::new() };
+        let rc = self.flash.borrow(&cs);
+        let Ok(mut flash) = rc.try_borrow_mut() else {
+            // Another task is using the flash, we can yield and try again.
+            if mask.is_active() {
+                unsafe {
+                    cortex_m::interrupt::enable();
+                }
+            }
+            return Err("Flash not available");
+        };
+        let Some(flash) = flash.as_mut() else {
+            return Err("Flash not initialized");
+        };
+        let space = queue::space_left(flash, LOGS_FLASH_RANGE, &mut NoCache::new()).await;
+        if mask.is_active() {
+            unsafe {
+                cortex_m::interrupt::enable();
+            }
+        }
+        if let Ok(space) = space {
+            Ok(space)
+        } else {
+            Err("Failed to get space left")
         }
     }
 }
