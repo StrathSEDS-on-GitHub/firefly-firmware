@@ -174,7 +174,7 @@ impl I2CMasterWriteReadDMA for BMP388Wrapper {
 static BMP: Mutex<RefCell<Option<Altimeter>>> = Mutex::new(RefCell::new(None));
 
 #[interrupt]
-fn DMA1_STREAM1() {
+fn DMA1_STREAM() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
         i2c.as_mut().map(|it| it.dma_interrupt());

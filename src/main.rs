@@ -117,46 +117,6 @@ static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
-struct WriteAdapter<T: _embedded_hal_serial_nb_Write>(T);
-impl<T: _embedded_hal_serial_nb_Write> usbd_serial::embedded_io::ErrorType for WriteAdapter<T> {
-    type Error = Infallible;
-}
-impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Write> usbd_serial::embedded_io::Write
-    for WriteAdapter<T>
-{
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        for w in buf {
-            nb::block!(self.0.write(*w)).unwrap();
-        }
-
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
-struct ReadAdapter<T: _embedded_hal_serial_nb_Read>(T);
-impl<T: _embedded_hal_serial_nb_Read> usbd_serial::embedded_io::ErrorType for ReadAdapter<T> {
-    type Error = Infallible;
-}
-impl<T: stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Read> usbd_serial::embedded_io::Read
-    for ReadAdapter<T>
-{
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let mut i = 0;
-        while i < buf.len() {
-            if let Ok(b) = self.0.read() {
-                buf[i] = b;
-                i += 1;
-            } else {
-                break;
-            }
-        }
-        Ok(i)
-    }
-}
-
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     if let (Some(mut dp), Some(cp)) = (
@@ -178,7 +138,7 @@ async fn main(_spawner: Spawner) {
         };
 
         dp.RCC
-            .ahb3enr
+            .ahb3enr()
             .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
         let rcc = dp.RCC.constrain();
 
@@ -201,6 +161,8 @@ async fn main(_spawner: Spawner) {
             BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
+
+
 
         const LED_NUM: usize = 3;
         let neopixel_spi = Spi::new(
@@ -229,7 +191,7 @@ async fn main(_spawner: Spawner) {
                 PYRO_ENABLE_PIN.replace(enable);
                 PYRO_FIRE2.replace(p2);
                 PYRO_FIRE1.replace(p1);
-                PYRO_ADC.replace(Adc::adc1(dp.ADC1, false, AdcConfig::default()));
+                PYRO_ADC.replace(Adc::new(dp.ADC1, false, AdcConfig::default()));
             }
         });
 
@@ -250,7 +212,7 @@ async fn main(_spawner: Spawner) {
         gpio.e.pe4.into_floating_input();
 
         unsafe {
-            pac::NVIC::unmask(hal::interrupt::DMA1_STREAM1);
+            pac::NVIC::unmask(hal::interrupt::DMA1_STREAM);
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM0);
         }
 
@@ -285,7 +247,7 @@ async fn main(_spawner: Spawner) {
                 gps_pins!(gpio),
                 hal::serial::config::Config {
                     baudrate: 115200.bps(),
-                    dma: hal::serial::config::DmaConfig::TxRx,
+                    dma: hal::serial::config::DmaConfig::Rx,
                     ..Default::default()
                 },
                 &clocks,
@@ -406,9 +368,9 @@ async fn main(_spawner: Spawner) {
             None
         };
 
-        dp.I2C3.cr1.modify(|_, w| w.swrst().set_bit());
+        dp.I2C3.cr1().modify(|_, w| w.swrst().set_bit());
         delay.delay_ms(10);
-        dp.I2C3.cr1.modify(|_, w| w.swrst().clear_bit());
+        dp.I2C3.cr1().modify(|_, w| w.swrst().clear_bit());
 
         let i2c3 = dp.I2C3.i2c(
             (

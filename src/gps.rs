@@ -8,14 +8,14 @@ use core::{
 use cortex_m::interrupt::Mutex;
 use fugit::ExtU32;
 use hal::{
-    dma::{traits::StreamISR, Transfer},
+    dma::{Transfer, traits::StreamISR},
     gpio::{self, Input},
     pac::{NVIC, USART2},
     prelude::_stm32f4xx_hal_time_U32Ext,
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
-use nmea0183::{datetime::Time, ParseResult, GGA};
+use nmea0183::{GGA, ParseResult, datetime::Time};
 use stm32f4xx_hal::{
     dma::{self, Stream5, StreamX},
     interrupt,
@@ -25,7 +25,7 @@ use stm32f4xx_hal::{
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{futures::YieldFuture, interrupt_wake, neopixel, logs::FixedWriter, RTC};
+use crate::{RTC, futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel};
 use stm32f4xx_hal as hal;
 
 static RX_TRANSFER: Mutex<
@@ -106,8 +106,8 @@ pub async fn change_baudrate(baudrate: u32) {
             // FIXME: Holy shit what the fuck is this code
             let usart2: USART2 = unsafe { core::mem::transmute(()) };
             let pa3: gpio::Pin<'A', 3, Input> = unsafe { core::mem::transmute(()) };
-
             let pa2: gpio::Pin<'A', 2, Input> = unsafe { core::mem::transmute(()) };
+
             usart2
                 .serial(
                     (pa2.into_alternate(), pa3.into_alternate()),

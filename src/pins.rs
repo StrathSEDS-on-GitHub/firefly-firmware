@@ -166,7 +166,7 @@ pub mod i2c {
                     let bus = unsafe { &mut *self.bus.get() };
                     bus.handle_dma_interrupt();
                 }
-                _ => panic!("Invalid state for DMA interrupt"),
+                s => panic!("Invalid state for DMA interrupt {:?}", s),
             }
         }
 
