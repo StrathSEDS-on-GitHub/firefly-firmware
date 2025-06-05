@@ -9,32 +9,27 @@ use cortex_m::interrupt::Mutex;
 use fugit::ExtU32;
 use hal::{
     dma::{Transfer, traits::StreamISR},
-    gpio::{self, Input},
-    pac::{NVIC, USART2},
+    pac::NVIC,
     prelude::_stm32f4xx_hal_time_U32Ext,
     serial::{RxISR, RxListen, SerialExt},
 };
 use heapless::Deque;
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use stm32f4xx_hal::{
-    dma::{self, Stream5, StreamX},
-    interrupt,
-    pac::{self, DMA1},
-    prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write},
-    serial::{Rx, Tx},
+    dma, interrupt, pac::{self}, prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write}, serial::{Rx, Tx}
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{RTC, futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel};
+use crate::{futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel, pins::gps::{GPSPins, GPSRxStream, GPSUsart}, RTC};
 use stm32f4xx_hal as hal;
 
 static RX_TRANSFER: Mutex<
     RefCell<
         Option<
             Transfer<
-                Stream5<pac::DMA1>,
+                GPSRxStream,
                 4,
-                Rx<pac::USART2>,
+                Rx<GPSUsart>,
                 dma::PeripheralToMemory,
                 &'static mut [u8],
             >,
@@ -42,7 +37,7 @@ static RX_TRANSFER: Mutex<
     >,
 > = Mutex::new(RefCell::new(None));
 
-static TX: Mutex<RefCell<Option<Tx<USART2>>>> = Mutex::new(RefCell::new(None));
+static TX: Mutex<RefCell<Option<Tx<GPSUsart>>>> = Mutex::new(RefCell::new(None));
 static RX_BUFFER: Mutex<RefCell<Option<&'static mut [u8; RX_BUFFER_SIZE]>>> =
     Mutex::new(RefCell::new(None));
 
@@ -52,7 +47,7 @@ static REFINE_TIME: AtomicBool = AtomicBool::new(false);
 
 const RX_BUFFER_SIZE: usize = 2048;
 
-pub fn setup(rx_stream: StreamX<DMA1, 5>, gps: hal::serial::Serial<USART2>) {
+pub fn setup(rx_stream: GPSRxStream, gps: hal::serial::Serial<GPSUsart>) {
     let rx_buf1_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let rx_buf2_gps = cortex_m::singleton!(:[u8; RX_BUFFER_SIZE] = [0; RX_BUFFER_SIZE]).unwrap();
     let (tx, mut rx) = gps.split();
@@ -100,23 +95,21 @@ pub async fn change_baudrate(baudrate: u32) {
 
         let serial = {
             // Seemingly there's no way to simply rejoin the Tx and Rx and then release so we need to get our hands dirty...
-            let mut clocks_ref = crate::CLOCKS.borrow(cs).borrow_mut();
-            let clocks = clocks_ref.as_mut().unwrap();
+            let clocks = crate::CLOCKS.borrow(cs).get().unwrap();
 
             // FIXME: Holy shit what the fuck is this code
-            let usart2: USART2 = unsafe { core::mem::transmute(()) };
-            let pa3: gpio::Pin<'A', 3, Input> = unsafe { core::mem::transmute(()) };
-            let pa2: gpio::Pin<'A', 2, Input> = unsafe { core::mem::transmute(()) };
+            let usart: GPSUsart = unsafe { core::mem::transmute(()) };
+            let pins: GPSPins = unsafe { core::mem::transmute(()) };
 
-            usart2
+            usart
                 .serial(
-                    (pa2.into_alternate(), pa3.into_alternate()),
+                    pins,
                     hal::serial::config::Config {
                         baudrate: baudrate.bps(),
                         dma: hal::serial::config::DmaConfig::TxRx,
                         ..Default::default()
                     },
-                    clocks,
+                    &clocks,
                 )
                 .unwrap()
         };

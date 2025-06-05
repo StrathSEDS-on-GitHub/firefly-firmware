@@ -1,6 +1,6 @@
 use crate::futures::YieldFuture;
 use crate::interrupt_wake;
-use crate::{futures::bmp_wake, pins::Altimeter, I2c1Proxy};
+use crate::{futures::bmp_wake, pins::i2c::Altimeter, pins::i2c::I2c1Proxy};
 use bmp388::{
     config::{FifoConfig, OversamplingConfig, SubsamplingFactor},
     Blocking, Oversampling, PowerControl, PowerMode, BMP388,

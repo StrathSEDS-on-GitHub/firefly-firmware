@@ -12,7 +12,7 @@ use stm32f4xx_hal::{
     interrupt,
 };
 
-use crate::{altimeter::{AltimeterFifoDMA, PressureTemp}, I2c1Proxy};
+use crate::{altimeter::{AltimeterFifoDMA, PressureTemp}, pins::i2c::I2c1Proxy};
 
 const ADDR: u8 = 0x46;
 

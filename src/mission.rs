@@ -1,7 +1,8 @@
 use crate::{
-    altimeter::PressureTemp,
+    altimeter::{read_altimeter_fifo, PressureTemp},
+    futures::TimerDelay,
     ms5607::{Calibrated, MS5607},
-    pins::{PyroEnable, PyroFire1, PyroFire2},
+    pins::pyro::*,
     radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION},
 };
 use bmi323::{Bmi323, interface::SpiInterface};
@@ -23,6 +24,7 @@ use stm32f4xx_hal::{
     adc::{Adc, config::SampleTime},
     gpio::{Analog, Pin},
     pac::{ADC1, TIM12},
+    rcc::Clocks,
     timer::{self, Counter, Instance},
 };
 use storage_types::{
@@ -32,11 +34,12 @@ use storage_types::{
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    Altimeter, BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
+    BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
     altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames},
     futures::{NbFuture, YieldFuture},
     gps,
     logs::get_logger,
+    pins::i2c::Altimeter,
     radio::{self, RECEIVED_MESSAGE_QUEUE},
     usb_logger::get_serial,
 };
@@ -359,10 +362,15 @@ pub async fn usb_handler() -> ! {
         } else if split.len() >= 1 && split[0].starts_with(b"free") {
             let free = get_logger().space_left().await;
             if let Ok(free) = free {
-                writeln!(get_serial(), "free,{:.02}%", free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0).unwrap();
+                writeln!(
+                    get_serial(),
+                    "free,{:.02}%",
+                    free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0
+                )
+                .unwrap();
             } else {
                 writeln!(get_serial(), "err, {}", free.unwrap_err()).unwrap();
-        }
+            }
         } else if split.len() >= 1 && split[0].starts_with(b"logs") {
             if let Err(msg) = get_logger()
                 .get_logs(async |s| match &s.message {
@@ -580,7 +588,7 @@ async fn gps_broadcast() -> ! {
     }
 }
 
-async fn pressure_temp_handler(
+async fn bmp_altimeter_handler(
     mut sensor: Altimeter,
     mut timer: Counter<TIM12, 10000>,
     pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
@@ -594,7 +602,8 @@ async fn pressure_temp_handler(
         let mut samples = [PressureTempSample::default(); 40 * NTH];
 
         for sample in samples.iter_mut() {
-            let frames = sensor.read_fifo().unwrap();
+            let (frames, returned_sensor)  = read_altimeter_fifo(sensor).await;
+            sensor = returned_sensor;
             for frame in &frames {
                 let pressure = frame.pressure;
                 let temperature = frame.temperature;
@@ -605,14 +614,15 @@ async fn pressure_temp_handler(
                     temperature,
                 };
             }
-            // pressure_sender.send(frames.into()).await.unwrap();
+            pressure_sender
+                .send(Vec::from_slice(&frames).unwrap())
+                .await
+                .unwrap();
             timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
             // FIXME: Use interrupt to wait for FIFO to fill up.
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
-
-        // _logger().log(format_args!("bmp,{:?}", samples)).await;
 
         let radio_msg = MessageType::new_pressure_temp(samples.into_iter().enumerate().filter_map(
             |(i, sample)| {
@@ -914,7 +924,7 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-async fn imu_handler(
+async fn icm_imu_handler(
     mut imu: IcmImu<impl I2c, NoDmp>,
     mut imu_timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
@@ -971,7 +981,7 @@ fn quaternion_to_euler(quat: [f32; 4]) -> [f32; 3] {
     return angles;
 }
 
-async fn bno_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
+async fn bno_imu_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
 where
     SI: SensorInterface<SensorError = SE>,
     SE: core::fmt::Debug,
@@ -1016,7 +1026,7 @@ where
     }
 }
 
-pub async fn bmi323_handler(
+pub async fn bmi323_imu_handler(
     mut bmi323: Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>,
     mut timer: impl embedded_hal_async::delay::DelayNs,
 ) -> ! {
@@ -1053,7 +1063,7 @@ pub async fn bmi323_handler(
     }
 }
 
-pub async fn ms5607_handler(
+pub async fn ms5607_altimeter_handler(
     mut ms5607: MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>,
 ) -> ! {
     loop {
@@ -1088,13 +1098,14 @@ pub async fn ms5607_handler(
 }
 
 pub async fn begin(
-    pressure_sensor: Option<Altimeter>,
+    bmp_altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
-    imu: Option<IcmImu<impl I2c, NoDmp>>,
-    imu_timer: impl embedded_hal_async::delay::DelayNs,
+    icm_imu: Option<IcmImu<impl I2c, NoDmp>>,
+    imu_timer: Counter<impl Instance, 100000>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
-    ms5607: Option<MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>>,
-    bmi323: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
+    ms5607_altimeter: Option<MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>>,
+    bmi323_imu: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
+    clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
@@ -1108,16 +1119,27 @@ pub async fn begin(
             let imu_task = {
                 #[cfg(feature = "target-mini")]
                 {
-                    imu_handler(imu.unwrap(), imu_timer)
+                    let _ = bmi323_imu;
+                    let _ = bno_imu;
+                    icm_imu_handler(
+                        icm_imu.unwrap(),
+                        TimerDelay::new(imu_timer.release().release(), clocks),
+                    )
                 }
                 #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
                 {
-                    let _ = imu;
-                    bno_handler(bno_imu.unwrap(), imu_timer)
+                    let _ = icm_imu;
+                    let _ = bmi323_imu;
+                    bno_imu_handler(bno_imu.unwrap(), imu_timer)
                 }
                 #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
                 {
-                    bmi323_handler(bmi323.unwrap(), imu_timer)
+                    let _ = bno_imu;
+                    let _ = icm_imu;
+                    bmi323_imu_handler(
+                        bmi323_imu.unwrap(),
+                        TimerDelay::new(imu_timer.release().release(), clocks),
+                    )
                 }
             };
 
@@ -1128,10 +1150,10 @@ pub async fn begin(
                 imu_task,
                 gps_handler(),
                 gps_broadcast(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
                 handle_incoming_packets(),
-                // stage_update_handler(pressure_receiver),
-                ms5607_handler(ms5607.unwrap(),),
+                stage_update_handler(pressure_receiver),
+                ms5607_altimeter_handler(ms5607_altimeter.unwrap()),
                 // imu_task
             )
             .0
@@ -1144,7 +1166,7 @@ pub async fn begin(
                 gps_handler(),
                 gps_broadcast(),
                 handle_incoming_packets(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
+                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
                 stage_update_handler(pressure_receiver),
                 // bno_handler(bno_imu.unwrap(), imu_timer),
             )
@@ -1159,8 +1181,11 @@ pub async fn begin(
                 gps_handler(),
                 gps_broadcast(),
                 handle_incoming_packets(),
-                pressure_temp_handler(pressure_sensor.unwrap(), pr_timer, pressure_sender),
-                imu_handler(imu.unwrap(), imu_timer),
+                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
+                icm_imu_handler(
+                    icm_imu.unwrap(),
+                    TimerDelay::new(imu_timer.release().release(), clocks)
+                ),
                 stage_update_handler(pressure_receiver),
             )
             .0

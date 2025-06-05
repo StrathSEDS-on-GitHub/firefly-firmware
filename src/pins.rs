@@ -1,22 +1,4 @@
-#![allow(unused_imports)]
-use core::cell::RefCell;
-
-use bmp388::{Blocking, BMP388};
-use cortex_m::interrupt::Mutex;
-use stm32f4xx_hal::{
-    dma::{Stream0, Stream1},
-    gpio::{gpioa, gpiob, gpioc, gpiod, gpioe, Alternate, Output, PushPull},
-    i2c::{
-        dma::{I2CMasterDma, RxDMA, TxDMA},
-        I2c,
-    },
-    pac::{DMA1, I2C1, SPI2, SPI3},
-    timer::Delay,
-};
-
-use crate::altimeter::BMP388Wrapper;
-use crate::bmp581::BMP581;
-use crate::hal::gpio::Pin;
+use stm32f4xx_hal::gpio::{Output, PushPull, gpioa, gpiob, gpioc, gpiod, gpioe};
 
 pub struct GpioBuses {
     pub a: gpioa::Parts,
@@ -34,40 +16,57 @@ pub type BuzzerPin = gpioe::PE1<Output<PushPull>>;
 #[cfg(feature = "target-mini")]
 pub type NeopixelPin = gpioc::PC3<Output<PushPull>>;
 #[cfg(feature = "target-mini")]
-pub type NeopixelSPI = SPI2;
+pub type NeopixelSPI = stm32f4xx_hal::pac::SPI2;
 #[cfg(feature = "target-maxi")]
 pub type NeopixelPin = gpioc::PC12<Output<PushPull>>;
 #[cfg(feature = "target-maxi")]
-pub type NeopixelSPI = SPI3;
-
-#[cfg(feature = "target-mini")]
-pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
-
-#[cfg(feature = "target-maxi")]
-pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
-
-pub type I2c1Handle =
-    I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
+pub type NeopixelSPI = stm32f4xx_hal::pac::SPI3;
 
 pub mod i2c {
-    use core::{
-        cell::{RefCell, UnsafeCell},
-        fmt::Write,
-        sync::atomic::{AtomicBool, Ordering},
-    };
-    use embedded_hal::{
-        delay::DelayNs,
-        i2c::{ErrorType, I2c},
-    };
+    use core::{cell::UnsafeCell, sync::atomic::Ordering};
+    use embedded_hal::i2c::{ErrorType, I2c};
     use embedded_hal_bus::i2c::AtomicError;
-    use stm32f4xx_hal::i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA};
+    use stm32f4xx_hal::{
+        dma::{Stream0, Stream1},
+        i2c::dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
+        pac::{DMA1, I2C1},
+    };
+    pub type I2c1Handle =
+        I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
+
+    pub type I2c1Proxy = DMAAtomicDevice<'static, I2c1Handle>;
+
+    #[cfg(feature = "target-mini")]
+    pub type Altimeter = crate::altimeter::BMP388Wrapper;
+
+    #[cfg(feature = "target-maxi")]
+    pub type Altimeter = crate::bmp581::BMP581<I2c1Proxy>;
+
+    #[macro_export]
+    macro_rules! i2c_dma_streams {
+        ($dp:ident, $gps_streams:ident) => {{
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev"))
+            ))]
+            {
+                let streams = stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA1);
+                (streams.0, streams.1)
+            }
+
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                ($gps_streams.0, $gps_streams.1)
+            }
+        }};
+    }
 
     /// Replacement for embedded-hal-bus AtomicDevice that also implements I2CMasterHandleIT
-    pub struct AtomicDevice<'a, T> {
+    pub struct DMAAtomicDevice<'a, T> {
         bus: &'a UnsafeCell<T>,
         busy: &'a AtomicBusyState,
     }
-    unsafe impl<'a, T> Send for AtomicDevice<'a, T> {}
+    unsafe impl<'a, T> Send for DMAAtomicDevice<'a, T> {}
 
     #[derive(PartialEq, Eq)]
     #[atomic_enum::atomic_enum]
@@ -77,7 +76,7 @@ pub mod i2c {
         BusyDMA, // Only handle_dma_interrupt is allowed
     }
 
-    impl<'a, T> AtomicDevice<'a, T> {
+    impl<'a, T> DMAAtomicDevice<'a, T> {
         #[inline]
         pub fn new(bus: &'a UnsafeCell<T>, busy: &'a AtomicBusyState) -> Self {
             busy.store(BusyState::Free, Ordering::Relaxed);
@@ -85,14 +84,14 @@ pub mod i2c {
         }
     }
 
-    impl<'a, T> ErrorType for AtomicDevice<'a, T>
+    impl<'a, T> ErrorType for DMAAtomicDevice<'a, T>
     where
         T: I2c,
     {
         type Error = AtomicError<T::Error>;
     }
 
-    impl<'a, T: I2c> AtomicDevice<'a, T> {
+    impl<'a, T: I2c> DMAAtomicDevice<'a, T> {
         fn lock<R, F>(&self, f: F) -> Result<R, AtomicError<T::Error>>
         where
             F: FnOnce(&mut T) -> Result<R, T::Error>,
@@ -125,7 +124,7 @@ pub mod i2c {
         }
     }
 
-    impl<'a, T> I2c for AtomicDevice<'a, T>
+    impl<'a, T> I2c for DMAAtomicDevice<'a, T>
     where
         T: I2c,
     {
@@ -159,7 +158,7 @@ pub mod i2c {
         }
     }
 
-    impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for AtomicDevice<'a, T> {
+    impl<'a, T: I2c + I2CMasterHandleIT> I2CMasterHandleIT for DMAAtomicDevice<'a, T> {
         fn handle_dma_interrupt(&mut self) {
             match self.busy.load(Ordering::Relaxed) {
                 BusyState::BusyDMA => {
@@ -181,7 +180,7 @@ pub mod i2c {
         }
     }
 
-    impl<'a, T> I2CMasterWriteReadDMA for AtomicDevice<'a, T>
+    impl<'a, T> I2CMasterWriteReadDMA for DMAAtomicDevice<'a, T>
     where
         T: I2c + I2CMasterWriteReadDMA,
     {
@@ -207,14 +206,6 @@ pub mod i2c {
         }
     }
 }
-
-pub type I2c1Proxy = i2c::AtomicDevice<'static, I2c1Handle>;
-
-#[cfg(feature = "target-mini")]
-pub type Altimeter = BMP388Wrapper;
-
-#[cfg(feature = "target-maxi")]
-pub type Altimeter = BMP581<I2c1Proxy>;
 
 #[macro_export]
 macro_rules! buzzer_pin {
@@ -259,29 +250,17 @@ macro_rules! neopixel_spi {
 }
 
 #[macro_export]
-macro_rules! gps_pins {
-    ($gpio_buses:ident) => {{
-        #[cfg(feature = "target-mini")]
-        {
-            (
-                $gpio_buses.a.pa9.into_alternate(),
-                $gpio_buses.a.pa10.into_alternate(),
-            )
-        }
-        #[cfg(feature = "target-maxi")]
-        {
-            (
-                $gpio_buses.a.pa2.into_alternate(),
-                $gpio_buses.a.pa3.into_alternate(),
-            )
-        }
-    }};
-}
-
-#[macro_export]
 macro_rules! pps_pin {
     ($gpio_buses:ident) => {{
         #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+        {
+            $gpio_buses.e.pe11.into_input()
+        }
+        #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+        {
+            $gpio_buses.e.pe11.into_input()
+        }
+        #[cfg(all(feature = "target-mini"))]
         {
             $gpio_buses.e.pe11.into_input()
         }
@@ -300,6 +279,11 @@ macro_rules! i2c1_pins {
             ($gpio_buses.b.pb8, $gpio_buses.b.pb9)
         }
     }};
+}
+
+#[macro_export]
+macro_rules! spi2_pins {
+    ($gpio:ident) => {{ ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3) }};
 }
 
 #[macro_export]
@@ -332,78 +316,199 @@ macro_rules! qspi_pins {
     }};
 }
 
-#[macro_export]
-macro_rules! radio_pins {
-    ($gpio:ident) => {{
-        #[cfg(feature = "target-mini")]
-        {
-            // (nss, sck, miso, mosi, reset, busy, dio1)
-            (
-                $gpio.a.pa4,
-                $gpio.a.pa5,
-                $gpio.a.pa6,
-                $gpio.a.pa7,
-                $gpio.b.pb0,
-                $gpio.c.pc5,
-                $gpio.c.pc4,
-            )
-        }
+pub mod gps {
+    use stm32f4xx_hal::gpio::Alternate;
+    use stm32f4xx_hal::gpio::gpioa;
 
-        #[cfg(feature = "target-maxi")]
-        {
-            (
-                $gpio.a.pa4,
-                $gpio.a.pa5,
-                $gpio.a.pa6,
-                $gpio.a.pa7,
-                $gpio.b.pb0,
-                $gpio.c.pc5,
-                $gpio.c.pc4,
-            )
-        }
-    }};
+    #[cfg(any(
+        feature = "target-mini",
+        all(feature = "target-maxi", not(feature = "ultra-dev"))
+    ))]
+    pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
+
+    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+    pub type GPSPins = (gpioa::PA2<Alternate<7>>, gpioa::PA3<Alternate<7>>);
+
+    #[cfg(any(
+        feature = "target-mini",
+        all(feature = "target-maxi", not(feature = "ultra-dev"))
+    ))]
+    pub type GPSUsart = stm32f4xx_hal::pac::USART1;
+
+    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+    pub type GPSUsart = stm32f4xx_hal::pac::USART2;
+
+    #[cfg(any(
+        feature = "target-mini",
+        all(feature = "target-maxi", not(feature = "ultra-dev"))
+    ))]
+    pub type GPSDma = stm32f4xx_hal::pac::DMA2;
+
+    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+    pub type GPSDma = stm32f4xx_hal::pac::DMA1;
+
+    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+    pub type GPSRxStream = stm32f4xx_hal::dma::Stream5<GPSDma>;
+
+    #[cfg(any(
+        feature = "target-mini",
+        all(feature = "target-maxi", not(feature = "ultra-dev"))
+    ))]
+    pub type GPSRxStream = stm32f4xx_hal::dma::Stream2<GPSDma>;
+
+    #[macro_export]
+    macro_rules! gps_rx_stream {
+        ($streams:ident) => {{
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev"))
+            ))]
+            {
+                $streams.2
+            }
+
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                $streams.5
+            }
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! gps_usart_peripheral {
+        ($dp:ident) => {{
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev"))
+            ))]
+            {
+                $dp.USART1
+            }
+
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                $dp.USART2
+            }
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! gps_dma_streams {
+        ($dp:ident) => {{
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev"))
+            ))]
+            {
+                stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA2)
+            }
+
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA1)
+            }
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! gps_pins {
+        ($gpio_buses:ident) => {{
+            #[cfg(feature = "target-mini")]
+            {
+                (
+                    $gpio_buses.a.pa9.into_alternate(),
+                    $gpio_buses.a.pa10.into_alternate(),
+                )
+            }
+            #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+            {
+                (
+                    $gpio_buses.a.pa9.into_alternate(),
+                    $gpio_buses.a.pa10.into_alternate(),
+                )
+            }
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                (
+                    $gpio_buses.a.pa2.into_alternate(),
+                    $gpio_buses.a.pa3.into_alternate(),
+                )
+            }
+        }};
+    }
 }
 
-#[macro_export]
-macro_rules! lrhp_pins {
-    ($gpio:ident) => {{
-        ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3, $gpio.e.pe10)
-    }};
+pub mod radio {
+    #[macro_export]
+    macro_rules! radio_pins {
+        ($gpio:ident) => {{
+            #[cfg(feature = "target-mini")]
+            {
+                // (nss, sck, miso, mosi, reset, busy, dio1)
+                (
+                    $gpio.a.pa4,
+                    $gpio.a.pa5,
+                    $gpio.a.pa6,
+                    $gpio.a.pa7,
+                    $gpio.b.pb0,
+                    $gpio.c.pc5,
+                    $gpio.c.pc4,
+                )
+            }
+
+            #[cfg(feature = "target-maxi")]
+            {
+                (
+                    $gpio.a.pa4,
+                    $gpio.a.pa5,
+                    $gpio.a.pa6,
+                    $gpio.a.pa7,
+                    $gpio.b.pb0,
+                    $gpio.c.pc5,
+                    $gpio.c.pc4,
+                )
+            }
+        }};
+    }
 }
 
-#[cfg(feature = "target-mini")]
-pub type PyroEnable = Pin<'B', 4, Output>;
-#[cfg(feature = "target-mini")]
-pub type PyroFire2 = Pin<'B', 12, Output>;
-#[cfg(feature = "target-mini")]
-pub type PyroFire1 = Pin<'C', 6, Output>;
+pub mod pyro {
+    use stm32f4xx_hal::gpio::{Output, Pin};
 
-#[cfg(feature = "target-maxi")]
-pub type PyroEnable = Pin<'D', 7, Output>;
-#[cfg(feature = "target-maxi")]
-pub type PyroFire2 = Pin<'D', 6, Output>;
-#[cfg(feature = "target-maxi")]
-pub type PyroFire1 = Pin<'D', 5, Output>;
+    #[cfg(feature = "target-mini")]
+    pub type PyroEnable = Pin<'B', 4, Output>;
+    #[cfg(feature = "target-mini")]
+    pub type PyroFire2 = Pin<'B', 12, Output>;
+    #[cfg(feature = "target-mini")]
+    pub type PyroFire1 = Pin<'C', 6, Output>;
 
-#[macro_export]
-macro_rules! pyro_pins {
-    ($gpio:ident) => {{
-        #[cfg(feature = "target-mini")]
-        {
-            (
-                $gpio.b.pb4.into_push_pull_output(),
-                $gpio.b.pb12.into_push_pull_output(),
-                $gpio.c.pc6.into_push_pull_output(),
-            )
-        }
+    #[cfg(feature = "target-maxi")]
+    pub type PyroEnable = Pin<'D', 7, Output>;
+    #[cfg(feature = "target-maxi")]
+    pub type PyroFire2 = Pin<'D', 6, Output>;
+    #[cfg(feature = "target-maxi")]
+    pub type PyroFire1 = Pin<'D', 5, Output>;
 
-        #[cfg(feature = "target-maxi")]
-        {
-            (
-                $gpio.d.pd7.into_push_pull_output(),
-                $gpio.d.pd6.into_push_pull_output(),
-                $gpio.d.pd5.into_push_pull_output(),
-            )
-        }
-    }};
+    #[macro_export]
+    macro_rules! pyro_pins {
+        ($gpio:ident) => {{
+            #[cfg(feature = "target-mini")]
+            {
+                (
+                    $gpio.b.pb4.into_push_pull_output(),
+                    $gpio.b.pb12.into_push_pull_output(),
+                    $gpio.c.pc6.into_push_pull_output(),
+                )
+            }
+
+            #[cfg(feature = "target-maxi")]
+            {
+                (
+                    $gpio.d.pd7.into_push_pull_output(),
+                    $gpio.d.pd6.into_push_pull_output(),
+                    $gpio.d.pd5.into_push_pull_output(),
+                )
+            }
+        }};
+    }
 }
