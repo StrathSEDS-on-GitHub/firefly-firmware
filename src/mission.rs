@@ -6,7 +6,6 @@ use crate::{
 };
 use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
-use sequential_storage::queue;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use derive_more::{From, Into};
@@ -28,7 +27,7 @@ use stm32f4xx_hal::{
 };
 use storage_types::{
     CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
-    logs::{GPSSample, IMUSample, LocalCtxt, Message, MessageType, PressureTempSample, RadioCtxt},
+    logs::{GPSSample, IMUSample, LocalCtxt, MessageType, PressureTempSample, RadioCtxt},
 };
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 

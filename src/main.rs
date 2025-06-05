@@ -119,7 +119,7 @@ const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    if let (Some(mut dp), Some(mut cp)) = (
+    if let (Some(mut dp), Some(cp)) = (
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {
@@ -306,7 +306,7 @@ async fn main(_spawner: Spawner) {
             &ConfigKey::try_from("id").unwrap(),
         )
         .await;
-        let board_id = 1; // board_id.unwrap().unwrap();
+        let board_id = board_id.unwrap_or(Some(1)).unwrap_or(1);
         let role = match board_id {
             2 | 0 => Role::GroundMain,
             3 => Role::GroundBackup,
