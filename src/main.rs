@@ -1,5 +1,6 @@
 #![allow(clippy::empty_loop)]
-#![allow(dead_code)]
+#![feature(const_slice_make_iter)]
+#![feature(impl_trait_in_assoc_type)]
 #![allow(static_mut_refs)]
 #![no_main]
 #![no_std]
@@ -10,6 +11,7 @@ use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
 use crate::mission::PYRO_MEASURE_PIN;
+use crate::pins::gps::PpsPin;
 use crate::pins::i2c::I2c1Handle;
 use crate::pins::*;
 use crate::radio::Radio;
@@ -107,6 +109,8 @@ static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
 static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
+
+static PPS_PIN: Mutex<RefCell<Option<PpsPin>>> = Mutex::new(RefCell::new(None));
 
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
@@ -237,7 +241,7 @@ async fn main(_spawner: Spawner) {
             .serial(
                 gps_pins!(gpio),
                 hal::serial::config::Config {
-                    baudrate: 115200.bps(),
+                    baudrate: 9600.bps(),
                     dma: hal::serial::config::DmaConfig::Rx,
                     ..Default::default()
                 },
@@ -246,22 +250,36 @@ async fn main(_spawner: Spawner) {
             .unwrap();
         let gps_streams = gps_dma_streams!(dp);
         let rx_stream = gps_rx_stream!(gps_streams);
-        gps::setup(rx_stream, gps_serial);
-        gps::init_teseo().await;
-        gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
-        gps::set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None).await;
 
-        gps::set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None).await;
+        gps::setup(rx_stream, gps_serial);
+
+        if cfg!(all(feature = "target-maxi", feature = "ultra-dev")) {
+            gps::init_teseo().await;
+            gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
+            gps::set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None).await;
+            gps::set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None).await;
+        } else {
+            gps::tx(b"$PMTK251,115200*1F\r\n").await;
+            delay.delay_ms(10);
+            gps::change_baudrate(115200).await;
+            gps::set_nmea_output().await;
+            gps::tx(b"$PMTK220,100*2F\r\n").await;
+        }
 
         let mut syscfg = dp.SYSCFG.constrain();
         let mut pps_pin = pps_pin!(gpio);
         pps_pin.make_interrupt_source(&mut syscfg);
         pps_pin.trigger_on_edge(&mut dp.EXTI, gpio::Edge::Rising);
         pps_pin.enable_interrupt(&mut dp.EXTI);
+        cortex_m::interrupt::free(|cs| {
+            PPS_PIN.borrow(cs).replace(Some(pps_pin));
+        });
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::EXTI15_10);
+            pac::NVIC::unmask(pac::Interrupt::EXTI2);
         }
         pac::NVIC::unpend(pac::Interrupt::EXTI15_10);
+        pac::NVIC::unpend(pac::Interrupt::EXTI2);
 
         // gps::tx(b"$PMTK251,115200*1F\r\n").await;
         // gps::change_baudrate(115200).await;

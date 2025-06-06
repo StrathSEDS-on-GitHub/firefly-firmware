@@ -16,24 +16,26 @@ use hal::{
 use heapless::Deque;
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use stm32f4xx_hal::{
-    dma, interrupt, pac::{self}, prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write}, serial::{Rx, Tx}
+    dma, interrupt,
+    pac::{self},
+    prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write},
+    serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
 
-use crate::{futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel, pins::gps::{GPSPins, GPSRxStream, GPSUsart}, RTC};
+use crate::{
+    RTC,
+    futures::YieldFuture,
+    interrupt_wake,
+    logs::FixedWriter,
+    neopixel,
+    pins::gps::{GPSPins, GPSRxStream, GPSUsart},
+};
 use stm32f4xx_hal as hal;
 
 static RX_TRANSFER: Mutex<
     RefCell<
-        Option<
-            Transfer<
-                GPSRxStream,
-                4,
-                Rx<GPSUsart>,
-                dma::PeripheralToMemory,
-                &'static mut [u8],
-            >,
-        >,
+        Option<Transfer<GPSRxStream, 4, Rx<GPSUsart>, dma::PeripheralToMemory, &'static mut [u8]>>,
     >,
 > = Mutex::new(RefCell::new(None));
 
@@ -42,8 +44,6 @@ static RX_BUFFER: Mutex<RefCell<Option<&'static mut [u8; RX_BUFFER_SIZE]>>> =
     Mutex::new(RefCell::new(None));
 
 static RX_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
-
-static REFINE_TIME: AtomicBool = AtomicBool::new(false);
 
 const RX_BUFFER_SIZE: usize = 2048;
 
@@ -77,8 +77,11 @@ pub fn setup(rx_stream: GPSRxStream, gps: hal::serial::Serial<GPSUsart>) {
             .replace(Deque::new())
     });
     unsafe {
+        // all potential interrupts
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM5);
+        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::DMA1_STREAM2);
         cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART2);
+        cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USART1);
     }
 }
 
@@ -106,7 +109,7 @@ pub async fn change_baudrate(baudrate: u32) {
                     pins,
                     hal::serial::config::Config {
                         baudrate: baudrate.bps(),
-                        dma: hal::serial::config::DmaConfig::TxRx,
+                        dma: hal::serial::config::DmaConfig::Rx,
                         ..Default::default()
                     },
                     &clocks,
@@ -211,17 +214,17 @@ pub async fn poll_for_sentences() -> ! {
                             0,
                         ],
                     );
-                }
-                if let ParseResult::GGA(Some(GGA {
-                    fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
-                    ..
-                })) = parse_result.clone()
-                {
-                    got_fix = true;
-                    if !got_fix || nth % 20 == 0 {
-                        REFINE_TIME.store(true, Ordering::Relaxed);
+                    if let ParseResult::GGA(Some(GGA {
+                        fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
+                        time,
+                        ..
+                    })) = parse_result.clone()
+                    {
+                        set_rtc(time);
+                        got_fix = true;
                     }
                 }
+
                 cortex_m::interrupt::free(|cs| {
                     let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
                     let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
@@ -304,6 +307,16 @@ pub async fn set_par(config_block: ConfigBlock, id: u8, param_value: &[u8], mode
 #[interrupt]
 #[allow(non_snake_case)]
 fn DMA1_STREAM5() {
+    dma_interrupt_impl();
+}
+
+#[interrupt]
+#[allow(non_snake_case)]
+fn DMA1_STREAM2() {
+    dma_interrupt_impl();
+}
+
+fn dma_interrupt_impl() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
         let transfer = transfer_ref.as_mut().unwrap();
@@ -328,9 +341,7 @@ fn DMA1_STREAM5() {
     });
 }
 
-/// Used for 1PPS
-#[interrupt]
-fn EXTI15_10() {
+fn pps_interrupt_impl() {
     cortex_m::interrupt::free(|cs| {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
@@ -340,11 +351,34 @@ fn EXTI15_10() {
         )
         .unwrap();
     });
+
+    pac::NVIC::mask(pac::Interrupt::EXTI15_10);
+    pac::NVIC::mask(pac::Interrupt::EXTI2);
+}
+
+#[interrupt]
+fn EXTI2() {
+    pps_interrupt_impl();
+}
+
+#[interrupt]
+fn EXTI15_10() {
+    pps_interrupt_impl();
 }
 
 #[interrupt]
 #[allow(non_snake_case)]
 fn USART2() {
+    usart_interrupt_impl();
+}
+
+#[interrupt]
+#[allow(non_snake_case)]
+fn USART1() {
+    usart_interrupt_impl();
+}
+
+fn usart_interrupt_impl() {
     cortex_m::interrupt::free(|cs| {
         let mut transfer_ref = RX_TRANSFER.borrow(cs).borrow_mut();
 
@@ -355,57 +389,13 @@ fn USART2() {
 
         let mut rx_buf = RX_BUFFER.borrow(cs).borrow_mut().take().unwrap();
 
-        if REFINE_TIME.load(Ordering::Relaxed) {
-            // Take this opportunity to refine the time
-            // by performing a single-shot read of the GPS
-            // till we get a GGA sentence, then immediately
-            // set the RTC.
-
-            let (stream, mut rx, rx_buf_data, _) = transfer_ref.take().unwrap().release();
-            let mut parser = nmea0183::Parser::new();
-
-            loop {
-                let c = nb::block!(rx.read()).unwrap();
-                if let Some(Ok(parse_result)) = parser.parse_from_byte(c) {
-                    if let ParseResult::GGA(Some(GGA {
-                        time,
-                        fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
-                        ..
-                    })) = parse_result
-                    {
-                        set_rtc(time);
-                        break;
-                    }
-                }
-            }
-
-            // Release the stream and reinitialize it
-            // to get it back into the DMA RX state.
-
-            transfer_ref.replace(Transfer::init_peripheral_to_memory(
-                stream,
-                rx,
-                rx_buf,
-                None,
-                dma::config::DmaConfig::default()
-                    .memory_increment(true)
-                    .fifo_enable(true)
-                    .fifo_error_interrupt(true)
-                    .transfer_error_interrupt(true)
-                    .direct_mode_error_interrupt(true)
-                    .transfer_complete_interrupt(true),
-            ));
-            rx_buf = rx_buf_data.try_into().unwrap();
-            REFINE_TIME.store(false, Ordering::Relaxed);
-        } else {
-            let transfer = transfer_ref.as_mut().unwrap();
-            rx_buf = transfer
-                .next_transfer(rx_buf)
-                .unwrap()
-                .0
-                .try_into()
-                .unwrap();
-        }
+        let transfer = transfer_ref.as_mut().unwrap();
+        rx_buf = transfer
+            .next_transfer(rx_buf)
+            .unwrap()
+            .0
+            .try_into()
+            .unwrap();
 
         interrupt_wake!(crate::futures::gps_rx_wake);
         RX_BYTES_READ.store(bytes as usize, Ordering::SeqCst);

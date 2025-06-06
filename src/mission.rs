@@ -781,6 +781,14 @@ async fn handle_incoming_packets() -> ! {
 }
 
 pub async fn fire_pyro(pin: PyroPin, duration: u32) {
+    #[cfg(feature = "target-mini")]
+    {
+        let _ = pin;
+        let _ = duration;
+        panic!("Pyro board is modified. Mini cannot fire pyro.");
+    }
+
+
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { PYRO_TIMER.as_mut().unwrap() };
     trait Pin: OutputPin<Error = Infallible> + core::fmt::Debug {}
@@ -851,6 +859,12 @@ pub async fn arm() {
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
     let pyro_enable = unsafe { PYRO_ENABLE_PIN.as_mut().unwrap() };
     buzz.set_high();
+
+    #[cfg(feature = "target-mini")]
+    {
+        panic!("Pyro board is modified. Mini cannot be armed.");
+    }
+
     pyro_enable.set_high();
     cortex_m::interrupt::free(|cs| {
         STAGE.borrow(cs).replace(MissionStage::Armed);
@@ -1143,6 +1157,23 @@ pub async fn begin(
                 }
             };
 
+            let altimeter_task = {
+                #[cfg(any(feature = "target-mini", not(feature = "ultra-dev"))) ]
+                {
+                    let _ = ms5607_altimeter;
+                    bmp_altimeter_handler(
+                        bmp_altimeter.unwrap(),
+                        pr_timer,
+                        pressure_sender,
+                    )
+                }
+                #[cfg(all(feature = "target-maxi", feature = "ultra-dev")) ]
+                {
+                    let _ = bmp_altimeter;
+                    ms5607_altimeter_handler(ms5607_altimeter.unwrap())
+                }
+            };
+
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
@@ -1150,10 +1181,9 @@ pub async fn begin(
                 imu_task,
                 gps_handler(),
                 gps_broadcast(),
-                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
+                altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
-                ms5607_altimeter_handler(ms5607_altimeter.unwrap()),
                 // imu_task
             )
             .0

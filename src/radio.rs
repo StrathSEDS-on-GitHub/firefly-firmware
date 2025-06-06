@@ -143,21 +143,29 @@ pub(crate) enum RadioState {
 static RADIO_STATE: Mutex<Cell<RadioState>> =
     Mutex::new(Cell::new(RadioState::Buffer(Role::Avionics)));
 
-// Set to true when we have launched and before the config has been switched.
-static SWITCHED_CONFIGS: AtomicBool = AtomicBool::new(false);
-
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
 pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 6] = [
-    (RadioState::Buffer(Role::GroundMain), 100),
-    (RadioState::Tx(Role::GroundMain), 500),
-    (RadioState::Buffer(Role::Avionics), 100),
-    (RadioState::Tx(Role::Avionics), 1200),
-    (RadioState::Buffer(Role::Cansat), 100),
-    (RadioState::Tx(Role::Cansat), 1000),
+    (RadioState::Buffer(Role::GroundMain), 50),
+    (RadioState::Tx(Role::GroundMain), 250),
+    (RadioState::Buffer(Role::Avionics), 50),
+    (RadioState::Tx(Role::Avionics), 800),
+    (RadioState::Buffer(Role::Cansat), 50),
+    (RadioState::Tx(Role::Cansat), 800),
 ];
+
+const fn total_tdm_duration() -> u32 {
+    let mut total = 0;
+    let mut i = 0;
+    while i < TDM_CONFIG_MAIN.len() {
+        total += TDM_CONFIG_MAIN[i].1;
+        i += 1;
+    }
+    total
+}
+
 const TDM_CONFIG_BACKUP: [(RadioState, u32); 1] = [
-    (RadioState::Tx(Role::CansatBackup), 3000),
+    (RadioState::Tx(Role::CansatBackup), total_tdm_duration()),
 ];
 
 pub static RECEIVED_MESSAGE_QUEUE: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 64>>> =
@@ -175,7 +183,7 @@ fn RTC_WKUP() {
             let time = rtc.get_datetime();
 
             let (_, _, s, millis) = time.as_hms_milli();
-            let t_secs = (s as u32 * 1000 + millis as u32) % 3000;
+            let t_secs = (s as u32 * 1000 + millis as u32) % total_tdm_duration();
 
             let mut offset = 0;
             let tdm_config: &[_] = match role() {

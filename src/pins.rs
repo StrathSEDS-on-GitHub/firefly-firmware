@@ -250,24 +250,6 @@ macro_rules! neopixel_spi {
 }
 
 #[macro_export]
-macro_rules! pps_pin {
-    ($gpio_buses:ident) => {{
-        #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
-        {
-            $gpio_buses.e.pe11.into_input()
-        }
-        #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-        {
-            $gpio_buses.e.pe11.into_input()
-        }
-        #[cfg(all(feature = "target-mini"))]
-        {
-            $gpio_buses.e.pe11.into_input()
-        }
-    }};
-}
-
-#[macro_export]
 macro_rules! i2c1_pins {
     ($gpio_buses:ident) => {{
         #[cfg(feature = "target-mini")]
@@ -318,13 +300,37 @@ macro_rules! qspi_pins {
 
 pub mod gps {
     use stm32f4xx_hal::gpio::Alternate;
-    use stm32f4xx_hal::gpio::gpioa;
+    use stm32f4xx_hal::gpio::{gpioa, gpioe};
 
-    #[cfg(any(
-        feature = "target-mini",
-        all(feature = "target-maxi", not(feature = "ultra-dev"))
-    ))]
+    #[cfg(feature = "target-maxi")]
+    pub type PpsPin = gpioe::PE11<stm32f4xx_hal::gpio::Input>;
+
+    #[cfg(feature = "target-mini")]
+    pub type PpsPin = gpioa::PA2<stm32f4xx_hal::gpio::Input>;
+
+    #[macro_export]
+    macro_rules! pps_pin {
+        ($gpio_buses:ident) => {{
+            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            {
+                $gpio_buses.e.pe11.into_input()
+            }
+            #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+            {
+                $gpio_buses.e.pe11.into_input()
+            }
+            #[cfg(all(feature = "target-mini"))]
+            {
+                $gpio_buses.a.pa2.into_input()
+            }
+        }};
+    }
+
+    #[cfg(feature = "target-mini")]
     pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
+
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+    pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
 
     #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
     pub type GPSPins = (gpioa::PA2<Alternate<7>>, gpioa::PA3<Alternate<7>>);
@@ -423,7 +429,7 @@ pub mod gps {
             #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
             {
                 (
-                    $gpio_buses.a.pa9.into_alternate(),
+                    $gpio_buses.a.pa15.into_alternate(),
                     $gpio_buses.a.pa10.into_alternate(),
                 )
             }

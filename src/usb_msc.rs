@@ -20,8 +20,6 @@ use crate::{neopixel::{self}, usb_logger::USB_BUS, EP_MEMORY};
 pub static mut USB_STORAGE: Option<Scsi<UsbBusType, Storage>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<UsbBusType>> = None;
 
-static OFFSET: AtomicU32 = AtomicU32::new(0);
-
 // Cache up to one sector in RAM
 static mut SECTOR_CACHE: [u8; 4096] = [0u8; 4096];
 // The address of the cached sector
