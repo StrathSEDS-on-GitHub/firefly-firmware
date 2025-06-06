@@ -7,20 +7,23 @@
 
 use crate::logs::setup_logger;
 use crate::mission::PYRO_ADC;
+use crate::mission::PYRO_CONT2;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
-use crate::mission::PYRO_MEASURE_PIN;
+use crate::mission::PYRO_CONT1;
 use crate::pins::gps::PpsPin;
 use crate::pins::i2c::I2c1Handle;
+use crate::pins::radio::RadioInteruptPin;
+use crate::pins::radio::RadioSpi;
 use crate::pins::*;
 use crate::radio::Radio;
+use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
-use core::convert::Infallible;
 use core::fmt::Write;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::ExceptionFrame;
@@ -28,12 +31,10 @@ use cortex_m_rt::exception;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
-use embedded_hal::digital::ErrorType;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
 use fugit::ExtU64;
-use futures::TimerDelay;
 use hal::adc::Adc;
 use hal::adc::config::AdcConfig;
 use hal::gpio;
@@ -41,7 +42,6 @@ use hal::gpio::NoPin;
 use hal::pac::TIM9;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
-use hal::qspi::Bank1;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
@@ -52,13 +52,10 @@ use hal::spi::Spi;
 use hal::timer::Counter;
 use hal::timer::CounterHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
-use ms5607::MS5607;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
-use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::pac::SPI2;
-use stm32f4xx_hal::pac::TIM6;
 use storage_types::ConfigKey;
 use storage_types::Role;
 use sx126x::SX126x;
@@ -80,24 +77,29 @@ use crate::hal::{pac, prelude::*};
 use stm32f4xx_hal as hal;
 
 mod altimeter;
+#[cfg(feature = "target-mini")]
+mod bmp388;
+#[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
 mod bmp581;
 mod futures;
 mod gps;
 mod logs;
 mod mission;
+#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 mod ms5607;
 mod neopixel;
 mod pins;
 mod radio;
 mod stepper;
 mod usb_logger;
+#[cfg(feature = "msc")]
 mod usb_msc;
 
+#[cfg(feature = "msc")]
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 static CLOCKS: Mutex<Cell<Option<hal::rcc::Clocks>>> = Mutex::new(Cell::new(None));
 
-type Dio1Pin = gpio::gpioc::PC4<gpio::Input>;
-static mut DIO1_PIN: Option<Dio1Pin> = None;
+static mut DIO1_PIN: Option<RadioInteruptPin> = None;
 
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
@@ -108,7 +110,6 @@ static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
-static mut FLASH: Option<W25QSequentialStorage<Bank1, CAPACITY>> = None;
 
 static PPS_PIN: Mutex<RefCell<Option<PpsPin>>> = Mutex::new(RefCell::new(None));
 
@@ -160,7 +161,6 @@ async fn main(_spawner: Spawner) {
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
         }
 
-        const LED_NUM: usize = 3;
         let neopixel_spi = Spi::new(
             neopixel_spi!(dp),
             (NoPin::new(), NoPin::new(), {
@@ -178,12 +178,16 @@ async fn main(_spawner: Spawner) {
 
         let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
+        if TDM_CONFIG_MAIN.len() == 1 {
+            rtc.enable_wakeup(50u64.millis());
+        }
         cortex_m::interrupt::free(|cs| {
             CLOCKS.borrow(cs).set(Some(clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
             unsafe {
-                let (enable, p2, p1) = pyro_pins!(gpio);
-                PYRO_MEASURE_PIN.replace(gpio.c.pc0.into_analog());
+                let (enable, p2, p1, cont2, cont1) = pyro_pins!(gpio);
+                PYRO_CONT1.replace(cont1);
+                PYRO_CONT2.replace(cont2);
                 PYRO_ENABLE_PIN.replace(enable);
                 PYRO_FIRE2.replace(p2);
                 PYRO_FIRE1.replace(p1);
@@ -212,7 +216,7 @@ async fn main(_spawner: Spawner) {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM0);
         }
 
-        let qspi = Qspi::<Bank1>::new(
+        let qspi = Qspi::<QspiBank>::new(
             dp.QUADSPI,
             qspi_pins!(gpio),
             QspiConfig::default()
@@ -326,50 +330,77 @@ async fn main(_spawner: Spawner) {
         };
 
         unsafe { mission::ROLE = role };
-        let i2c_streams = i2c_dma_streams!(dp, gps_streams);
-        let tx_stream = i2c_streams.1;
-        let rx_stream = i2c_streams.0;
-        let i2c = dp
-            .I2C1
-            .i2c(i2c1_pins!(gpio), 400.kHz(), &clocks)
-            .use_dma(tx_stream, rx_stream);
 
-        static mut I2C_BUS: Option<UnsafeCell<I2c1Handle>> = None;
-        static I2C_BUSY: i2c::AtomicBusyState = i2c::AtomicBusyState::new(i2c::BusyState::Free);
-        // SAFETY: This is the only mutation of I2C_BUS so we have exclusive mutable access
-        unsafe { I2C_BUS = Some(UnsafeCell::new(i2c)) };
+        static mut I2C1_BUS: Option<UnsafeCell<I2c1Handle>> = None;
+        static I2C1_BUSY: i2c::AtomicBusyState = i2c::AtomicBusyState::new(i2c::BusyState::Free);
+
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            let i2c_streams = i2c_dma_streams!(dp, gps_streams);
+            let tx_stream = i2c_streams.1;
+            let rx_stream = i2c_streams.0;
+            let i2c = dp
+                .I2C1
+                .i2c(i2c1_pins!(gpio), 400.kHz(), &clocks)
+                .use_dma(tx_stream, rx_stream);
+            // SAFETY: This is the only mutation of I2C_BUS so we have exclusive mutable access
+            unsafe { I2C1_BUS = Some(UnsafeCell::new(i2c)) };
+        }
+
+        #[allow(unused)]
+        let i2c3 = {
+            #[cfg(any(feature = "target-maxi", feature = "target-ultra"))]
+            {
+                Some(dp.I2C3.i2c(i2c3_pins!(gpio), 100.kHz(), &clocks))
+            }
+            #[cfg(feature = "target-mini")]
+            {
+                None::<u32>
+            }
+        };
 
         let bmp = if mission::role() != Role::GroundMain {
             #[cfg(feature = "target-mini")]
             {
                 Some({
                     let alt_proxy = crate::pins::i2c::DMAAtomicDevice::new(
-                        unsafe { I2C_BUS.as_ref().unwrap() },
-                        &I2C_BUSY,
+                        unsafe { I2C1_BUS.as_ref().unwrap() },
+                        &I2C1_BUSY,
                     );
 
-                    altimeter::BMP388Wrapper::new(alt_proxy, &mut delay)
+                    bmp388::BMP388Wrapper::new(alt_proxy, &mut delay)
                 })
             }
 
-            #[cfg(feature = "target-maxi")]
+            #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
             {
                 let alt_proxy = crate::pins::i2c::DMAAtomicDevice::new(
-                    unsafe { I2C_BUS.as_ref().unwrap() },
-                    &I2C_BUSY,
+                    unsafe { I2C1_BUS.as_ref().unwrap() },
+                    &I2C1_BUSY,
                 );
                 let mut bmp = crate::bmp581::BMP581::new(alt_proxy).unwrap();
                 bmp.enable_pressure_temperature().unwrap();
                 bmp.setup_fifo().unwrap();
                 Some(bmp)
             }
+
+            #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+            {
+                let delay = futures::TimerDelay::new(dp.TIM6, clocks);
+                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110110, delay)
+                    .await
+                    .unwrap();
+                let ms5607 = ms5607.calibrate().await.unwrap();
+                Some(ms5607)
+            }
         } else {
             None
         };
+
         let icm = if role != Role::GroundMain && cfg!(feature = "target-mini") {
             let icm_proxy = crate::pins::i2c::DMAAtomicDevice::new(
-                unsafe { I2C_BUS.as_ref().unwrap() },
-                &I2C_BUSY,
+                unsafe { I2C1_BUS.as_ref().unwrap() },
+                &I2C1_BUSY,
             );
             let mut icm = IcmImu::new(icm_proxy, 0x68).unwrap();
             icm.enable_acc().unwrap();
@@ -377,56 +408,6 @@ async fn main(_spawner: Spawner) {
             Some(icm)
         } else {
             None
-        };
-
-        dp.I2C3.cr1().modify(|_, w| w.swrst().set_bit());
-        delay.delay_ms(10);
-        dp.I2C3.cr1().modify(|_, w| w.swrst().clear_bit());
-
-        let i2c3 = {
-            #[cfg(feature = "target-maxi")]
-            {
-                Some(
-                    dp.I2C3.i2c(
-                        (
-                            gpio.a
-                                .pa8
-                                .into_alternate()
-                                .internal_pull_up(true)
-                                .set_open_drain(),
-                            gpio.b
-                                .pb4
-                                .into_alternate()
-                                .internal_pull_up(true)
-                                .set_open_drain(),
-                        ),
-                        100.kHz(),
-                        &clocks,
-                    ),
-                )
-            }
-            #[cfg(feature = "target-mini")]
-            {
-                None::<u32>
-            }
-        };
-        #[cfg(feature = "target-mini")]
-        {
-            let _ = i2c3;
-        }
-
-        let ms5607: Option<MS5607<I2c<pac::I2C3>, TimerDelay<TIM6>, _>> = {
-            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
-            {
-                let delay = TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = MS5607::new(i2c3.unwrap(), 0b1110110, delay).await.unwrap();
-                let ms5607 = ms5607.calibrate().await.unwrap();
-                Some(ms5607)
-            }
-            #[cfg(any(feature = "target-mini", not(feature = "ultra-dev")))]
-            {
-                None
-            }
         };
 
         let bno080: Option<BNO080<I2cInterface<I2c<pac::I2C3>>>> = {
@@ -450,7 +431,11 @@ async fn main(_spawner: Spawner) {
                 Some(bno)
             }
 
-            #[cfg(any(feature = "target-mini", feature = "ultra-dev"))]
+            #[cfg(any(
+                feature = "target-mini",
+                feature = "ultra-dev",
+                feature = "target-ultra"
+            ))]
             {
                 None
             }
@@ -542,23 +527,29 @@ async fn main(_spawner: Spawner) {
         };
 
         // ===== Init SPI1 =====
-        let spi1_mode = spi::Mode {
+        let radio_spi_mode = spi::Mode {
             polarity: spi::Polarity::IdleLow,
             phase: spi::Phase::CaptureOnFirstTransition,
         };
-        let spi1_freq = 3.MHz();
+        let radio_spi_freq = 3.MHz();
         let (nss, sck, miso, mosi, nreset, busy, dio) = radio_pins!(gpio);
-        let spi1_pins = (sck, miso, mosi);
-        let spi1 = spi::Spi::new(dp.SPI1, spi1_pins, spi1_mode, spi1_freq, &clocks);
+        let radio_spi_pins = (sck, miso, mosi);
+        let radio_spi = spi::Spi::new(
+            radio_spi!(dp),
+            radio_spi_pins,
+            radio_spi_mode,
+            radio_spi_freq,
+            &clocks,
+        );
 
         let lora_nreset = nreset.into_push_pull_output_in_state(gpio::PinState::High);
         let lora_nss = nss.into_push_pull_output_in_state(gpio::PinState::High);
         let lora_busy = busy.into_floating_input();
         let lora_ant = DummyPin::new_high();
 
-        static mut SPI_BUS: Option<AtomicCell<Spi<SPI1>>> = None;
+        static mut SPI_BUS: Option<AtomicCell<Spi<RadioSpi>>> = None;
         unsafe {
-            SPI_BUS.replace(AtomicCell::new(spi1));
+            SPI_BUS.replace(AtomicCell::new(radio_spi));
         }
 
         let spi1_device = embedded_hal_bus::spi::AtomicDevice::new(
@@ -580,14 +571,8 @@ async fn main(_spawner: Spawner) {
 
         // Wrap DIO1 pin in Dio1PinRefMut newtype, as mutable refences to
         // pins do not implement the `embedded_hal::digital::v2::InputPin` trait.
-        let lora_dio1 = Dio1PinRefMut(lora_dio1);
-
-        let lora_pins = (
-            lora_nreset, // A0
-            lora_busy,   // D4
-            lora_ant,    // D8
-            lora_dio1,   // D6
-        );
+        let lora_dio1 = radio::RadioInterruptRefMut(lora_dio1);
+        let lora_pins = (lora_nreset, lora_busy, lora_ant, lora_dio1);
 
         let conf = build_config(&mut wrapper).await;
         setup_logger(wrapper).unwrap();
@@ -622,7 +607,6 @@ async fn main(_spawner: Spawner) {
             icm,
             dp.TIM10.counter(&clocks),
             bno080,
-            ms5607,
             bmi323,
             clocks,
         )
@@ -630,7 +614,9 @@ async fn main(_spawner: Spawner) {
     }
 }
 
-async fn build_config(flash: &mut W25QSequentialStorage<Bank1, CAPACITY>) -> sx126x::conf::Config {
+async fn build_config(
+    flash: &mut W25QSequentialStorage<QspiBank, CAPACITY>,
+) -> sx126x::conf::Config {
     use sx126x::op::{
         PacketType::LoRa, modulation::lora::*, packet::lora::LoRaPacketParams,
         rxtx::DeviceSel::SX1262,
@@ -789,21 +775,6 @@ pub fn panic(info: &PanicInfo) -> ! {
         buzzer.toggle();
         neopixel::update_pixel(1, [0, 0, 0]);
         nb::block!(timer.wait()).ok();
-    }
-}
-
-struct Dio1PinRefMut<'dio1>(&'dio1 mut Dio1Pin);
-impl ErrorType for Dio1PinRefMut<'_> {
-    type Error = Infallible;
-}
-
-impl<'dio1> embedded_hal::digital::InputPin for Dio1PinRefMut<'dio1> {
-    fn is_high(&mut self) -> Result<bool, Self::Error> {
-        self.0.is_high()
-    }
-
-    fn is_low(&mut self) -> Result<bool, Self::Error> {
-        self.0.is_low()
     }
 }
 

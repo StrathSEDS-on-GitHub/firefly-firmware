@@ -2,7 +2,7 @@ use core::{
     cell::RefCell,
     cmp::min,
     fmt::Write as _,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use cortex_m::interrupt::Mutex;
@@ -16,10 +16,7 @@ use hal::{
 use heapless::Deque;
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use stm32f4xx_hal::{
-    dma, interrupt,
-    pac::{self},
-    prelude::{_embedded_hal_serial_nb_Read as _, _embedded_hal_serial_nb_Write},
-    serial::{Rx, Tx},
+    dma, interrupt, pac, prelude::_embedded_hal_serial_nb_Write, serial::{Rx, Tx}
 };
 use time::{Date, PrimitiveDateTime};
 
@@ -274,11 +271,14 @@ pub async fn init_teseo() {
     tx(writer.data()).await;
 }
 
+#[allow(unused)]
 pub enum ConfigBlock {
     ConfigCurrent = 1,
     ConfigDefault = 2,
     ConfigNVMStored = 3,
 }
+
+#[allow(unused)]
 pub enum Mode {
     Overwrite = 0,
     OrMask = 1,
@@ -402,10 +402,6 @@ fn usart_interrupt_impl() {
         RX_BUFFER.borrow(cs).borrow_mut().replace(rx_buf);
         transfer_ref.as_mut().unwrap().start(|_| {});
     });
-}
-
-async fn gps_tx_complete() {
-    crate::futures::gps_tx_wake::future().await;
 }
 
 pub async fn tx(buf: &[u8]) {

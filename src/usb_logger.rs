@@ -17,10 +17,6 @@ use usbd_serial::SerialPort;
 
 use embassy_futures::block_on;
 
-struct Logger {
-    serial: Option<Serial<'static>>,
-}
-
 static mut SERIAL: Option<Serial> = None;
 pub static mut USB_BUS: Option<UsbBusAllocator<UsbBus<USB>>> = None;
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
@@ -29,12 +25,6 @@ static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 pub fn get_serial() -> &'static Serial<'static> {
     // SAFETY: SERIAL is only mutated once at initialization.
     unsafe { SERIAL.as_ref().unwrap() }
-}
-
-/// Try to get a reference to the serial port
-pub fn try_get_serial() -> Option<&'static Serial<'static>> {
-    // SAFETY: SERIAL is only mutated once at initialization.
-    unsafe { SERIAL.as_ref() }
 }
 
 /// A wrapper around the serial port that hides some unsafe stuff.

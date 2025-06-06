@@ -1,6 +1,7 @@
 use core::cell::Cell;
 use core::cell::RefCell;
 
+use core::convert::Infallible;
 use core::ops::DerefMut;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
@@ -9,15 +10,16 @@ use core::sync::atomic::Ordering;
 use crate::mission;
 use crate::mission::role;
 use crate::neopixel;
-use crate::Dio1PinRefMut;
+use crate::pins::radio::RadioBusyPin;
+use crate::pins::radio::RadioChipSelect;
+use crate::pins::radio::RadioInteruptPin;
+use crate::pins::radio::RadioResetPin;
+use crate::pins::radio::RadioSpi;
 use cortex_m::interrupt::Mutex;
 use dummy_pin::DummyPin;
 use embedded_hal::spi::SpiDevice;
 use heapless::Deque;
-use stm32f4xx_hal::gpio::Output;
-use stm32f4xx_hal::gpio::Pin;
 use stm32f4xx_hal::interrupt;
-use stm32f4xx_hal::pac::SPI1;
 use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
@@ -71,9 +73,6 @@ fn EXTI4() {
     }
 }
 
-pub const BNO_BROADCAST_BUF_LEN    : usize = 8;
-pub const BNO_BROADCAST_DECIMATION : usize = 4;
-
 pub fn next_counter() -> u16 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
@@ -82,24 +81,24 @@ static RADIO: Mutex<
     RefCell<
         Option<
             Radio<
-                Spi1Device,
-                Pin<'B', 0, Output>,
-                Pin<'C', 5>,
+                RadioSpiDevice,
+                RadioResetPin,
+                RadioBusyPin,
                 DummyPin<dummy_pin::level::High>,
-                Dio1PinRefMut<'_>,
+                RadioInterruptRefMut<'_>,
             >,
         >,
     >,
 > = Mutex::new(RefCell::new(None));
 
-pub type Spi1Device =
-    embedded_hal_bus::spi::AtomicDevice<'static, Spi<SPI1>, Pin<'A', 4, Output>, SysDelay>;
+pub type RadioSpiDevice =
+    embedded_hal_bus::spi::AtomicDevice<'static, Spi<RadioSpi>, RadioChipSelect, SysDelay>;
 pub type RadioDevice<'a> = Radio<
-    Spi1Device,
-    Pin<'B', 0, Output>,
-    Pin<'C', 5>,
+    RadioSpiDevice,
+    RadioResetPin,
+    RadioBusyPin,
     DummyPin<dummy_pin::level::High>,
-    Dio1PinRefMut<'a>,
+    RadioInterruptRefMut<'a>,
 >;
 pub struct Radio<TSPI: SpiDevice, TNRST, TBUSY, TANT, TDIO1> {
     radio: sx126x::SX126x<TSPI, TNRST, TBUSY, TANT, TDIO1>,
@@ -107,11 +106,11 @@ pub struct Radio<TSPI: SpiDevice, TNRST, TBUSY, TANT, TDIO1> {
 impl RadioDevice<'static> {
     pub fn init(
         radio: sx126x::SX126x<
-            Spi1Device,
-            Pin<'B', 0, Output>,
-            Pin<'C', 5>,
+            RadioSpiDevice,
+            RadioResetPin,
+            RadioBusyPin,
             DummyPin<dummy_pin::level::High>,
-            Dio1PinRefMut<'static>,
+            RadioInterruptRefMut<'static>,
         >,
     ) {
         cortex_m::interrupt::free(|cs| {
@@ -145,13 +144,8 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 6] = [
-    (RadioState::Buffer(Role::GroundMain), 50),
-    (RadioState::Tx(Role::GroundMain), 250),
-    (RadioState::Buffer(Role::Avionics), 50),
+pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 1] = [
     (RadioState::Tx(Role::Avionics), 800),
-    (RadioState::Buffer(Role::Cansat), 50),
-    (RadioState::Tx(Role::Cansat), 800),
 ];
 
 const fn total_tdm_duration() -> u32 {
@@ -327,6 +321,7 @@ fn set_radio() {
     }
 }
 
+#[allow(unused)]
 pub fn get_packet_status() -> PacketStatus {
     cortex_m::interrupt::free(|cs| {
         let mut radio_ref = RADIO.borrow(cs).borrow_mut();
@@ -334,4 +329,20 @@ pub fn get_packet_status() -> PacketStatus {
         radio.radio.wait_on_busy().unwrap();
         radio.radio.get_packet_status().unwrap()
     })
+}
+
+
+pub(crate) struct RadioInterruptRefMut<'dio1>(pub &'dio1 mut RadioInteruptPin);
+impl embedded_hal::digital::ErrorType for RadioInterruptRefMut<'_> {
+    type Error = Infallible;
+}
+
+impl<'dio1> embedded_hal::digital::InputPin for RadioInterruptRefMut<'dio1> {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        self.0.is_high()
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        self.0.is_low()
+    }
 }

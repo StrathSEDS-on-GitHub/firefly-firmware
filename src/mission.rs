@@ -1,18 +1,12 @@
-use crate::{
-    altimeter::{read_altimeter_fifo, PressureTemp},
-    futures::TimerDelay,
-    ms5607::{Calibrated, MS5607},
-    pins::pyro::*,
-    radio::{BNO_BROADCAST_BUF_LEN, BNO_BROADCAST_DECIMATION},
-};
+use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use derive_more::{From, Into};
 use embassy_futures::block_on;
+use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
-use embedded_hal_async::delay::DelayNs as _;
 use fugit::ExtU32;
 use futures::join;
 use heapless::{String, Vec};
@@ -22,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     ClearFlags,
     adc::{Adc, config::SampleTime},
-    gpio::{Analog, Pin},
     pac::{ADC1, TIM12},
     rcc::Clocks,
     timer::{self, Counter, Instance},
@@ -46,7 +39,8 @@ use crate::{
 
 pub static mut ROLE: Role = Role::Cansat;
 pub static mut PYRO_ADC: Option<Adc<ADC1>> = None;
-pub static mut PYRO_MEASURE_PIN: Option<Pin<'C', 0, Analog>> = None;
+pub static mut PYRO_CONT1: Option<PyroCont1> = None;
+pub static mut PYRO_CONT2: Option<PyroCont2> = None;
 pub static mut PYRO_ENABLE_PIN: Option<PyroEnable> = None;
 pub static mut PYRO_FIRE2: Option<PyroFire2> = None;
 pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
@@ -58,14 +52,6 @@ pub fn role() -> Role {
     unsafe { ROLE }
 }
 
-pub fn is_launched() -> bool {
-    match current_stage() {
-        MissionStage::Disarmed => false,
-        MissionStage::Armed => false,
-        _ => true,
-    }
-}
-
 pub async fn update_pyro_state() {
     // SAFETY: This is the only place we use these static muts
     //         and as we are not async, we can guarantee that
@@ -73,11 +59,21 @@ pub async fn update_pyro_state() {
     let mv = unsafe {
         // Need to disarm pyro to read voltage correctly
         let pyro_enable = PYRO_ENABLE_PIN.as_mut().unwrap();
-        let previous = pyro_enable.is_set_high();
+        let previous = pyro_enable.is_set_high().unwrap();
+
         pyro_enable.set_low();
-        let pyro = PYRO_MEASURE_PIN.as_mut().unwrap();
+        let pyro = PYRO_CONT1.as_mut().unwrap();
         let adc = PYRO_ADC.as_mut().unwrap();
-        let sample = adc.convert(pyro, SampleTime::Cycles_56);
+        let sample = {
+            #[cfg(feature = "target-ultra")]
+            {
+                adc.convert(pyro, SampleTime::Cycles_56)
+            }
+            #[cfg(not(feature = "target-ultra"))]
+            {
+                0
+            }
+        };
 
         if previous {
             pyro_enable.set_high();
@@ -588,6 +584,7 @@ async fn gps_broadcast() -> ! {
     }
 }
 
+#[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
 async fn bmp_altimeter_handler(
     mut sensor: Altimeter,
     mut timer: Counter<TIM12, 10000>,
@@ -602,7 +599,7 @@ async fn bmp_altimeter_handler(
         let mut samples = [PressureTempSample::default(); 40 * NTH];
 
         for sample in samples.iter_mut() {
-            let (frames, returned_sensor)  = read_altimeter_fifo(sensor).await;
+            let (frames, returned_sensor) = crate::altimeter::read_altimeter_fifo(sensor).await;
             sensor = returned_sensor;
             for frame in &frames {
                 let pressure = frame.pressure;
@@ -780,6 +777,7 @@ async fn handle_incoming_packets() -> ! {
     }
 }
 
+#[allow(unreachable_code)]
 pub async fn fire_pyro(pin: PyroPin, duration: u32) {
     #[cfg(feature = "target-mini")]
     {
@@ -788,24 +786,29 @@ pub async fn fire_pyro(pin: PyroPin, duration: u32) {
         panic!("Pyro board is modified. Mini cannot fire pyro.");
     }
 
-
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { PYRO_TIMER.as_mut().unwrap() };
-    trait Pin: OutputPin<Error = Infallible> + core::fmt::Debug {}
-    impl<T: OutputPin<Error = Infallible> + core::fmt::Debug> Pin for T {}
 
     let mut pyro_fires = {
-        let mut vec: Vec<&mut dyn Pin, 2> = Vec::new();
+        let mut vec: Vec<&mut dyn OutputPin<Error = Infallible>, 2> = Vec::new();
         let _ = match pin {
             PyroPin::One => {
-                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() }).unwrap();
+                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() })
+                    .map_err(|_| "Pyro fire 1 pin not initialized")
+                    .unwrap();
             }
             PyroPin::Two => {
-                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() }).unwrap();
+                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() })
+                    .map_err(|_| "Pyro fire 2 pin not initialized")
+                    .unwrap();
             }
             PyroPin::Both => {
-                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() }).unwrap();
-                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() }).unwrap();
+                vec.push(unsafe { PYRO_FIRE1.as_mut().unwrap() })
+                    .map_err(|_| "Pyro fire 1 pin not initialized")
+                    .unwrap();
+                vec.push(unsafe { PYRO_FIRE2.as_mut().unwrap() })
+                    .map_err(|_| "Pyro fire 2 pin not initialized")
+                    .unwrap();
             }
         };
         vec
@@ -854,16 +857,17 @@ pub async fn disarm() {
     buzz.set_low();
 }
 
+#[allow(unreachable_code)]
 pub async fn arm() {
-    let buzz = unsafe { BUZZER.as_mut().unwrap() };
-    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-    let pyro_enable = unsafe { PYRO_ENABLE_PIN.as_mut().unwrap() };
-    buzz.set_high();
-
     #[cfg(feature = "target-mini")]
     {
         panic!("Pyro board is modified. Mini cannot be armed.");
     }
+
+    let buzz = unsafe { BUZZER.as_mut().unwrap() };
+    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+    let pyro_enable = unsafe { PYRO_ENABLE_PIN.as_mut().unwrap() };
+    buzz.set_high();
 
     pyro_enable.set_high();
     cortex_m::interrupt::free(|cs| {
@@ -973,6 +977,7 @@ async fn icm_imu_handler(
 }
 
 /// https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles#Source_code_2
+#[allow(unused)]
 fn quaternion_to_euler(quat: [f32; 4]) -> [f32; 3] {
     let [w, x, y, z] = quat;
     let mut angles = [0.0f32; 3];
@@ -995,6 +1000,7 @@ fn quaternion_to_euler(quat: [f32; 4]) -> [f32; 3] {
     return angles;
 }
 
+#[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
 async fn bno_imu_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
 where
     SI: SensorInterface<SensorError = SE>,
@@ -1004,7 +1010,7 @@ where
     loop {
         let mut samples = [IMUSample::default(); 20];
 
-        for i in 0..(BNO_BROADCAST_BUF_LEN * BNO_BROADCAST_DECIMATION) {
+        for i in 0..(12 * 8) {
             let (acc, quat) = loop {
                 YieldFuture::new().await;
                 bno.handle_all_messages(&mut delay, 1);
@@ -1014,8 +1020,8 @@ where
                     }
                 }
             };
-            if i % BNO_BROADCAST_DECIMATION == 0 {
-                samples[i / BNO_BROADCAST_DECIMATION] = IMUSample {
+            if i % 8 == 0 {
+                samples[i / 8] = IMUSample {
                     timestamp: current_rtc_time(),
                     acceleration: acc,
                     angular_velocity: quaternion_to_euler(quat),
@@ -1040,6 +1046,7 @@ where
     }
 }
 
+#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 pub async fn bmi323_imu_handler(
     mut bmi323: Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>,
     mut timer: impl embedded_hal_async::delay::DelayNs,
@@ -1077,14 +1084,20 @@ pub async fn bmi323_imu_handler(
     }
 }
 
+#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 pub async fn ms5607_altimeter_handler(
-    mut ms5607: MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>,
+    mut ms5607: crate::ms5607::MS5607<
+        impl I2c,
+        impl embedded_hal_async::delay::DelayNs,
+        crate::ms5607::Calibrated,
+    >,
+    pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
 ) -> ! {
     loop {
         let mut samples = [PressureTempSample::default(); 40];
 
         for i in 0..samples.len() {
-            let PressureTemp {
+            let crate::altimeter::PressureTemp {
                 pressure,
                 temperature,
             } = ms5607
@@ -1096,8 +1109,25 @@ pub async fn ms5607_altimeter_handler(
                 pressure,
                 temperature,
             };
-            ms5607.delay_ms(10).await;
+            embedded_hal_async::delay::DelayNs::delay_ms(&mut ms5607, 10).await;
         }
+
+        pressure_sender.send(
+            samples
+                .iter()
+                .take(ALTIMETER_FRAME_COUNT)
+                .map(
+                    |&PressureTempSample {
+                         pressure,
+                         temperature,
+                         ..
+                     }| crate::altimeter::PressureTemp {
+                        pressure,
+                        temperature,
+                    },
+                )
+                .collect(),
+        ).await.unwrap();
 
         let message = MessageType::new_pressure_temp(samples.into_iter());
         let radio_msg = message.clone().into_message(radio_ctxt());
@@ -1112,17 +1142,31 @@ pub async fn ms5607_altimeter_handler(
 }
 
 pub async fn begin(
-    bmp_altimeter: Option<Altimeter>,
+    altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
     icm_imu: Option<IcmImu<impl I2c, NoDmp>>,
     imu_timer: Counter<impl Instance, 100000>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
-    ms5607_altimeter: Option<MS5607<impl I2c, impl embedded_hal_async::delay::DelayNs, Calibrated>>,
     bmi323_imu: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
+    let altimeter_task = {
+        #[cfg(any(
+            feature = "target-mini",
+            all(feature = "target-maxi", not(feature = "ultra-dev"))
+        ))]
+        {
+            bmp_altimeter_handler(altimeter.unwrap(), pr_timer, pressure_sender)
+        }
+        #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+        {
+            let _ = pr_timer;
+            ms5607_altimeter_handler(altimeter.unwrap(), pressure_sender)
+        }
+    };
+
     match unsafe { ROLE } {
         Role::GroundMain | Role::GroundBackup =>
         {
@@ -1146,7 +1190,7 @@ pub async fn begin(
                     let _ = bmi323_imu;
                     bno_imu_handler(bno_imu.unwrap(), imu_timer)
                 }
-                #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+                #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
                 {
                     let _ = bno_imu;
                     let _ = icm_imu;
@@ -1154,23 +1198,6 @@ pub async fn begin(
                         bmi323_imu.unwrap(),
                         TimerDelay::new(imu_timer.release().release(), clocks),
                     )
-                }
-            };
-
-            let altimeter_task = {
-                #[cfg(any(feature = "target-mini", not(feature = "ultra-dev"))) ]
-                {
-                    let _ = ms5607_altimeter;
-                    bmp_altimeter_handler(
-                        bmp_altimeter.unwrap(),
-                        pr_timer,
-                        pressure_sender,
-                    )
-                }
-                #[cfg(all(feature = "target-maxi", feature = "ultra-dev")) ]
-                {
-                    let _ = bmp_altimeter;
-                    ms5607_altimeter_handler(ms5607_altimeter.unwrap())
                 }
             };
 
@@ -1196,7 +1223,7 @@ pub async fn begin(
                 gps_handler(),
                 gps_broadcast(),
                 handle_incoming_packets(),
-                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
+                altimeter_task,
                 stage_update_handler(pressure_receiver),
                 // bno_handler(bno_imu.unwrap(), imu_timer),
             )
@@ -1211,7 +1238,7 @@ pub async fn begin(
                 gps_handler(),
                 gps_broadcast(),
                 handle_incoming_packets(),
-                bmp_altimeter_handler(bmp_altimeter.unwrap(), pr_timer, pressure_sender),
+                altimeter_task,
                 icm_imu_handler(
                     icm_imu.unwrap(),
                     TimerDelay::new(imu_timer.release().release(), clocks)

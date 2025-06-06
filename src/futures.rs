@@ -180,13 +180,14 @@ macro_rules! interrupt_wake {
 
 interrupt_wake_channel!(usb_wake);
 interrupt_wake_channel!(gps_rx_wake);
-interrupt_wake_channel!(gps_tx_wake);
+#[cfg(not(feature = "target-ultra"))]
 interrupt_wake_channel!(bmp_wake);
 
 /// Future that is woken by an interrupt.
 pub struct InterruptFuture {
     pub sender: StaticSender<Option<Waker>>,
     pub sent_waker: AtomicBool,
+    #[allow(dead_code)]
     pub name: &'static str,
 }
 

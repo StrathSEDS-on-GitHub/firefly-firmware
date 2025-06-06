@@ -9,6 +9,7 @@ edition = "2024"
 msc = []
 target-mini = []
 target-maxi = []
+target-ultra = []
 ultra-dev = []
 
 [profile.release]

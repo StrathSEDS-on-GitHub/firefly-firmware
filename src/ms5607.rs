@@ -13,9 +13,12 @@ mod sealed {
     impl CalibrationState for super::Calibrated {}
 }
 
+pub const ALTIMETER_FRAME_COUNT: usize = 32; // MS5607 does not support FIFO, so this is arbitrary.
+
 pub trait CalibrationState: sealed::CalibrationState {}
 impl<T: sealed::CalibrationState> CalibrationState for T {}
 
+#[allow(unused)]
 #[derive(Copy, Clone, Debug)]
 pub enum Oversampling {
     OSR4096,

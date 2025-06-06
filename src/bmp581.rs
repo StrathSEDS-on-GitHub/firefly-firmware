@@ -20,6 +20,7 @@ pub struct BMP581<I2C> {
     com: I2C
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Register {
     ChipId = 0x01,
@@ -37,6 +38,7 @@ impl BMP581<I2c1Proxy> {
     }
 }
 
+#[allow(dead_code)]
 impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C>  {
     pub fn new(mut i2c: I2C) -> Result<Self, I2C::Error> {
         i2c.write(ADDR, &[0x37, 0b0000_0001])?;

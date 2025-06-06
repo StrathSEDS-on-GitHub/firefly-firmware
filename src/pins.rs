@@ -12,16 +12,17 @@ pub struct GpioBuses {
 pub type BuzzerPin = gpiob::PB5<Output<PushPull>>;
 #[cfg(feature = "target-maxi")]
 pub type BuzzerPin = gpioe::PE1<Output<PushPull>>;
+#[cfg(feature = "target-ultra")]
+pub type BuzzerPin = gpioc::PC1<Output<PushPull>>;
 
-#[cfg(feature = "target-mini")]
-pub type NeopixelPin = gpioc::PC3<Output<PushPull>>;
 #[cfg(feature = "target-mini")]
 pub type NeopixelSPI = stm32f4xx_hal::pac::SPI2;
 #[cfg(feature = "target-maxi")]
-pub type NeopixelPin = gpioc::PC12<Output<PushPull>>;
-#[cfg(feature = "target-maxi")]
+pub type NeopixelSPI = stm32f4xx_hal::pac::SPI3;
+#[cfg(feature = "target-ultra")]
 pub type NeopixelSPI = stm32f4xx_hal::pac::SPI3;
 
+#[allow(unused_imports)]
 pub mod i2c {
     use core::{cell::UnsafeCell, sync::atomic::Ordering};
     use embedded_hal::i2c::{ErrorType, I2c};
@@ -29,18 +30,22 @@ pub mod i2c {
     use stm32f4xx_hal::{
         dma::{Stream0, Stream1},
         i2c::dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
-        pac::{DMA1, I2C1},
+        pac::{DMA1, I2C1, I2C3, TIM6},
     };
     pub type I2c1Handle =
         I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
+    #[cfg(not(feature = "target-ultra"))]
     pub type I2c1Proxy = DMAAtomicDevice<'static, I2c1Handle>;
 
     #[cfg(feature = "target-mini")]
-    pub type Altimeter = crate::altimeter::BMP388Wrapper;
+    pub type Altimeter = crate::bmp388::BMP388Wrapper;
 
     #[cfg(feature = "target-maxi")]
     pub type Altimeter = crate::bmp581::BMP581<I2c1Proxy>;
+
+    #[cfg(feature = "target-ultra")]
+    pub type Altimeter = crate::ms5607::MS5607<stm32f4xx_hal::i2c::I2c<I2C3>, crate::futures::TimerDelay<TIM6>, crate::ms5607::Calibrated>;
 
     #[macro_export]
     macro_rules! i2c_dma_streams {
@@ -111,6 +116,7 @@ pub mod i2c {
             result.map_err(AtomicError::Other)
         }
 
+        #[allow(unused)]
         pub unsafe fn dma_complete(&self) -> Result<(), ()> {
             self.busy
                 .compare_exchange(
@@ -208,6 +214,43 @@ pub mod i2c {
 }
 
 #[macro_export]
+macro_rules! i2c3_pins {
+    ($gpio:ident) => {{
+        #[cfg(feature = "target-maxi")]
+        {
+            (
+                $gpio.a
+                    .pa8
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+                $gpio.b
+                    .pb4
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+            )
+        }
+
+        #[cfg(feature = "target-ultra")]
+        {
+            (
+                $gpio.a
+                    .pa8
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+                $gpio.c
+                    .pc9
+                    .into_alternate()
+                    .internal_pull_up(true)
+                    .set_open_drain(),
+            )
+        }
+    }};
+}
+
+#[macro_export]
 macro_rules! buzzer_pin {
     ($gpio_buses:ident) => {{
         #[cfg(feature = "target-mini")]
@@ -217,6 +260,10 @@ macro_rules! buzzer_pin {
         #[cfg(feature = "target-maxi")]
         {
             $gpio_buses.e.pe1.into_push_pull_output()
+        }
+        #[cfg(feature = "target-ultra")]
+        {
+            $gpio_buses.c.pc1.into_push_pull_output()
         }
     }};
 }
@@ -229,6 +276,10 @@ macro_rules! neopixel_pin {
             $gpio_buses.c.pc3
         }
         #[cfg(feature = "target-maxi")]
+        {
+            $gpio_buses.c.pc12
+        }
+        #[cfg(feature = "target-ultra")]
         {
             $gpio_buses.c.pc12
         }
@@ -246,6 +297,10 @@ macro_rules! neopixel_spi {
         {
             $dp.SPI3
         }
+        #[cfg(feature = "target-ultra")]
+        {
+            $dp.SPI3
+        }
     }};
 }
 
@@ -260,6 +315,10 @@ macro_rules! i2c1_pins {
         {
             ($gpio_buses.b.pb8, $gpio_buses.b.pb9)
         }
+        #[cfg(feature = "target-ultra")]
+        {
+            ($gpio_buses.b.pb8, $gpio_buses.b.pb9)
+        }
     }};
 }
 
@@ -267,6 +326,11 @@ macro_rules! i2c1_pins {
 macro_rules! spi2_pins {
     ($gpio:ident) => {{ ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3) }};
 }
+
+#[cfg(feature = "target-ultra")]
+pub type QspiBank = stm32f4xx_hal::qspi::Bank2;
+#[cfg(not(feature = "target-ultra"))]
+pub type QspiBank = stm32f4xx_hal::qspi::Bank1;
 
 #[macro_export]
 macro_rules! qspi_pins {
@@ -295,18 +359,32 @@ macro_rules! qspi_pins {
                 $gpio.b.pb1,
             )
         }
+        #[cfg(feature = "target-ultra")]
+        {
+            // (ncs, io0, io1, io2, io3, clk)
+            (
+                $gpio.c.pc11,
+                $gpio.a.pa6,
+                $gpio.a.pa7,
+                $gpio.c.pc4,
+                $gpio.c.pc5,
+                $gpio.b.pb1,
+            )
+        }
     }};
 }
 
 pub mod gps {
-    use stm32f4xx_hal::gpio::Alternate;
-    use stm32f4xx_hal::gpio::{gpioa, gpioe};
+    use stm32f4xx_hal::gpio::{Alternate, gpioa};
 
     #[cfg(feature = "target-maxi")]
-    pub type PpsPin = gpioe::PE11<stm32f4xx_hal::gpio::Input>;
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioe::PE11<stm32f4xx_hal::gpio::Input>;
 
     #[cfg(feature = "target-mini")]
-    pub type PpsPin = gpioa::PA2<stm32f4xx_hal::gpio::Input>;
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioa::PA2<stm32f4xx_hal::gpio::Input>;
+
+    #[cfg(feature = "target-ultra")]
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioc::PC8<stm32f4xx_hal::gpio::Input>;
 
     #[macro_export]
     macro_rules! pps_pin {
@@ -323,10 +401,17 @@ pub mod gps {
             {
                 $gpio_buses.a.pa2.into_input()
             }
+            #[cfg(feature = "target-ultra")]
+            {
+                $gpio_buses.c.pc8.into_input()
+            }
         }};
     }
 
     #[cfg(feature = "target-mini")]
+    pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
+
+    #[cfg(feature = "target-ultra")]
     pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
 
     #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
@@ -337,7 +422,8 @@ pub mod gps {
 
     #[cfg(any(
         feature = "target-mini",
-        all(feature = "target-maxi", not(feature = "ultra-dev"))
+        all(feature = "target-maxi", not(feature = "ultra-dev")),
+        feature = "target-ultra"
     ))]
     pub type GPSUsart = stm32f4xx_hal::pac::USART1;
 
@@ -346,7 +432,8 @@ pub mod gps {
 
     #[cfg(any(
         feature = "target-mini",
-        all(feature = "target-maxi", not(feature = "ultra-dev"))
+        all(feature = "target-maxi", not(feature = "ultra-dev")),
+        feature = "target-ultra"
     ))]
     pub type GPSDma = stm32f4xx_hal::pac::DMA2;
 
@@ -358,7 +445,8 @@ pub mod gps {
 
     #[cfg(any(
         feature = "target-mini",
-        all(feature = "target-maxi", not(feature = "ultra-dev"))
+        all(feature = "target-maxi", not(feature = "ultra-dev")),
+        feature = "target-ultra"
     ))]
     pub type GPSRxStream = stm32f4xx_hal::dma::Stream2<GPSDma>;
 
@@ -367,7 +455,8 @@ pub mod gps {
         ($streams:ident) => {{
             #[cfg(any(
                 feature = "target-mini",
-                all(feature = "target-maxi", not(feature = "ultra-dev"))
+                all(feature = "target-maxi", not(feature = "ultra-dev")),
+                feature = "target-ultra"
             ))]
             {
                 $streams.2
@@ -385,7 +474,8 @@ pub mod gps {
         ($dp:ident) => {{
             #[cfg(any(
                 feature = "target-mini",
-                all(feature = "target-maxi", not(feature = "ultra-dev"))
+                all(feature = "target-maxi", not(feature = "ultra-dev")),
+                feature = "target-ultra"
             ))]
             {
                 $dp.USART1
@@ -403,7 +493,8 @@ pub mod gps {
         ($dp:ident) => {{
             #[cfg(any(
                 feature = "target-mini",
-                all(feature = "target-maxi", not(feature = "ultra-dev"))
+                all(feature = "target-maxi", not(feature = "ultra-dev")),
+                feature = "target-ultra"
             ))]
             {
                 stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA2)
@@ -440,11 +531,56 @@ pub mod gps {
                     $gpio_buses.a.pa3.into_alternate(),
                 )
             }
+            #[cfg(feature = "target-ultra")]
+            {
+                (
+                    $gpio_buses.a.pa9.into_alternate(),
+                    $gpio_buses.a.pa10.into_alternate(),
+                )
+            }
         }};
     }
 }
-
 pub mod radio {
+    #[cfg(not(feature = "target-ultra"))]
+    pub type RadioInteruptPin = stm32f4xx_hal::gpio::gpioc::PC4<stm32f4xx_hal::gpio::Input>;
+    #[cfg(feature = "target-ultra")]
+    pub type RadioInteruptPin = stm32f4xx_hal::gpio::gpioa::PA15<stm32f4xx_hal::gpio::Input>;
+
+    #[cfg(not(feature = "target-ultra"))]
+    pub type RadioSpi = stm32f4xx_hal::pac::SPI1;
+    #[cfg(feature = "target-ultra")]
+    pub type RadioSpi = stm32f4xx_hal::pac::SPI2;
+
+    #[cfg(not(feature = "target-ultra"))]
+    pub type RadioResetPin = stm32f4xx_hal::gpio::gpiob::PB0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    #[cfg(feature = "target-ultra")]
+    pub type RadioResetPin = stm32f4xx_hal::gpio::gpiob::PB8<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+
+    #[cfg(not(feature = "target-ultra"))]
+    pub type RadioBusyPin = stm32f4xx_hal::gpio::gpioc::PC5<stm32f4xx_hal::gpio::Input>;
+    #[cfg(feature = "target-ultra")]
+    pub type RadioBusyPin = stm32f4xx_hal::gpio::gpiod::PD2<stm32f4xx_hal::gpio::Input>;
+
+    #[cfg(not(feature = "target-ultra"))]
+    pub type RadioChipSelect = stm32f4xx_hal::gpio::gpioa::PA4<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    #[cfg(feature = "target-ultra")]
+    pub type RadioChipSelect = stm32f4xx_hal::gpio::gpioc::PC0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+
+    #[macro_export]
+    macro_rules! radio_spi {
+        ($dp:ident) => {{
+            #[cfg(not(feature = "target-ultra"))]
+            {
+                $dp.SPI1
+            }
+            #[cfg(feature = "target-ultra")]
+            {
+                $dp.SPI2
+            }
+        }};
+    }
+
     #[macro_export]
     macro_rules! radio_pins {
         ($gpio:ident) => {{
@@ -474,19 +610,38 @@ pub mod radio {
                     $gpio.c.pc4,
                 )
             }
+
+            #[cfg(feature = "target-ultra")]
+            {
+                (
+                    $gpio.c.pc0,
+                    $gpio.b.pb13,
+                    $gpio.c.pc2,
+                    $gpio.c.pc3,
+                    $gpio.b.pb8,
+                    $gpio.d.pd2,
+                    $gpio.a.pa15,
+                )
+            }
         }};
     }
 }
 
 pub mod pyro {
-    use stm32f4xx_hal::gpio::{Output, Pin};
+    #[cfg(feature = "target-mini")]
+    use dummy_pin::DummyPin;
+    use stm32f4xx_hal::gpio::{Analog, Output, Pin};
 
     #[cfg(feature = "target-mini")]
-    pub type PyroEnable = Pin<'B', 4, Output>;
+    pub type PyroEnable = DummyPin;
     #[cfg(feature = "target-mini")]
-    pub type PyroFire2 = Pin<'B', 12, Output>;
+    pub type PyroFire2 = DummyPin;
     #[cfg(feature = "target-mini")]
-    pub type PyroFire1 = Pin<'C', 6, Output>;
+    pub type PyroFire1 = DummyPin;
+    #[cfg(feature = "target-mini")]
+    pub type PyroCont1 = DummyPin;
+    #[cfg(feature = "target-mini")]
+    pub type PyroCont2 = DummyPin;
 
     #[cfg(feature = "target-maxi")]
     pub type PyroEnable = Pin<'D', 7, Output>;
@@ -494,16 +649,35 @@ pub mod pyro {
     pub type PyroFire2 = Pin<'D', 6, Output>;
     #[cfg(feature = "target-maxi")]
     pub type PyroFire1 = Pin<'D', 5, Output>;
+    #[cfg(feature = "target-maxi")]
+    pub type PyroCont1 = Pin<'D', 3, Analog>;
+    #[cfg(feature = "target-maxi")]
+    pub type PyroCont2 = Pin<'D', 4, Analog>;
 
+    #[cfg(feature = "target-ultra")]
+    pub type PyroEnable = Pin<'A', 1, Output>;
+    #[cfg(feature = "target-ultra")]
+    pub type PyroFire2 = Pin<'B', 15, Output>;
+    #[cfg(feature = "target-ultra")]
+    pub type PyroFire1 = Pin<'C', 6, Output>;
+    #[cfg(feature = "target-ultra")]
+    pub type PyroCont1 = Pin<'A', 4, Analog>;
+    #[cfg(feature = "target-ultra")]
+    pub type PyroCont2 = Pin<'B', 0, Analog>;
+
+
+    /// (enable, fire2, fire1, cont2, cont1)
     #[macro_export]
     macro_rules! pyro_pins {
         ($gpio:ident) => {{
             #[cfg(feature = "target-mini")]
             {
                 (
-                    $gpio.b.pb4.into_push_pull_output(),
-                    $gpio.b.pb12.into_push_pull_output(),
-                    $gpio.c.pc6.into_push_pull_output(),
+                    DummyPin::new_low(),
+                    DummyPin::new_low(),
+                    DummyPin::new_low(),
+                    DummyPin::new_low(),
+                    DummyPin::new_low(),
                 )
             }
 
@@ -513,8 +687,21 @@ pub mod pyro {
                     $gpio.d.pd7.into_push_pull_output(),
                     $gpio.d.pd6.into_push_pull_output(),
                     $gpio.d.pd5.into_push_pull_output(),
+                    $gpio.d.pd4.into_analog(),
+                    $gpio.d.pd3.into_analog()
                 )
             }
+
+            #[cfg(feature = "target-ultra")]
+            {
+                (
+                    $gpio.a.pa1.into_push_pull_output(),
+                    $gpio.b.pb15.into_push_pull_output(),
+                    $gpio.c.pc6.into_push_pull_output(),
+                    $gpio.b.pb0.into_analog(),
+                    $gpio.a.pa4.into_analog(),
+                )
+            }   
         }};
     }
 }

@@ -1,6 +1,6 @@
 // Sets up a usb mass storage device.
 
-use core::{cell::RefCell, ptr::addr_of_mut, sync::atomic::AtomicU32};
+use core::{cell::RefCell, ptr::addr_of_mut};
 
 use cortex_m::peripheral::NVIC;
 use f4_w25q::w25q::{SectorAddress, W25Q};

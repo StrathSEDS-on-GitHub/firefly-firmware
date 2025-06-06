@@ -5,7 +5,6 @@ use cortex_m::interrupt::{CriticalSection, Mutex};
 use cortex_m::register::primask;
 use embassy_futures::select::select;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
-use hal::qspi::Bank1;
 use sequential_storage::cache::NoCache;
 use sequential_storage::{map, queue};
 
@@ -15,6 +14,7 @@ use storage_types::{CONFIG_KEYS, ConfigKey};
 
 use crate::futures::YieldFuture;
 use crate::mission::current_rtc_time;
+use crate::pins::QspiBank;
 use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, neopixel};
 
 static LOGGER: Logger = Logger {
@@ -24,7 +24,7 @@ static LOGGER: Logger = Logger {
 /// SAFETY: This function must be called only once, and prior to any call
 ///         to `get_logger()`.
 pub fn setup_logger<'a>(
-    flash: W25QSequentialStorage<Bank1, CAPACITY>,
+    flash: W25QSequentialStorage<QspiBank, CAPACITY>,
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     cortex_m::interrupt::free(|cs| {
         let mut flash_ref = LOGGER.flash.borrow(cs).borrow_mut();
@@ -69,7 +69,7 @@ impl<'a> Write for FixedWriter<'a> {
 }
 
 pub struct Logger {
-    flash: Mutex<RefCell<Option<W25QSequentialStorage<Bank1, CAPACITY>>>>,
+    flash: Mutex<RefCell<Option<W25QSequentialStorage<QspiBank, CAPACITY>>>>,
 }
 
 impl Logger {
@@ -84,6 +84,7 @@ impl Logger {
 
     /// For important logs that shouldn't be discarded, will
     /// retry obtaining the flash if it is busy.
+    #[allow(unused)]
     pub async fn retry_log(&self, msg: Message<LocalCtxt>) {
         let mut buf = [0u8; 2048];
         if let Ok(msg) = postcard::to_slice(&msg, &mut buf) {
@@ -91,6 +92,7 @@ impl Logger {
         }
     }
 
+    #[allow(unused)]
     async fn retry_log_impl(&self, buffer: &[u8]) {
         loop {
             let mask = primask::read();
@@ -170,7 +172,7 @@ impl Logger {
     /// until the flash is returned.
     /// Used for long-running operations like erasing the flash or reading
     /// all logs.
-    async fn take_flash(&self) -> Option<W25QSequentialStorage<Bank1, CAPACITY>> {
+    async fn take_flash(&self) -> Option<W25QSequentialStorage<QspiBank, CAPACITY>> {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -200,7 +202,7 @@ impl Logger {
         }
     }
 
-    async fn return_flash(&self, flash: W25QSequentialStorage<Bank1, CAPACITY>) {
+    async fn return_flash(&self, flash: W25QSequentialStorage<QspiBank, CAPACITY>) {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
