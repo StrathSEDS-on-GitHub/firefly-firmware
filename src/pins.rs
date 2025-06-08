@@ -416,7 +416,7 @@ macro_rules! lrhp_nss {
     ($gpio:ident) => {{
         #[cfg(not(feature = "target-ultra"))]
         {
-            gpio.e.pe12.into_push_pull_output()
+            $gpio.e.pe12.into_push_pull_output()
         }
         #[cfg(feature = "target-ultra")]
         {
@@ -430,7 +430,7 @@ macro_rules! hrlp_nss {
     ($gpio:ident) => {{
         #[cfg(not(feature = "target-ultra"))]
         {
-            gpio.e.pe10.into_push_pull_output()
+            $gpio.e.pe10.into_push_pull_output()
         }
         #[cfg(feature = "target-ultra")]
         {
