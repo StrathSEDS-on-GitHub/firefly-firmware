@@ -37,8 +37,14 @@ static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LISTEN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU16 = AtomicU16::new(0);
 
+
+#[cfg(feature = "target-ultra")]
 #[interrupt]
-fn EXTI4() {
+fn EXTI15_10() {
+    dio1_interrupt_impl();
+}
+
+fn dio1_interrupt_impl() {
     let dio1_pin = unsafe { crate::DIO1_PIN.as_mut().unwrap() };
     if dio1_pin.check_interrupt() {
         dio1_pin.clear_interrupt_pending_bit();
@@ -71,6 +77,12 @@ fn EXTI4() {
         LISTEN_IN_PROGRESS.store(false, Ordering::Relaxed);
         set_radio();
     }
+}
+
+#[cfg(not(feature = "target-ultra"))]
+#[interrupt]
+fn EXTI4() {
+    dio1_interrupt_impl();
 }
 
 pub fn next_counter() -> u16 {
@@ -145,9 +157,9 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
 pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 4] = [
-    (RadioState::Tx(Role::Avionics), 500),
+    (RadioState::Tx(Role::Avionics), 450),
     (RadioState::Buffer(Role::GroundMain), 50),
-    (RadioState::Tx(Role::GroundMain), 500),
+    (RadioState::Tx(Role::GroundMain), 450),
     (RadioState::Tx(Role::Avionics), 50),
 ];
 

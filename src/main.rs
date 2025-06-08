@@ -285,11 +285,17 @@ async fn main(_spawner: Spawner) {
             PPS_PIN.borrow(cs).replace(Some(pps_pin));
         });
         unsafe {
-            pac::NVIC::unmask(pac::Interrupt::EXTI15_10);
-            pac::NVIC::unmask(pac::Interrupt::EXTI2);
+            if cfg!(feature = "target-ultra") {
+                pac::NVIC::unmask(pac::Interrupt::EXTI9_5);
+                pac::NVIC::unpend(pac::Interrupt::EXTI9_5);
+            } else if cfg!(feature = "target-maxi") {
+                pac::NVIC::unmask(pac::Interrupt::EXTI15_10);
+                pac::NVIC::unpend(pac::Interrupt::EXTI15_10);
+            } else {
+                pac::NVIC::unmask(pac::Interrupt::EXTI2);
+                pac::NVIC::unpend(pac::Interrupt::EXTI2);
+            }
         }
-        pac::NVIC::unpend(pac::Interrupt::EXTI15_10);
-        pac::NVIC::unpend(pac::Interrupt::EXTI2);
 
         // gps::tx(b"$PMTK251,115200*1F\r\n").await;
         // gps::change_baudrate(115200).await;
@@ -393,7 +399,7 @@ async fn main(_spawner: Spawner) {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 let delay = futures::TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110111, delay)
+                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110110, delay)
                     .await
                     .unwrap();
                 let ms5607 = ms5607.calibrate().await.unwrap();
@@ -541,7 +547,7 @@ async fn main(_spawner: Spawner) {
                                 gpio::PE12<Output>,
                                 NoDelay,
                             >,
-                            futures::TimerDelay<pac::TIM11>
+                            futures::TimerDelay<pac::TIM11>,
                         >,
                     >,
                 )
@@ -605,9 +611,15 @@ async fn main(_spawner: Spawner) {
         Radio::init(lora);
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
-            pac::NVIC::unmask(pac::Interrupt::EXTI4);
             pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
-            pac::NVIC::unpend(pac::Interrupt::EXTI4);
+
+            if cfg!(not(feature = "target-ultra")) {
+                pac::NVIC::unmask(pac::Interrupt::EXTI4);
+                pac::NVIC::unpend(pac::Interrupt::EXTI4);
+            } else {
+                pac::NVIC::unmask(pac::Interrupt::EXTI15_10);
+                pac::NVIC::unpend(pac::Interrupt::EXTI15_10);
+            }
         }
 
         if matches!(role, Role::CansatBackup | Role::GroundBackup)

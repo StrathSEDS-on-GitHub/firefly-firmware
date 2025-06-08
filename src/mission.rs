@@ -49,7 +49,7 @@ pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
 
 pub static DETECTED_APOGEE: AtomicU32 = AtomicU32::new(0);
 
-static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed));
+static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Armed));
 
 pub fn role() -> Role {
     // SAFETY: Role is mutated once by main prior to mission begin.
@@ -1005,7 +1005,6 @@ async fn adxl_imu_handler(
         for (store, sample) in samples.iter_mut().zip(imu.read_fifo().await.unwrap()) {
             store.timestamp = current_rtc_time();
             store.acceleration = sample;
-            embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 10).await;
         }
 
         let message = MessageType::new_accel(samples.into_iter());
@@ -1017,6 +1016,7 @@ async fn adxl_imu_handler(
         get_logger()
             .log(message.into_message(current_rtc_time()))
             .await;
+        embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 32 * 10).await;
     }
 }
 
