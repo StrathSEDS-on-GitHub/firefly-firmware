@@ -21,6 +21,7 @@ use stm32f4xx_hal::{
     rcc::Clocks,
     timer::{self, Counter, Instance},
 };
+use storage_types::logs::AccelerometerSample;
 use storage_types::{
     CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
     logs::{GPSSample, IMUSample, LocalCtxt, MessageType, PressureTempSample, RadioCtxt},
@@ -154,8 +155,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
             }
             MissionStage::Ascent => {
                 let max_altitude = altitudes.iter().cloned().fold(0.0, f32::max);
-                if max_altitude as u32 > DETECTED_APOGEE
-                    .load(core::sync::atomic::Ordering::Relaxed)
+                if max_altitude as u32 > DETECTED_APOGEE.load(core::sync::atomic::Ordering::Relaxed)
                 {
                     DETECTED_APOGEE
                         .store(max_altitude as u32, core::sync::atomic::Ordering::Relaxed);
@@ -388,6 +388,23 @@ pub async fn usb_handler() -> ! {
                             Into::<String<12>>::into(EpochTime(*timestamp))
                         )
                         .unwrap();
+                    }
+                    MessageType::Accelerometer(accel_compressed) => {
+                        for sample in accel_compressed.decompress() {
+                            if let Ok(AccelerometerSample {
+                                timestamp,
+                                acceleration,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [Local acc] {:?}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    acceleration
+                                )
+                                .unwrap();
+                            }
+                        }
                     }
                     MessageType::Gps(gps_compressed) => {
                         for sample in gps_compressed.decompress() {
@@ -671,6 +688,23 @@ async fn handle_incoming_packets() -> ! {
                         )
                         .unwrap();
                     }
+                    MessageType::Accelerometer(bit_buffer) => {
+                        for sample in bit_buffer.decompress() {
+                            if let Ok(AccelerometerSample {
+                                timestamp,
+                                acceleration,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [{source:?} acc] {:?}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    acceleration
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
                     MessageType::Gps(bit_buffer) => {
                         for sample in bit_buffer.decompress() {
                             if let Ok(GPSSample {
@@ -950,13 +984,39 @@ async fn buzzer_controller() -> ! {
         YieldFuture::new().await;
     }
 
-
     // Buzz on landing
     loop {
         buzz_number(DETECTED_APOGEE.load(core::sync::atomic::Ordering::Relaxed)).await;
         let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
         timer.start(3000u32.millis()).unwrap();
         NbFuture::new(|| timer.wait()).await.unwrap();
+    }
+}
+
+#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+async fn adxl_imu_handler(
+    mut imu: adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
+) {
+    use storage_types::logs::AccelerometerSample;
+
+    loop {
+        let mut samples = [AccelerometerSample::default(); 32];
+
+        for (store, sample) in samples.iter_mut().zip(imu.read_fifo().await.unwrap()) {
+            store.timestamp = current_rtc_time();
+            store.acceleration = sample;
+            embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 10).await;
+        }
+
+        let message = MessageType::new_accel(samples.into_iter());
+        let radio_msg = message.clone().into_message(radio_ctxt());
+        if role() == Role::Avionics {
+            radio::queue_packet(radio_msg);
+        }
+
+        get_logger()
+            .log(message.into_message(current_rtc_time()))
+            .await;
     }
 }
 
@@ -1169,6 +1229,7 @@ pub async fn begin(
     imu_timer: Counter<impl Instance, 100000>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
     bmi323_imu: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
+    adxl_imu: Option<adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>>,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
@@ -1225,9 +1286,12 @@ pub async fn begin(
                 {
                     let _ = bno_imu;
                     let _ = icm_imu;
-                    bmi323_imu_handler(
-                        bmi323_imu.unwrap(),
-                        TimerDelay::new(imu_timer.release().release(), clocks),
+                    ::futures::future::join(
+                        bmi323_imu_handler(
+                            bmi323_imu.unwrap(),
+                            TimerDelay::new(imu_timer.release().release(), clocks),
+                        ),
+                        adxl_imu_handler(adxl_imu.unwrap())
                     )
                 }
             };

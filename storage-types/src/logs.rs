@@ -121,9 +121,13 @@ pub struct PressureTempCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 #[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
 pub struct ImuCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 
+#[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
+pub struct AccelerometerCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
+
 decompress_impl!(GpsCompressed, GPSSample, 3);
 decompress_impl!(PressureTempCompressed, PressureTempSample, 2);
 decompress_impl!(ImuCompressed, IMUSample, 6);
+decompress_impl!(AccelerometerCompressed, AccelerometerSample, 3);
 
 pub const TS_BUF_SIZE: usize = 222;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +139,7 @@ pub enum MessageType {
     Gps(GpsCompressed),
     PressureTemp(PressureTempCompressed),
     Imu(ImuCompressed),
+    Accelerometer(AccelerometerCompressed),
     Arm(Role),
     Disarm(Role),
     TestPyro(Role, PyroPin, u32),
@@ -200,6 +205,12 @@ pub struct IMUSample {
     pub angular_velocity: [f32; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AccelerometerSample {
+    pub timestamp: u32,
+    pub acceleration: [f32; 3],
+}
+
 impl From<(u32, [f32; 6])> for IMUSample {
     fn from(value: (u32, [f32; 6])) -> Self {
         IMUSample {
@@ -210,19 +221,34 @@ impl From<(u32, [f32; 6])> for IMUSample {
     }
 }
 
-impl Into<(u32, [f32; 6])> for IMUSample {
-    fn into(self) -> (u32, [f32; 6]) {
+impl From<IMUSample> for (u32, [f32; 6]) {
+    fn from(other: IMUSample) -> Self {
         (
-            self.timestamp,
+            other.timestamp,
             [
-                self.acceleration[0],
-                self.acceleration[1],
-                self.acceleration[2],
-                self.angular_velocity[0],
-                self.angular_velocity[1],
-                self.angular_velocity[2],
+                other.acceleration[0],
+                other.acceleration[1],
+                other.acceleration[2],
+                other.angular_velocity[0],
+                other.angular_velocity[1],
+                other.angular_velocity[2],
             ],
         )
+    }
+}
+
+impl From<(u32, [f32; 3])> for AccelerometerSample {
+    fn from(value: (u32, [f32; 3])) -> Self {
+        AccelerometerSample {
+            timestamp: value.0,
+            acceleration: value.1,
+        }
+    }
+}
+
+impl From<AccelerometerSample> for (u32, [f32; 3]) {
+    fn from(other: AccelerometerSample) -> Self {
+        (other.timestamp, other.acceleration)
     }
 }
 
@@ -251,6 +277,7 @@ impl MessageType {
     impl_message_type!(new_gps, GPSSample, 3, Gps);
     impl_message_type!(new_pressure_temp, PressureTempSample, 2, PressureTemp);
     impl_message_type!(new_imu, IMUSample, 6, Imu);
+    impl_message_type!(new_accel, AccelerometerSample, 3, Accelerometer);
 
     pub fn new_log(timestamp: u32, message: impl AsRef<str>) -> Option<Self> {
         message

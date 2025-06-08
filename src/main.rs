@@ -55,8 +55,6 @@ use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
-use stm32f4xx_hal::pac::SPI2;
-use stm32f4xx_hal::pac::TIM8;
 use storage_types::ConfigKey;
 use storage_types::Role;
 use sx126x::SX126x;
@@ -260,7 +258,10 @@ async fn main(_spawner: Spawner) {
 
         delay.delay_ms(2);
 
-        if cfg!(any(all(feature = "target-maxi", feature = "ultra-dev"), feature = "target-ultra")) {
+        if cfg!(any(
+            all(feature = "target-maxi", feature = "ultra-dev"),
+            feature = "target-ultra"
+        )) {
             gps::init_teseo().await;
             delay.delay_ms(2);
             gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
@@ -311,7 +312,6 @@ async fn main(_spawner: Spawner) {
             false,
         )
         .await;
-
 
         if total < 10240 || res.is_err() {
             panic!("Logging failure");
@@ -392,7 +392,7 @@ async fn main(_spawner: Spawner) {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 let delay = futures::TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(),0b1110111, delay)
+                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110111, delay)
                     .await
                     .unwrap();
                 let ms5607 = ms5607.calibrate().await.unwrap();
@@ -446,7 +446,7 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        let bmi323 = {
+        let (bmi323, adxl375) = {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 use adxl375::spi::ADXL375;
@@ -457,7 +457,6 @@ async fn main(_spawner: Spawner) {
                 use bmi323::OutputDataRate;
                 use embedded_hal_bus::spi::AtomicDevice;
 
-
                 let bus = imus_spi!(dp).spi(
                     imu_spi_pins!(gpio),
                     spi::Mode {
@@ -467,13 +466,14 @@ async fn main(_spawner: Spawner) {
                     140.kHz(),
                     &clocks,
                 );
+
                 static mut SPI_BUS: Option<AtomicCell<Spi<ImuSpi>>> = None;
                 unsafe {
                     SPI_BUS.replace(AtomicCell::new(bus));
                 }
                 let bmidev = AtomicDevice::new_no_delay(
                     unsafe { SPI_BUS.as_ref().unwrap() },
-                    lrhp_nss!(gpio)
+                    lrhp_nss!(gpio),
                 )
                 .unwrap();
 
@@ -493,7 +493,7 @@ async fn main(_spawner: Spawner) {
 
                 let adxldev = AtomicDevice::new_no_delay(
                     unsafe { SPI_BUS.as_ref().unwrap() },
-                    hrlp_nss!(gpio)
+                    hrlp_nss!(gpio),
                 )
                 .unwrap();
 
@@ -509,26 +509,41 @@ async fn main(_spawner: Spawner) {
                 adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
                 adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
 
-                Some(bmi)
+                (Some(bmi), Some(adxl))
             }
-            #[cfg(any(feature = "target-mini", all(feature= "target-maxi", not(feature = "ultra-dev"))))]
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev"))
+            ))]
             {
                 use embedded_hal_bus::spi::NoDelay;
                 use stm32f4xx_hal::gpio::Output;
                 use stm32f4xx_hal::pac::TIM4;
                 use stm32f4xx_hal::timer::DelayUs;
-                None::<
-                    Bmi323<
-                        bmi323::interface::SpiInterface<
+                (
+                    None::<
+                        Bmi323<
+                            bmi323::interface::SpiInterface<
+                                embedded_hal_bus::spi::AtomicDevice<
+                                    Spi<pac::SPI2>,
+                                    gpio::PE12<Output>,
+                                    NoDelay,
+                                >,
+                            >,
+                            DelayUs<TIM4>,
+                        >,
+                    >,
+                    None::<
+                        adxl375::spi::ADXL375<
                             embedded_hal_bus::spi::AtomicDevice<
-                                Spi<SPI2>,
+                                Spi<pac::SPI2>,
                                 gpio::PE12<Output>,
                                 NoDelay,
                             >,
+                            futures::TimerDelay<pac::TIM11>
                         >,
-                        DelayUs<TIM4>,
                     >,
-                >
+                )
             }
         };
 
@@ -614,6 +629,7 @@ async fn main(_spawner: Spawner) {
             dp.TIM10.counter(&clocks),
             bno080,
             bmi323,
+            adxl375,
             clocks,
         )
         .await;
