@@ -6,7 +6,8 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
-use fugit::ExtU32;
+use stm32f4xx_hal::gpio::ExtiPin;
+use fugit::{ExtU32, ExtU64 as _};
 use hal::{
     dma::{Transfer, traits::StreamISR},
     pac::NVIC,
@@ -16,12 +17,20 @@ use hal::{
 use heapless::Deque;
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use stm32f4xx_hal::{
-    dma, interrupt, pac, prelude::_embedded_hal_serial_nb_Write, serial::{Rx, Tx}
+    dma, interrupt, pac,
+    prelude::_embedded_hal_serial_nb_Write,
+    serial::{Rx, Tx},
 };
 use time::{Date, PrimitiveDateTime};
 
 use crate::{
-    futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel, pins::gps::{GPSPins, GPSRxStream, GPSUsart}, usb_logger::get_serial, RTC
+    PPS_PIN, RTC,
+    futures::YieldFuture,
+    interrupt_wake,
+    logs::FixedWriter,
+    neopixel,
+    pins::gps::{GPSPins, GPSRxStream, GPSUsart},
+    usb_logger::get_serial,
 };
 use stm32f4xx_hal as hal;
 
@@ -341,21 +350,36 @@ fn pps_interrupt_impl() {
         let mut rtc_ref = RTC.borrow(cs).borrow_mut();
         let rtc = rtc_ref.as_mut().unwrap();
         let time = rtc.get_datetime().time();
-        rtc.set_time(
-            &time::Time::from_hms_milli(time.hour(), time.minute(), time.second(), 0).unwrap(),
-        )
-        .unwrap();
-    });
+        let carry = if time.millisecond() > 500 { 1 } else { 0 };
+        let (second, carry) = ((time.second() + carry) % 60, (time.second() + carry) / 60);
+        let (minute, carry) = ((time.minute() + carry) % 60, (time.minute() + carry) / 60);
+        let (hour, carry) = ((time.hour() + carry) % 60, (time.hour() + carry) / 60);
 
-    pac::NVIC::mask(pac::Interrupt::EXTI15_10);
-    pac::NVIC::mask(pac::Interrupt::EXTI2);
+        rtc.set_time(&time::Time::from_hms_milli(hour, minute, second, 0).unwrap())
+            .unwrap();
+
+        PPS_PIN
+            .borrow(cs)
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .clear_interrupt_pending_bit();
+    });
 }
 
+#[cfg(feature = "target-mini")]
 #[interrupt]
 fn EXTI2() {
     pps_interrupt_impl();
 }
 
+#[cfg(feature = "target-ultra")]
+#[interrupt]
+fn EXTI9_5() {
+    pps_interrupt_impl();
+}
+
+#[cfg(feature = "target-maxi")]
 #[interrupt]
 fn EXTI15_10() {
     pps_interrupt_impl();

@@ -381,32 +381,35 @@ impl Logger {
     }
 
     pub async fn space_left(&self) -> Result<u32, &'static str> {
-        let mask = primask::read();
-        cortex_m::interrupt::disable();
-        let cs = unsafe { CriticalSection::new() };
-        let rc = self.flash.borrow(&cs);
-        let Ok(mut flash) = rc.try_borrow_mut() else {
-            // Another task is using the flash, we can yield and try again.
+        loop {
+            YieldFuture::new().await;
+            let mask = primask::read();
+            cortex_m::interrupt::disable();
+            let cs = unsafe { CriticalSection::new() };
+            let rc = self.flash.borrow(&cs);
+            let Ok(mut flash) = rc.try_borrow_mut() else {
+                // Another task is using the flash, we can yield and try again.
+                if mask.is_active() {
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                }
+                continue;
+            };
+            let Some(flash) = flash.as_mut() else {
+                return Err("Flash not initialized");
+            };
             if mask.is_active() {
                 unsafe {
                     cortex_m::interrupt::enable();
                 }
             }
-            return Err("Flash not available");
-        };
-        let Some((flash, cache)) = flash.as_mut() else {
-            return Err("Flash not initialized");
-        };
-        let space = queue::space_left(flash, LOGS_FLASH_RANGE, cache).await;
-        if mask.is_active() {
-            unsafe {
-                cortex_m::interrupt::enable();
+            let space = queue::space_left(flash, LOGS_FLASH_RANGE, &mut NoCache::new()).await;
+            if let Ok(space) = space {
+                return Ok(space)
+            } else {
+                return Err("Failed to get space left")
             }
-        }
-        if let Ok(space) = space {
-            Ok(space)
-        } else {
-            Err("Failed to get space left")
-        }
+        };
     }
 }
