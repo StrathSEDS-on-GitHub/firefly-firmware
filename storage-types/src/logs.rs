@@ -67,7 +67,7 @@ where
     }
 
     pub fn as_bitslice(&self) -> &BitSlice<T::Store, A> {
-        self.bits.as_bitslice()
+        &self.bits[..self.used]
     }
 
     pub fn used(&self) -> usize {
@@ -125,7 +125,7 @@ decompress_impl!(GpsCompressed, GPSSample, 3);
 decompress_impl!(PressureTempCompressed, PressureTempSample, 2);
 decompress_impl!(ImuCompressed, IMUSample, 6);
 
-pub const TS_BUF_SIZE: usize = 240;
+pub const TS_BUF_SIZE: usize = 222;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageType {
     Log {

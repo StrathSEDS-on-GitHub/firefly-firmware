@@ -45,7 +45,7 @@ static BMP: Mutex<RefCell<Option<Altimeter>>> = Mutex::new(RefCell::new(None));
 fn DMA1_STREAM() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().map(|it| it.dma_interrupt());
+        i2c.as_mut().unwrap().dma_interrupt();
     });
 }
 
@@ -54,7 +54,7 @@ fn DMA1_STREAM() {
 fn DMA1_STREAM0() {
     cortex_m::interrupt::free(|cs| {
         let mut i2c = BMP.borrow(cs).borrow_mut();
-        i2c.as_mut().map(|it| it.dma_interrupt());
+        i2c.as_mut().unwrap().dma_interrupt();
     });
 }
 
@@ -70,23 +70,32 @@ pub const ALTIMETER_FRAME_COUNT: usize = crate::bmp581::BMP581::FRAME_COUNT;
 #[cfg(feature = "target-mini")]
 pub const ALTIMETER_BUF_SIZE: usize = crate::bmp388::BMP388Wrapper::BUF_SIZE;
 
-#[cfg(feature = "target-maxi")]
+#[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
 pub const ALTIMETER_BUF_SIZE: usize = crate::bmp581::BMP581::BUF_SIZE;
 
 #[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
 pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     use crate::futures::YieldFuture;
     use crate::interrupt_wake;
-    use futures::poll;
+    use stm32f4xx_hal::pac;
     use crate::futures::bmp_wake;
     use core::ptr::addr_of_mut;
+    use core::sync::atomic::AtomicBool;
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
 
     cortex_m::interrupt::free(|cs| {
         BMP.borrow(cs).replace(Some(bmp));
     });
-    let mut fut = core::pin::pin!(bmp_wake::future());
-    let _ = poll!(&mut fut);
+
+    unsafe {
+        // unmask the DMA interrupt
+        pac::NVIC::unmask(pac::Interrupt::DMA1_STREAM0);
+        pac::NVIC::unmask(pac::Interrupt::DMA1_STREAM);
+    }
+
+    static DONE: AtomicBool = AtomicBool::new(false);
+    DONE.store(false, core::sync::atomic::Ordering::Release);
+
     unsafe {
         let mut done = false;
         while !done {
@@ -101,6 +110,7 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
                         &[Altimeter::FIFO_READ_REG],
                         &mut *addr_of_mut!(DATA),
                         Some(|_| {
+                            DONE.store(true, core::sync::atomic::Ordering::Relaxed);
                             interrupt_wake!(bmp_wake);
                         }),
                     )
@@ -113,7 +123,14 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
             YieldFuture::new().await;
         }
     }
-    fut.await;
+    while !DONE.load(core::sync::atomic::Ordering::Relaxed) {
+        // Wait for the DMA to complete
+        bmp_wake::future().await;
+    }
+
+        // clear the DMA interrupt
+    pac::NVIC::mask(pac::Interrupt::DMA1_STREAM0);
+    pac::NVIC::mask(pac::Interrupt::DMA1_STREAM);
 
     let bmp = cortex_m::interrupt::free(|cs| BMP.borrow(cs).replace(None).unwrap());
     unsafe { bmp.dma_complete().expect("Failed to mark DMA complete?") };

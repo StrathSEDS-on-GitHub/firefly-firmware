@@ -21,12 +21,7 @@ use stm32f4xx_hal::{
 use time::{Date, PrimitiveDateTime};
 
 use crate::{
-    RTC,
-    futures::YieldFuture,
-    interrupt_wake,
-    logs::FixedWriter,
-    neopixel,
-    pins::gps::{GPSPins, GPSRxStream, GPSUsart},
+    futures::YieldFuture, interrupt_wake, logs::FixedWriter, neopixel, pins::gps::{GPSPins, GPSRxStream, GPSUsart}, usb_logger::get_serial, RTC
 };
 use stm32f4xx_hal as hal;
 

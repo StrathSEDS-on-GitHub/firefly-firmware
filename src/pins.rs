@@ -41,11 +41,15 @@ pub mod i2c {
     #[cfg(feature = "target-mini")]
     pub type Altimeter = crate::bmp388::BMP388Wrapper;
 
-    #[cfg(feature = "target-maxi")]
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
     pub type Altimeter = crate::bmp581::BMP581<I2c1Proxy>;
 
-    #[cfg(feature = "target-ultra")]
-    pub type Altimeter = crate::ms5607::MS5607<stm32f4xx_hal::i2c::I2c<I2C3>, crate::futures::TimerDelay<TIM6>, crate::ms5607::Calibrated>;
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    pub type Altimeter = crate::ms5607::MS5607<
+        stm32f4xx_hal::i2c::I2c<I2C3>,
+        crate::futures::TimerDelay<TIM6>,
+        crate::ms5607::Calibrated,
+    >;
 
     #[macro_export]
     macro_rules! i2c_dma_streams {
@@ -201,10 +205,10 @@ pub mod i2c {
                 .compare_exchange_weak(
                     BusyState::Free,
                     BusyState::BusyDMA,
+                    Ordering::AcqRel,
                     Ordering::Acquire,
-                    Ordering::Relaxed,
                 )
-                .map_err(|_| nb::Error::WouldBlock)?;
+                .map_err(|a| nb::Error::WouldBlock)?;
             unsafe {
                 let bus = &mut *self.bus.get();
                 bus.write_read_dma(addr, bytes, buf, callback)
@@ -219,12 +223,14 @@ macro_rules! i2c3_pins {
         #[cfg(feature = "target-maxi")]
         {
             (
-                $gpio.a
+                $gpio
+                    .a
                     .pa8
                     .into_alternate()
                     .internal_pull_up(true)
                     .set_open_drain(),
-                $gpio.b
+                $gpio
+                    .b
                     .pb4
                     .into_alternate()
                     .internal_pull_up(true)
@@ -235,12 +241,14 @@ macro_rules! i2c3_pins {
         #[cfg(feature = "target-ultra")]
         {
             (
-                $gpio.a
+                $gpio
+                    .a
                     .pa8
                     .into_alternate()
                     .internal_pull_up(true)
                     .set_open_drain(),
-                $gpio.c
+                $gpio
+                    .c
                     .pc9
                     .into_alternate()
                     .internal_pull_up(true)
@@ -323,8 +331,17 @@ macro_rules! i2c1_pins {
 }
 
 #[macro_export]
-macro_rules! spi2_pins {
-    ($gpio:ident) => {{ ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3) }};
+macro_rules! imu_spi_pins {
+    ($gpio:ident) => {{
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            ($gpio.b.pb13, $gpio.c.pc2, $gpio.c.pc3)
+        }
+        #[cfg(feature = "target-ultra")]
+        {
+            ($gpio.a.pa5, $gpio.b.pb4.into_alternate(), $gpio.b.pb5)
+        }
+    }};
 }
 
 #[cfg(feature = "target-ultra")]
@@ -370,6 +387,54 @@ macro_rules! qspi_pins {
                 $gpio.c.pc5,
                 $gpio.b.pb1,
             )
+        }
+    }};
+}
+
+#[cfg(not(feature = "target-ultra"))]
+pub type ImuSpi = stm32f4xx_hal::pac::SPI2;
+
+#[cfg(feature = "target-ultra")]
+pub type ImuSpi = stm32f4xx_hal::pac::SPI1;
+
+#[macro_export]
+macro_rules! imus_spi {
+    ($dp:ident) => {{
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            $dp.SPI2
+        }
+        #[cfg(feature = "target-ultra")]
+        {
+            $dp.SPI1
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! lrhp_nss {
+    ($gpio:ident) => {{
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            gpio.e.pe12.into_push_pull_output()
+        }
+        #[cfg(feature = "target-ultra")]
+        {
+            $gpio.b.pb12.into_push_pull_output()
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! hrlp_nss {
+    ($gpio:ident) => {{
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            gpio.e.pe10.into_push_pull_output()
+        }
+        #[cfg(feature = "target-ultra")]
+        {
+            $gpio.b.pb2.into_push_pull_output()
         }
     }};
 }
@@ -489,6 +554,27 @@ pub mod gps {
     }
 
     #[macro_export]
+    macro_rules! gps_serial_baudrate {
+        () => {{
+            #[cfg(any(
+                feature = "target-mini",
+                all(feature = "target-maxi", not(feature = "ultra-dev")),
+            ))]
+            {
+                9600.bps()
+            }
+
+            #[cfg(any(
+                all(feature = "target-maxi", feature = "ultra-dev"),
+                feature = "target-ultra"
+            ))]
+            {
+                115200.bps()
+            }
+        }};
+    }
+
+    #[macro_export]
     macro_rules! gps_dma_streams {
         ($dp:ident) => {{
             #[cfg(any(
@@ -553,9 +639,11 @@ pub mod radio {
     pub type RadioSpi = stm32f4xx_hal::pac::SPI2;
 
     #[cfg(not(feature = "target-ultra"))]
-    pub type RadioResetPin = stm32f4xx_hal::gpio::gpiob::PB0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    pub type RadioResetPin =
+        stm32f4xx_hal::gpio::gpiob::PB0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
     #[cfg(feature = "target-ultra")]
-    pub type RadioResetPin = stm32f4xx_hal::gpio::gpiob::PB8<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    pub type RadioResetPin =
+        stm32f4xx_hal::gpio::gpiob::PB8<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
 
     #[cfg(not(feature = "target-ultra"))]
     pub type RadioBusyPin = stm32f4xx_hal::gpio::gpioc::PC5<stm32f4xx_hal::gpio::Input>;
@@ -563,9 +651,11 @@ pub mod radio {
     pub type RadioBusyPin = stm32f4xx_hal::gpio::gpiod::PD2<stm32f4xx_hal::gpio::Input>;
 
     #[cfg(not(feature = "target-ultra"))]
-    pub type RadioChipSelect = stm32f4xx_hal::gpio::gpioa::PA4<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    pub type RadioChipSelect =
+        stm32f4xx_hal::gpio::gpioa::PA4<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
     #[cfg(feature = "target-ultra")]
-    pub type RadioChipSelect = stm32f4xx_hal::gpio::gpioc::PC0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
+    pub type RadioChipSelect =
+        stm32f4xx_hal::gpio::gpioc::PC0<stm32f4xx_hal::gpio::Output<stm32f4xx_hal::gpio::PushPull>>;
 
     #[macro_export]
     macro_rules! radio_spi {
@@ -665,7 +755,6 @@ pub mod pyro {
     #[cfg(feature = "target-ultra")]
     pub type PyroCont2 = Pin<'B', 0, Analog>;
 
-
     /// (enable, fire2, fire1, cont2, cont1)
     #[macro_export]
     macro_rules! pyro_pins {
@@ -688,7 +777,7 @@ pub mod pyro {
                     $gpio.d.pd6.into_push_pull_output(),
                     $gpio.d.pd5.into_push_pull_output(),
                     $gpio.d.pd4.into_analog(),
-                    $gpio.d.pd3.into_analog()
+                    $gpio.d.pd3.into_analog(),
                 )
             }
 
@@ -701,7 +790,7 @@ pub mod pyro {
                     $gpio.b.pb0.into_analog(),
                     $gpio.a.pa4.into_analog(),
                 )
-            }   
+            }
         }};
     }
 }

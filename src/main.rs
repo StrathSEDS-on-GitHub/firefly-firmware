@@ -7,11 +7,11 @@
 
 use crate::logs::setup_logger;
 use crate::mission::PYRO_ADC;
+use crate::mission::PYRO_CONT1;
 use crate::mission::PYRO_CONT2;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
-use crate::mission::PYRO_CONT1;
 use crate::pins::gps::PpsPin;
 use crate::pins::i2c::I2c1Handle;
 use crate::pins::radio::RadioInteruptPin;
@@ -56,6 +56,7 @@ use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
 use stm32f4xx_hal::pac::SPI2;
+use stm32f4xx_hal::pac::TIM8;
 use storage_types::ConfigKey;
 use storage_types::Role;
 use sx126x::SX126x;
@@ -143,10 +144,10 @@ async fn main(_spawner: Spawner) {
 
         let clocks = rcc
             .cfgr
-            .sysclk(96.MHz())
+            .sysclk(100.MHz())
             .use_hse(16.MHz())
-            .pclk1(48.MHz())
-            .pclk2(96.MHz())
+            .pclk1(50.MHz())
+            .pclk2(100.MHz())
             .require_pll48clk()
             .freeze();
 
@@ -245,7 +246,7 @@ async fn main(_spawner: Spawner) {
             .serial(
                 gps_pins!(gpio),
                 hal::serial::config::Config {
-                    baudrate: 9600.bps(),
+                    baudrate: gps_serial_baudrate!(),
                     dma: hal::serial::config::DmaConfig::Rx,
                     ..Default::default()
                 },
@@ -257,8 +258,11 @@ async fn main(_spawner: Spawner) {
 
         gps::setup(rx_stream, gps_serial);
 
-        if cfg!(all(feature = "target-maxi", feature = "ultra-dev")) {
+        delay.delay_ms(2);
+
+        if cfg!(any(all(feature = "target-maxi", feature = "ultra-dev"), feature = "target-ultra")) {
             gps::init_teseo().await;
+            delay.delay_ms(2);
             gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
             gps::set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None).await;
             gps::set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None).await;
@@ -308,6 +312,7 @@ async fn main(_spawner: Spawner) {
         )
         .await;
 
+
         if total < 10240 || res.is_err() {
             panic!("Logging failure");
         }
@@ -326,7 +331,7 @@ async fn main(_spawner: Spawner) {
             3 => Role::GroundBackup,
             4 => Role::Cansat,
             1 => Role::Avionics,
-            _ => panic!("Invalid board ID {}", 2),
+            _ => panic!("Invalid board ID {}", board_id),
         };
 
         unsafe { mission::ROLE = role };
@@ -387,7 +392,7 @@ async fn main(_spawner: Spawner) {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 let delay = futures::TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110110, delay)
+                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(),0b1110111, delay)
                     .await
                     .unwrap();
                 let ms5607 = ms5607.calibrate().await.unwrap();
@@ -442,7 +447,7 @@ async fn main(_spawner: Spawner) {
         };
 
         let bmi323 = {
-            #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+            #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 use adxl375::spi::ADXL375;
                 use bmi323::AccelConfig;
@@ -452,22 +457,23 @@ async fn main(_spawner: Spawner) {
                 use bmi323::OutputDataRate;
                 use embedded_hal_bus::spi::AtomicDevice;
 
-                let bus = dp.SPI2.spi(
-                    spi2_pins!(gpio),
+
+                let bus = imus_spi!(dp).spi(
+                    imu_spi_pins!(gpio),
                     spi::Mode {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    100.kHz(),
+                    140.kHz(),
                     &clocks,
                 );
-                static mut SPI2_BUS: Option<AtomicCell<Spi<SPI2>>> = None;
+                static mut SPI_BUS: Option<AtomicCell<Spi<ImuSpi>>> = None;
                 unsafe {
-                    SPI2_BUS.replace(AtomicCell::new(bus));
+                    SPI_BUS.replace(AtomicCell::new(bus));
                 }
                 let bmidev = AtomicDevice::new_no_delay(
-                    unsafe { SPI2_BUS.as_ref().unwrap() },
-                    gpio.e.pe12.into_push_pull_output(),
+                    unsafe { SPI_BUS.as_ref().unwrap() },
+                    lrhp_nss!(gpio)
                 )
                 .unwrap();
 
@@ -486,12 +492,12 @@ async fn main(_spawner: Spawner) {
                 bmi.set_gyro_config(gyro_config).unwrap();
 
                 let adxldev = AtomicDevice::new_no_delay(
-                    unsafe { SPI2_BUS.as_ref().unwrap() },
-                    gpio.e.pe10.into_push_pull_output(),
+                    unsafe { SPI_BUS.as_ref().unwrap() },
+                    hrlp_nss!(gpio)
                 )
                 .unwrap();
 
-                let mut adxl = ADXL375::new(adxldev, TimerDelay::new(dp.TIM11, clocks));
+                let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
                 let mut buf = [0; 1];
                 adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
                 adxl.write(adxl375::Register::DataFormat, &[0b01011])
@@ -505,7 +511,7 @@ async fn main(_spawner: Spawner) {
 
                 Some(bmi)
             }
-            #[cfg(any(feature = "target-mini", not(feature = "ultra-dev")))]
+            #[cfg(any(feature = "target-mini", all(feature= "target-maxi", not(feature = "ultra-dev"))))]
             {
                 use embedded_hal_bus::spi::NoDelay;
                 use stm32f4xx_hal::gpio::Output;

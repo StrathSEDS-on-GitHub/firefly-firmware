@@ -7,7 +7,7 @@ use derive_more::{From, Into};
 use embassy_futures::block_on;
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
-use fugit::ExtU32;
+use fugit::{Duration, ExtU32, RateExtU32 as _};
 use futures::join;
 use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
@@ -591,6 +591,7 @@ async fn bmp_altimeter_handler(
     pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
 ) {
     // Wait for FIFO to fill up.
+
     timer.clear_flags(timer::Flag::Update);
     timer.start(550.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
@@ -786,7 +787,7 @@ pub async fn fire_pyro(pin: PyroPin, duration: u32) {
         panic!("Pyro board is modified. Mini cannot fire pyro.");
     }
 
-    let buzz = unsafe { BUZZER.as_mut().unwrap() };
+    let buzzer = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { PYRO_TIMER.as_mut().unwrap() };
 
     let mut pyro_fires = {
@@ -816,20 +817,18 @@ pub async fn fire_pyro(pin: PyroPin, duration: u32) {
 
     let mut time = 200i32;
     while time > 0 {
-        buzz.set_high();
-        timer.start(200u32.millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
-        buzz.set_low();
+        buzz(200u32.millis()).await;
+        buzzer.set_low();
         timer.start((time as u32).millis()).unwrap();
         NbFuture::new(|| timer.wait()).await.unwrap();
         time = (time as f32 * 0.8 - 5.0) as i32;
     }
 
-    buzz.set_high();
+    buzz(200u32.millis()).await;
 
     timer.start(500u32.millis()).unwrap();
     NbFuture::new(|| timer.wait()).await.unwrap();
-    buzz.set_low();
+    buzzer.set_low();
     for fire in &mut pyro_fires {
         fire.set_high().unwrap();
     }
@@ -880,8 +879,25 @@ pub async fn arm() {
     buzz.set_low()
 }
 
-pub async fn buzz_number(number: u32) {
+pub async fn buzz(duration: Duration<u32, 1, 10000>) {
     let buzz = unsafe { BUZZER.as_mut().unwrap() };
+    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
+
+    // hack: the buzzer pin is not hooked up to a PWM channel, so we have to do this shittily
+    for i in 0..(2 * (duration / 250u32.micros::<1, 10000>())) {
+        if i % 2 == 0 {
+            buzz.set_high();
+        } else {
+            buzz.set_low();
+        }
+        timer.start(250u32.micros()).unwrap();
+        NbFuture::new(|| timer.wait()).await.unwrap();
+    }
+    buzz.set_low();
+}
+
+pub async fn buzz_number(number: u32) {
+    let buzzer = unsafe { BUZZER.as_mut().unwrap() };
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
 
     let short = 100u32.millis();
@@ -901,10 +917,8 @@ pub async fn buzz_number(number: u32) {
 
     for &digit in digits.iter().rev() {
         for _ in 0..digit {
-            buzz.set_high();
-            timer.start(short).unwrap();
-            NbFuture::new(|| timer.wait()).await.unwrap();
-            buzz.set_low();
+            buzz(short).await;
+            buzzer.set_low();
             timer.start(short).unwrap();
             NbFuture::new(|| timer.wait()).await.unwrap();
         }
@@ -916,12 +930,13 @@ pub async fn buzz_number(number: u32) {
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     {
-        let buzz = unsafe { BUZZER.as_mut().unwrap() };
+        let buzzer = unsafe { BUZZER.as_mut().unwrap() };
         let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-        buzz.set_high();
-        timer.start(1000u32.millis()).unwrap();
+
+        buzz(1000u32.millis()).await;
+
         NbFuture::new(|| timer.wait()).await.unwrap();
-        buzz.set_low();
+        buzzer.set_low();
     }
 
     while !matches!(current_stage(), MissionStage::Landed) {
@@ -933,11 +948,9 @@ async fn buzzer_controller() -> ! {
 
     // Buzz on landing
     loop {
-        buzz.set_high();
-        timer.start(500u32.millis()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
-        buzz.set_low();
-        timer.start(500u32.millis()).unwrap();
+        // FIXME: apogee
+        buzz_number(50).await;
+        timer.start(3000u32.millis()).unwrap();
         NbFuture::new(|| timer.wait()).await.unwrap();
     }
 }
@@ -1092,7 +1105,7 @@ pub async fn ms5607_altimeter_handler(
         crate::ms5607::Calibrated,
     >,
     pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
-) -> ! {
+) {
     loop {
         let mut samples = [PressureTempSample::default(); 40];
 
@@ -1112,22 +1125,25 @@ pub async fn ms5607_altimeter_handler(
             embedded_hal_async::delay::DelayNs::delay_ms(&mut ms5607, 10).await;
         }
 
-        pressure_sender.send(
-            samples
-                .iter()
-                .take(ALTIMETER_FRAME_COUNT)
-                .map(
-                    |&PressureTempSample {
-                         pressure,
-                         temperature,
-                         ..
-                     }| crate::altimeter::PressureTemp {
-                        pressure,
-                        temperature,
-                    },
-                )
-                .collect(),
-        ).await.unwrap();
+        pressure_sender
+            .send(
+                samples
+                    .iter()
+                    .take(ALTIMETER_FRAME_COUNT)
+                    .map(
+                        |&PressureTempSample {
+                             pressure,
+                             temperature,
+                             ..
+                         }| crate::altimeter::PressureTemp {
+                            pressure,
+                            temperature,
+                        },
+                    )
+                    .collect(),
+            )
+            .await
+            .unwrap();
 
         let message = MessageType::new_pressure_temp(samples.into_iter());
         let radio_msg = message.clone().into_message(radio_ctxt());
@@ -1152,19 +1168,29 @@ pub async fn begin(
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
-    let altimeter_task = {
+    let altimeter_task: core::pin::Pin<&mut dyn Future<Output = ()>> = if role() != Role::GroundMain
+    {
         #[cfg(any(
             feature = "target-mini",
             all(feature = "target-maxi", not(feature = "ultra-dev"))
         ))]
         {
-            bmp_altimeter_handler(altimeter.unwrap(), pr_timer, pressure_sender)
+            core::pin::pin!(bmp_altimeter_handler(
+                altimeter.unwrap(),
+                pr_timer,
+                pressure_sender
+            ))
         }
         #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
         {
             let _ = pr_timer;
-            ms5607_altimeter_handler(altimeter.unwrap(), pressure_sender)
+            core::pin::pin!(ms5607_altimeter_handler(
+                altimeter.unwrap(),
+                pressure_sender
+            ))
         }
+    } else {
+        core::pin::pin!(core::future::ready(()))
     };
 
     match unsafe { ROLE } {
