@@ -1,6 +1,7 @@
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
+use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use derive_more::{From, Into};
@@ -44,6 +45,8 @@ pub static mut PYRO_CONT2: Option<PyroCont2> = None;
 pub static mut PYRO_ENABLE_PIN: Option<PyroEnable> = None;
 pub static mut PYRO_FIRE2: Option<PyroFire2> = None;
 pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
+
+pub static DETECTED_APOGEE: AtomicU32 = AtomicU32::new(0);
 
 static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed));
 
@@ -150,6 +153,14 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 }
             }
             MissionStage::Ascent => {
+                let max_altitude = altitudes.iter().cloned().fold(0.0, f32::max);
+                if max_altitude as u32 > DETECTED_APOGEE
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                {
+                    DETECTED_APOGEE
+                        .store(max_altitude as u32, core::sync::atomic::Ordering::Relaxed);
+                };
+
                 // If our velocity is negative, we must be descending
                 let velocities = altitudes.windows(2).map(|w| w[1] - w[0]);
 
@@ -930,12 +941,8 @@ pub async fn buzz_number(number: u32) {
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     {
-        let buzzer = unsafe { BUZZER.as_mut().unwrap() };
-        let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
-
         buzz(1000u32.millis()).await;
-
-        NbFuture::new(|| timer.wait()).await.unwrap();
+        let buzzer = unsafe { BUZZER.as_mut().unwrap() };
         buzzer.set_low();
     }
 
@@ -943,13 +950,11 @@ async fn buzzer_controller() -> ! {
         YieldFuture::new().await;
     }
 
-    let buzz = unsafe { BUZZER.as_mut().unwrap() };
-    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
 
     // Buzz on landing
     loop {
-        // FIXME: apogee
-        buzz_number(50).await;
+        buzz_number(DETECTED_APOGEE.load(core::sync::atomic::Ordering::Relaxed)).await;
+        let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
         timer.start(3000u32.millis()).unwrap();
         NbFuture::new(|| timer.wait()).await.unwrap();
     }
