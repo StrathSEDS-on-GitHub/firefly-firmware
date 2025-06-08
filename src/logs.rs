@@ -5,7 +5,7 @@ use cortex_m::interrupt::{CriticalSection, Mutex};
 use cortex_m::register::primask;
 use embassy_futures::select::select;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
-use sequential_storage::cache::NoCache;
+use sequential_storage::cache::{NoCache, PagePointerCache};
 use sequential_storage::{map, queue};
 
 use stm32f4xx_hal as hal;
@@ -15,7 +15,7 @@ use storage_types::{CONFIG_KEYS, ConfigKey};
 use crate::futures::YieldFuture;
 use crate::mission::current_rtc_time;
 use crate::pins::QspiBank;
-use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, neopixel};
+use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, PAGE_COUNT, neopixel};
 
 static LOGGER: Logger = Logger {
     flash: Mutex::new(RefCell::new(None)),
@@ -28,7 +28,8 @@ pub fn setup_logger<'a>(
 ) -> Result<(), embedded_sdmmc::Error<hal::sdio::Error>> {
     cortex_m::interrupt::free(|cs| {
         let mut flash_ref = LOGGER.flash.borrow(cs).borrow_mut();
-        flash_ref.replace(flash);
+        let cache = PagePointerCache::new();
+        flash_ref.replace((flash, cache));
     });
     Ok(())
 }
@@ -69,7 +70,14 @@ impl<'a> Write for FixedWriter<'a> {
 }
 
 pub struct Logger {
-    flash: Mutex<RefCell<Option<W25QSequentialStorage<QspiBank, CAPACITY>>>>,
+    flash: Mutex<
+        RefCell<
+            Option<(
+                W25QSequentialStorage<QspiBank, CAPACITY>,
+                PagePointerCache<PAGE_COUNT>,
+            )>,
+        >,
+    >,
 }
 
 impl Logger {
@@ -111,7 +119,7 @@ impl Logger {
                 continue;
             };
 
-            let Some(flash) = flash_ref.as_mut() else {
+            let Some((flash, cache)) = flash_ref.as_mut() else {
                 // Can't do anything if we don't even have the flash
                 drop(flash_ref);
                 drop(cs);
@@ -123,7 +131,7 @@ impl Logger {
                 return;
             };
 
-            let _ = queue::push(flash, LOGS_FLASH_RANGE, &mut NoCache::new(), &buffer, false).await;
+            let _ = queue::push(flash, LOGS_FLASH_RANGE, cache, &buffer, false).await;
             // Still can't do anything if there's no space though
             drop(flash_ref);
             drop(cs);
@@ -141,9 +149,8 @@ impl Logger {
         cortex_m::interrupt::disable();
         let cs = unsafe { CriticalSection::new() };
         if let Some(mut flash) = self.flash.borrow(&cs).try_borrow_mut().ok() {
-            if let Some(flash) = flash.as_mut() {
-                let _ =
-                    queue::push(flash, LOGS_FLASH_RANGE, &mut NoCache::new(), &buffer, false).await;
+            if let Some((flash, cache)) = flash.as_mut() {
+                let _ = queue::push(flash, LOGS_FLASH_RANGE, cache, &buffer, false).await;
             }
             // Ignore the result, we can't do anything about it.
             // If we can't borrow the flash, just discard the log.
@@ -172,7 +179,12 @@ impl Logger {
     /// until the flash is returned.
     /// Used for long-running operations like erasing the flash or reading
     /// all logs.
-    async fn take_flash(&self) -> Option<W25QSequentialStorage<QspiBank, CAPACITY>> {
+    async fn take_flash(
+        &self,
+    ) -> Option<(
+        W25QSequentialStorage<QspiBank, CAPACITY>,
+        PagePointerCache<PAGE_COUNT>,
+    )> {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -202,7 +214,7 @@ impl Logger {
         }
     }
 
-    async fn return_flash(&self, flash: W25QSequentialStorage<QspiBank, CAPACITY>) {
+    async fn return_flash(&self, flash: W25QSequentialStorage<QspiBank, CAPACITY>, cache: PagePointerCache<PAGE_COUNT>) {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -238,14 +250,13 @@ impl Logger {
         &'a self,
         mut f: impl AsyncFnMut(&'_ Message<LocalCtxt>),
     ) -> Result<(), &'static str> {
-        let mut no_cache = NoCache::new();
         let mut flash = self.take_flash().await;
-        let Some(mut flash) = flash.take() else {
+        let Some((mut flash, mut cache)) = flash.take() else {
             // Flash not available
             return Err("Flash not available");
         };
 
-        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut no_cache)
+        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, cache)
             .await
             .unwrap();
 
@@ -258,13 +269,13 @@ impl Logger {
             f(&msg).await;
         }
 
-        self.return_flash(flash).await;
+        self.return_flash(flash, cache).await;
         Ok(())
     }
 
     pub async fn erase_logs(&self) -> Result<(), &'static str> {
         let flash = self.take_flash().await;
-        let Some(mut flash) = flash else {
+        let Some((mut flash, mut cache)) = flash else {
             // Flash not available
             return Err("Flash not available");
         };
@@ -278,7 +289,7 @@ impl Logger {
                     if let Ok(Some(v)) = map::fetch_item(
                         &mut flash,
                         CONFIG_FLASH_RANGE,
-                        &mut NoCache::new(),
+                        cache,
                         &mut data_buffer,
                         &key,
                     )
@@ -326,7 +337,7 @@ impl Logger {
             .await;
         }
 
-        self.return_flash(flash).await;
+        self.return_flash(flash, PagePointerCache::new()).await;
         Ok(())
     }
 
@@ -347,13 +358,13 @@ impl Logger {
                 cortex_m::interrupt::disable();
                 continue;
             };
-            let Some(flash) = flash.as_mut() else {
+            let Some((flash, cache)) = flash.as_mut() else {
                 break;
             };
             let _ = map::store_item(
                 flash,
                 CONFIG_FLASH_RANGE,
-                &mut NoCache::new(),
+                cache,
                 &mut [0u8; 2048],
                 key,
                 &value,
@@ -383,10 +394,10 @@ impl Logger {
             }
             return Err("Flash not available");
         };
-        let Some(flash) = flash.as_mut() else {
+        let Some((flash, cache)) = flash.as_mut() else {
             return Err("Flash not initialized");
         };
-        let space = queue::space_left(flash, LOGS_FLASH_RANGE, &mut NoCache::new()).await;
+        let space = queue::space_left(flash, LOGS_FLASH_RANGE, cache).await;
         if mask.is_active() {
             unsafe {
                 cortex_m::interrupt::enable();

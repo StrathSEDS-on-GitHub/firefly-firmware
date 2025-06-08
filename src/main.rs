@@ -109,6 +109,7 @@ static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
 static RTC: Mutex<RefCell<Option<Rtc>>> = Mutex::new(RefCell::new(None));
 
 pub const CAPACITY: usize = 16777216;
+pub const PAGE_COUNT: usize = CAPACITY / 4096;
 
 static PPS_PIN: Mutex<RefCell<Option<PpsPin>>> = Mutex::new(RefCell::new(None));
 
