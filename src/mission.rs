@@ -578,19 +578,22 @@ async fn gps_broadcast() -> ! {
         let mut samples = [GPSSample::default(); 80];
 
         for sample in samples.iter_mut() {
-            let fix = gps::next_sentence().await;
-            if let ParseResult::GGA(Some(GGA {
-                fix: Some(gga),
-                time,
-                ..
-            })) = fix
-            {
-                *sample = GPSSample {
-                    timestamp: EpochTime::from(time).0,
-                    latitude: gga.latitude.as_f64() as f32,
-                    longitude: gga.longitude.as_f64() as f32,
-                    altitude: gga.altitude.meters as f32,
-                };
+            loop {
+                let fix = gps::next_sentence().await;
+                if let ParseResult::GGA(Some(GGA {
+                    fix: Some(gga),
+                    time,
+                    ..
+                })) = fix
+                {
+                    *sample = GPSSample {
+                        timestamp: EpochTime::from(time).0,
+                        latitude: gga.latitude.as_f64() as f32,
+                        longitude: gga.longitude.as_f64() as f32,
+                        altitude: gga.altitude.meters as f32,
+                    };
+                    break;
+                }
             }
         }
         let radio_msg = MessageType::new_gps(samples.iter().cloned().enumerate().filter_map(
@@ -1229,7 +1232,9 @@ pub async fn begin(
     imu_timer: Counter<impl Instance, 100000>,
     bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
     bmi323_imu: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
-    adxl_imu: Option<adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>>,
+    adxl_imu: Option<
+        adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
+    >,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
@@ -1291,7 +1296,7 @@ pub async fn begin(
                             bmi323_imu.unwrap(),
                             TimerDelay::new(imu_timer.release().release(), clocks),
                         ),
-                        adxl_imu_handler(adxl_imu.unwrap())
+                        adxl_imu_handler(adxl_imu.unwrap()),
                     )
                 }
             };
