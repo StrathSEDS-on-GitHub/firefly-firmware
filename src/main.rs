@@ -399,7 +399,7 @@ async fn main(_spawner: Spawner) {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
                 let delay = futures::TimerDelay::new(dp.TIM6, clocks);
-                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110110, delay)
+                let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110111, delay)
                     .await
                     .unwrap();
                 let ms5607 = ms5607.calibrate().await.unwrap();
