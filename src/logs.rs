@@ -179,12 +179,7 @@ impl Logger {
     /// until the flash is returned.
     /// Used for long-running operations like erasing the flash or reading
     /// all logs.
-    async fn take_flash(
-        &self,
-    ) -> Option<(
-        W25QSequentialStorage<QspiBank, CAPACITY>,
-        PagePointerCache<PAGE_COUNT>,
-    )> {
+    async fn take_flash(&self) -> Option<W25QSequentialStorage<QspiBank, CAPACITY>> {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -201,7 +196,8 @@ impl Logger {
                 YieldFuture::new().await;
                 continue;
             };
-            let taken = flash.take();
+            let taken = flash.take().map(|(it, _)| it);
+            
             drop(flash);
             drop(cs);
             if mask.is_active() {
@@ -214,7 +210,10 @@ impl Logger {
         }
     }
 
-    async fn return_flash(&self, flash: W25QSequentialStorage<QspiBank, CAPACITY>, cache: PagePointerCache<PAGE_COUNT>) {
+    async fn return_flash(
+        &self,
+        flash: W25QSequentialStorage<QspiBank, CAPACITY>,
+    ) {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -233,7 +232,7 @@ impl Logger {
                 continue;
             };
 
-            flash_ref.replace((flash, cache));
+            flash_ref.replace((flash, PagePointerCache::new()));
             drop(flash_ref);
             drop(cs);
             if mask.is_active() {
@@ -251,12 +250,13 @@ impl Logger {
         mut f: impl AsyncFnMut(&'_ Message<LocalCtxt>),
     ) -> Result<(), &'static str> {
         let mut flash = self.take_flash().await;
-        let Some((mut flash, mut cache)) = flash.take() else {
+        let Some(mut flash) = flash.take() else {
             // Flash not available
             return Err("Flash not available");
         };
 
-        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut cache)
+        let mut no_cache = NoCache::new();
+        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut no_cache)
             .await
             .unwrap();
 
@@ -269,13 +269,13 @@ impl Logger {
             f(&msg).await;
         }
 
-        self.return_flash(flash, cache).await;
+        self.return_flash(flash).await;
         Ok(())
     }
 
     pub async fn erase_logs(&self) -> Result<(), &'static str> {
         let flash = self.take_flash().await;
-        let Some((mut flash, mut cache)) = flash else {
+        let Some(mut flash) = flash else {
             // Flash not available
             return Err("Flash not available");
         };
@@ -289,7 +289,7 @@ impl Logger {
                     if let Ok(Some(v)) = map::fetch_item(
                         &mut flash,
                         CONFIG_FLASH_RANGE,
-                        &mut cache,
+                        &mut NoCache::new(),
                         &mut data_buffer,
                         &key,
                     )
@@ -337,7 +337,7 @@ impl Logger {
             .await;
         }
 
-        self.return_flash(flash, PagePointerCache::new()).await;
+        self.return_flash(flash).await;
         Ok(())
     }
 
@@ -406,10 +406,10 @@ impl Logger {
             }
             let space = queue::space_left(flash, LOGS_FLASH_RANGE, cache).await;
             if let Ok(space) = space {
-                return Ok(space)
+                return Ok(space);
             } else {
-                return Err("Failed to get space left")
+                return Err("Failed to get space left");
             }
-        };
+        }
     }
 }
