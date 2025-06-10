@@ -8,12 +8,12 @@ use derive_more::{From, Into};
 use embassy_futures::block_on;
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
-use fugit::{Duration, ExtU32, RateExtU32 as _};
+use fugit::{Duration, ExtU32};
 use futures::join;
 use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize}; 
 use stm32f4xx_hal::{
     ClearFlags,
     adc::{Adc, config::SampleTime},

@@ -30,7 +30,6 @@ use crate::{
     logs::FixedWriter,
     neopixel,
     pins::gps::{GPSPins, GPSRxStream, GPSUsart},
-    usb_logger::get_serial,
 };
 use stm32f4xx_hal as hal;
 
@@ -353,7 +352,7 @@ fn pps_interrupt_impl() {
         let carry = if time.millisecond() > 500 { 1 } else { 0 };
         let (second, carry) = ((time.second() + carry) % 60, (time.second() + carry) / 60);
         let (minute, carry) = ((time.minute() + carry) % 60, (time.minute() + carry) / 60);
-        let (hour, carry) = ((time.hour() + carry) % 60, (time.hour() + carry) / 60);
+        let (hour, _carry) = ((time.hour() + carry) % 60, (time.hour() + carry) / 60);
 
         rtc.set_time(&time::Time::from_hms_milli(hour, minute, second, 0).unwrap())
             .unwrap();

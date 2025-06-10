@@ -233,7 +233,7 @@ impl Logger {
                 continue;
             };
 
-            flash_ref.replace(flash);
+            flash_ref.replace((flash, cache));
             drop(flash_ref);
             drop(cs);
             if mask.is_active() {
@@ -256,7 +256,7 @@ impl Logger {
             return Err("Flash not available");
         };
 
-        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, cache)
+        let mut iterator = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut cache)
             .await
             .unwrap();
 
@@ -289,7 +289,7 @@ impl Logger {
                     if let Ok(Some(v)) = map::fetch_item(
                         &mut flash,
                         CONFIG_FLASH_RANGE,
-                        cache,
+                        &mut cache,
                         &mut data_buffer,
                         &key,
                     )
@@ -396,7 +396,7 @@ impl Logger {
                 }
                 continue;
             };
-            let Some(flash) = flash.as_mut() else {
+            let Some((flash, cache)) = flash.as_mut() else {
                 return Err("Flash not initialized");
             };
             if mask.is_active() {
@@ -404,7 +404,7 @@ impl Logger {
                     cortex_m::interrupt::enable();
                 }
             }
-            let space = queue::space_left(flash, LOGS_FLASH_RANGE, &mut NoCache::new()).await;
+            let space = queue::space_left(flash, LOGS_FLASH_RANGE, cache).await;
             if let Ok(space) = space {
                 return Ok(space)
             } else {
