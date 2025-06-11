@@ -7,7 +7,7 @@ use core::{
 
 use cortex_m::interrupt::Mutex;
 use stm32f4xx_hal::gpio::ExtiPin;
-use fugit::{ExtU32, ExtU64 as _};
+use fugit::ExtU32;
 use hal::{
     dma::{Transfer, traits::StreamISR},
     pac::NVIC,

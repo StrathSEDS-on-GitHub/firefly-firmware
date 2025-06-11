@@ -13,7 +13,7 @@ use futures::join;
 use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
-use serde::{Deserialize, Serialize}; 
+use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     ClearFlags,
     adc::{Adc, config::SampleTime},
@@ -85,9 +85,10 @@ pub async fn update_pyro_state() {
         adc.sample_to_millivolts(sample)
     };
 
-    // todo!("set pyro state");
-    // FIXME: unfortunate. we should be able to submit this to the executor to avoid blocking.
-    block_on(get_logger().log(MessageType::new_pyro(mv).into_message(current_rtc_time())));
+    let pyro_msg = MessageType::new_pyro(mv);
+    get_logger().log(pyro_msg.clone().into_message(current_rtc_time())).await;
+    let radio_msg = pyro_msg.clone().into_message(radio_ctxt());
+    radio::queue_packet(radio_msg);
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
@@ -1005,9 +1006,12 @@ async fn adxl_imu_handler(
     loop {
         let mut samples = [AccelerometerSample::default(); 32];
 
-        for (store, sample) in samples.iter_mut().zip(imu.read_fifo().await.unwrap()) {
+        for store in samples.iter_mut() {
             store.timestamp = current_rtc_time();
-            store.acceleration = sample;
+            let mut buf = [0u8; 6];
+            imu.read(adxl375::Register::DataX0, &mut buf).await.unwrap();
+            store.acceleration = adxl375::convert(&buf);
+            embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 10).await;
         }
 
         let message = MessageType::new_accel(samples.into_iter());
@@ -1019,7 +1023,6 @@ async fn adxl_imu_handler(
         get_logger()
             .log(message.into_message(current_rtc_time()))
             .await;
-        embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 32 * 10).await;
     }
 }
 
@@ -1291,20 +1294,20 @@ pub async fn begin(
                 {
                     let _ = bno_imu;
                     let _ = icm_imu;
-                    ::futures::future::join(
+                    // ::futures::future::join(
                         bmi323_imu_handler(
                             bmi323_imu.unwrap(),
                             TimerDelay::new(imu_timer.release().release(), clocks),
-                        ),
-                        adxl_imu_handler(adxl_imu.unwrap()),
-                    )
+                        )
+                        // adxl_imu_handler(adxl_imu.unwrap()),
+                    // )
                 }
             };
 
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
-                // buzzer_controller(),
+                buzzer_controller(),
                 imu_task,
                 gps_handler(),
                 gps_broadcast(),

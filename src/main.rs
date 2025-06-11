@@ -321,7 +321,7 @@ async fn main(_spawner: Spawner) {
         .await;
 
         if total < 10240 || res.is_err() {
-            panic!("Logging failure");
+            // panic!("Logging failure");
         }
 
         let board_id: Result<Option<u64>, _> = map::fetch_item(
@@ -332,6 +332,7 @@ async fn main(_spawner: Spawner) {
             &ConfigKey::try_from("id").unwrap(),
         )
         .await;
+        
         let board_id = board_id.unwrap_or(Some(1)).unwrap_or(1);
         let role = match board_id {
             2 | 0 => Role::GroundMain,
@@ -363,7 +364,7 @@ async fn main(_spawner: Spawner) {
         let i2c3 = {
             #[cfg(any(feature = "target-maxi", feature = "target-ultra"))]
             {
-                Some(dp.I2C3.i2c(i2c3_pins!(gpio), 100.kHz(), &clocks))
+                Some(dp.I2C3.i2c(i2c3_pins!(gpio), 400.kHz(), &clocks))
             }
             #[cfg(feature = "target-mini")]
             {
@@ -396,7 +397,7 @@ async fn main(_spawner: Spawner) {
                 Some(bmp)
             }
 
-            #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+            #[cfg(feature = "target-ultra")]
             {
                 let delay = futures::TimerDelay::new(dp.TIM6, clocks);
                 let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110111, delay)
@@ -405,6 +406,11 @@ async fn main(_spawner: Spawner) {
                 let ms5607 = ms5607.calibrate().await.unwrap();
                 Some(ms5607)
             }
+            #[cfg(feature = "ultra-dev")]
+            {
+                None
+            }
+
         } else {
             None
         };
@@ -470,7 +476,7 @@ async fn main(_spawner: Spawner) {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    140.kHz(),
+                    40.MHz(),
                     &clocks,
                 );
 
@@ -505,16 +511,16 @@ async fn main(_spawner: Spawner) {
                 .unwrap();
 
                 let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
-                let mut buf = [0; 1];
-                adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
-                adxl.write(adxl375::Register::DataFormat, &[0b01011])
-                    .await
-                    .unwrap();
-                adxl.write(adxl375::Register::PowerCtl, &[0x8])
-                    .await
-                    .unwrap();
-                adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
-                adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
+                // let mut buf = [0; 1];
+                // adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
+                // adxl.write(adxl375::Register::DataFormat, &[0b01011])
+                //     .await
+                //     .unwrap();
+                // adxl.write(adxl375::Register::PowerCtl, &[0x8])
+                //     .await
+                //     .unwrap();
+                // adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
+                // adxl.set_fifo_mode(adxl375::FifoMode::Bypass).await.unwrap();
 
                 (Some(bmi), Some(adxl))
             }
