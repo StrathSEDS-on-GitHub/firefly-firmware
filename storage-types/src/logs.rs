@@ -144,7 +144,14 @@ pub enum MessageType {
     Disarm(Role),
     TestPyro(Role, PyroPin, u32),
     SetStage(Role, MissionStage),
-    Pyro(u16)
+    Pyro(u16),
+    MissionSumary{
+        max_altitude: f32,
+        max_altitude_time: u32,
+        max_acceleration: f32,
+        max_velocity: f32,
+        time_of_flight: u32,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

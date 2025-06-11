@@ -5,7 +5,6 @@ use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use derive_more::{From, Into};
-use embassy_futures::block_on;
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
 use fugit::{Duration, ExtU32};
@@ -48,6 +47,12 @@ pub static mut PYRO_FIRE2: Option<PyroFire2> = None;
 pub static mut PYRO_FIRE1: Option<PyroFire1> = None;
 
 pub static DETECTED_APOGEE: AtomicU32 = AtomicU32::new(0);
+pub static DETECTED_APOGEE_TIME: AtomicU32 = AtomicU32::new(0);
+pub static DETECTED_MAX_ACCELERATION: AtomicU32 = AtomicU32::new(0);
+//pub static DETECTED_MAX_VELOCITY: AtomicU32 = AtomicU32::new(0);
+
+pub static LAUNCH_TIME: AtomicU32 = AtomicU32::new(0);
+pub static LANDING_TIME: AtomicU32 = AtomicU32::new(0);
 
 static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Armed));
 
@@ -86,7 +91,9 @@ pub async fn update_pyro_state() {
     };
 
     let pyro_msg = MessageType::new_pyro(mv);
-    get_logger().log(pyro_msg.clone().into_message(current_rtc_time())).await;
+    get_logger()
+        .log(pyro_msg.clone().into_message(current_rtc_time()))
+        .await;
     let radio_msg = pyro_msg.clone().into_message(radio_ctxt());
     radio::queue_packet(radio_msg);
 }
@@ -155,11 +162,17 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 }
             }
             MissionStage::Ascent => {
+                if LAUNCH_TIME.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+                    LAUNCH_TIME.store(current_rtc_time(), core::sync::atomic::Ordering::Relaxed);
+                }
+
                 let max_altitude = altitudes.iter().cloned().fold(0.0, f32::max);
                 if max_altitude as u32 > DETECTED_APOGEE.load(core::sync::atomic::Ordering::Relaxed)
                 {
                     DETECTED_APOGEE
                         .store(max_altitude as u32, core::sync::atomic::Ordering::Relaxed);
+                    DETECTED_APOGEE_TIME
+                        .store(current_rtc_time(), core::sync::atomic::Ordering::Relaxed);
                 };
 
                 // If our velocity is negative, we must be descending
@@ -210,7 +223,27 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 }
             }
             MissionStage::Landed => {
-                // Nothing to do
+                if LANDING_TIME.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+                    LANDING_TIME.store(current_rtc_time(), core::sync::atomic::Ordering::Relaxed);
+                }
+
+                let message = MessageType::MissionSumary {
+                    max_altitude: f32::from_bits(
+                        DETECTED_APOGEE.load(core::sync::atomic::Ordering::Relaxed),
+                    ),
+                    max_altitude_time: DETECTED_APOGEE_TIME
+                        .load(core::sync::atomic::Ordering::Relaxed),
+                    max_acceleration: f32::from_bits(
+                        DETECTED_MAX_ACCELERATION.load(core::sync::atomic::Ordering::Relaxed),
+                    ),
+                    max_velocity: 0.0,
+                    time_of_flight: LANDING_TIME.load(core::sync::atomic::Ordering::Relaxed)
+                        - LAUNCH_TIME.load(core::sync::atomic::Ordering::Relaxed),
+                };
+                get_logger()
+                    .log(message.clone().into_message(current_rtc_time()))
+                    .await;
+                radio::queue_packet(message.into_message(radio_ctxt()));
             }
         };
 
@@ -383,124 +416,131 @@ pub async fn usb_handler() -> ! {
             if let Err(msg) = get_logger()
                 .get_logs(async |s| match &s.message {
                     MessageType::Log { timestamp, message } => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local log] {message}",
-                            Into::<String<12>>::into(EpochTime(*timestamp))
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local log] {message}",
+                                            Into::<String<12>>::into(EpochTime(*timestamp))
+                                        )
+                                        .unwrap();
+                                    }
                     MessageType::Accelerometer(accel_compressed) => {
-                        for sample in accel_compressed.decompress() {
-                            if let Ok(AccelerometerSample {
-                                timestamp,
-                                acceleration,
-                            }) = sample
-                            {
-                                writeln!(
-                                    get_serial(),
-                                    "[{}] [Local acc] {:?}",
-                                    Into::<String<12>>::into(EpochTime(timestamp)),
-                                    acceleration
-                                )
-                                .unwrap();
-                            }
-                        }
-                    }
+                                        for sample in accel_compressed.decompress() {
+                                            if let Ok(AccelerometerSample {
+                                                timestamp,
+                                                acceleration,
+                                            }) = sample
+                                            {
+                                                writeln!(
+                                                    get_serial(),
+                                                    "[{}] [Local acc] {:?}",
+                                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                                    acceleration
+                                                )
+                                                .unwrap();
+                                            }
+                                        }
+                                    }
                     MessageType::Gps(gps_compressed) => {
-                        for sample in gps_compressed.decompress() {
-                            if let Ok(GPSSample {
-                                timestamp,
-                                latitude,
-                                longitude,
-                                altitude,
-                            }) = sample
-                            {
-                                writeln!(
-                                    get_serial(),
-                                    "[{}] [Local gps] {latitude},{longitude},{altitude}",
-                                    Into::<String<12>>::into(EpochTime(timestamp))
-                                )
-                                .unwrap();
-                            }
-                        }
-                    }
+                                        for sample in gps_compressed.decompress() {
+                                            if let Ok(GPSSample {
+                                                timestamp,
+                                                latitude,
+                                                longitude,
+                                                altitude,
+                                            }) = sample
+                                            {
+                                                writeln!(
+                                                    get_serial(),
+                                                    "[{}] [Local gps] {latitude},{longitude},{altitude}",
+                                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                                )
+                                                .unwrap();
+                                            }
+                                        }
+                                    }
                     MessageType::PressureTemp(pressure_temp_compressed) => {
-                        for sample in pressure_temp_compressed.decompress() {
-                            if let Ok(PressureTempSample {
-                                timestamp,
-                                pressure,
-                                temperature,
-                            }) = sample
-                            {
-                                writeln!(
-                                    get_serial(),
-                                    "[{}] [Local prt] {pressure},{temperature}",
-                                    Into::<String<12>>::into(EpochTime(timestamp))
-                                )
-                                .unwrap();
-                            }
-                        }
-                    }
+                                        for sample in pressure_temp_compressed.decompress() {
+                                            if let Ok(PressureTempSample {
+                                                timestamp,
+                                                pressure,
+                                                temperature,
+                                            }) = sample
+                                            {
+                                                writeln!(
+                                                    get_serial(),
+                                                    "[{}] [Local prt] {pressure},{temperature}",
+                                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                                )
+                                                .unwrap();
+                                            }
+                                        }
+                                    }
                     MessageType::Imu(imu_compressed) => {
-                        for sample in imu_compressed.decompress() {
-                            if let Ok(IMUSample {
-                                acceleration,
-                                angular_velocity,
-                                timestamp,
-                            }) = sample
-                            {
-                                writeln!(
-                                    get_serial(),
-                                    "[{}] [Local imu] {:?},{:?}",
-                                    Into::<String<12>>::into(EpochTime(timestamp)),
-                                    acceleration,
-                                    angular_velocity
-                                )
-                                .unwrap();
-                            }
-                        }
-                    }
+                                        for sample in imu_compressed.decompress() {
+                                            if let Ok(IMUSample {
+                                                acceleration,
+                                                angular_velocity,
+                                                timestamp,
+                                            }) = sample
+                                            {
+                                                writeln!(
+                                                    get_serial(),
+                                                    "[{}] [Local imu] {:?},{:?}",
+                                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                                    acceleration,
+                                                    angular_velocity
+                                                )
+                                                .unwrap();
+                                            }
+                                        }
+                                    }
                     MessageType::Arm(role) => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local log] Arm command from {role:?}",
-                            current_rtc_time::<String<12>>()
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local log] Arm command from {role:?}",
+                                            current_rtc_time::<String<12>>()
+                                        )
+                                        .unwrap();
+                                    }
                     MessageType::Disarm(role) => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local log] Disarm command from {role:?}",
-                            current_rtc_time::<String<12>>()
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local log] Disarm command from {role:?}",
+                                            current_rtc_time::<String<12>>()
+                                        )
+                                        .unwrap();
+                                    }
                     MessageType::TestPyro(role, pyro_pin, _) => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local log] Test pyro command to {role:?} on pin {pyro_pin:?}",
-                            current_rtc_time::<String<12>>()
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local log] Test pyro command to {role:?} on pin {pyro_pin:?}",
+                                            current_rtc_time::<String<12>>()
+                                        )
+                                        .unwrap();
+                                    }
                     MessageType::SetStage(role, mission_stage) => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local log] Set stage command to {role:?} to {mission_stage:?}",
-                            current_rtc_time::<String<12>>()
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local log] Set stage command to {role:?} to {mission_stage:?}",
+                                            current_rtc_time::<String<12>>()
+                                        )
+                                        .unwrap();
+                                    }
                     MessageType::Pyro(mv) => {
-                        writeln!(
-                            get_serial(),
-                            "[{}] [Local pyro] {mv}",
-                            current_rtc_time::<String<12>>()
-                        )
-                        .unwrap();
-                    }
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local pyro] {mv}",
+                                            current_rtc_time::<String<12>>()
+                                        )
+                                        .unwrap();
+                                    }
+                    MessageType::MissionSumary { max_altitude, max_altitude_time, max_acceleration, max_velocity, time_of_flight } => {
+                                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
+                                            current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(*max_altitude_time)), Into::<String<12>>::into(EpochTime(*time_of_flight))
+                                        )
+                                        .unwrap();},
                 })
                 .await
             {
@@ -783,21 +823,21 @@ async fn handle_incoming_packets() -> ! {
                     }
                     MessageType::TestPyro(role, pyro_pin, _) => {
                         writeln!(
-                                            get_serial(),
-                                            "[{}] [{:?} log] Out of turn test pyro command from {source:?} on pin {pyro_pin:?}",
-                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
-                                            role
-                                        )
-                                        .unwrap();
+                                                            get_serial(),
+                                                            "[{}] [{:?} log] Out of turn test pyro command from {source:?} on pin {pyro_pin:?}",
+                                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                                                            role
+                                                        )
+                                                        .unwrap();
                     }
                     MessageType::SetStage(role, mission_stage) => {
                         writeln!(
-                                            get_serial(),
-                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
-                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
-                                            role
-                                        )
-                                        .unwrap();
+                                                            get_serial(),
+                                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
+                                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                                                            role
+                                                        )
+                                                        .unwrap();
                     }
                     MessageType::Pyro(mv) => {
                         writeln!(
@@ -806,6 +846,20 @@ async fn handle_incoming_packets() -> ! {
                             current_rtc_time::<String<12>>()
                         )
                         .unwrap();
+                    }
+                    MessageType::MissionSumary {
+                        max_altitude,
+                        max_altitude_time,
+                        max_acceleration,
+                        max_velocity,
+                        time_of_flight,
+                    } => {
+                        writeln!(
+                                            get_serial(),
+                                            "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
+                                            current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(max_altitude_time)), Into::<String<12>>::into(EpochTime(time_of_flight))
+                                        )
+                                        .unwrap();
                     }
                 },
                 _ => match packet.message {
@@ -1146,6 +1200,17 @@ pub async fn bmi323_imu_handler(
                     .map(|it| [it.x, it.y, it.z])
                     .unwrap(),
             );
+            let [x, y, z] = sample.acceleration;
+            if x * x + y * y + z * z
+                > f32::from_bits(
+                    DETECTED_MAX_ACCELERATION.load(core::sync::atomic::Ordering::Relaxed),
+                )
+            {
+                DETECTED_MAX_ACCELERATION.store(
+                    f32::to_bits(x * x + y * y + z * z),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+            }
 
             sample.angular_velocity.copy_from_slice(
                 &bmi323
@@ -1295,11 +1360,11 @@ pub async fn begin(
                     let _ = bno_imu;
                     let _ = icm_imu;
                     // ::futures::future::join(
-                        bmi323_imu_handler(
-                            bmi323_imu.unwrap(),
-                            TimerDelay::new(imu_timer.release().release(), clocks),
-                        )
-                        // adxl_imu_handler(adxl_imu.unwrap()),
+                    bmi323_imu_handler(
+                        bmi323_imu.unwrap(),
+                        TimerDelay::new(imu_timer.release().release(), clocks),
+                    )
+                    // adxl_imu_handler(adxl_imu.unwrap()),
                     // )
                 }
             };
