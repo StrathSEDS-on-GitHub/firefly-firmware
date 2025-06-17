@@ -34,3 +34,6 @@
 [submodule "adxl375"]
 	path = adxl375
 	url = ssh://git@github.com/X-yl/adxl375-rs
+[submodule "utils/ffplotter/plotters-piston"]
+	path = utils/ffplotter/plotters-piston
+	url = ssh://git@github.com/X-yl/plotters-piston

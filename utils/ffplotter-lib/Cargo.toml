@@ -1,0 +1,13 @@
+[package]
+name = "ffplotter-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.5"
+evalexpr-jit = { version = "0.2.1", features = ["ndarray"] }
+log = "0.4.27"
+ndarray = "0.16.1"
+nom = "8.0.0"
+plotters = "0.3.7"
+time = { version = "0.3.41", features = ["macros", "parsing"] }

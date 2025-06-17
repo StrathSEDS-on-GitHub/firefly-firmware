@@ -54,7 +54,7 @@ pub static DETECTED_MAX_ACCELERATION: AtomicU32 = AtomicU32::new(0);
 pub static LAUNCH_TIME: AtomicU32 = AtomicU32::new(0);
 pub static LANDING_TIME: AtomicU32 = AtomicU32::new(0);
 
-static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Armed));
+static STAGE: Mutex<Cell<MissionStage>> = Mutex::new(Cell::new(MissionStage::Disarmed));
 
 pub fn role() -> Role {
     // SAFETY: Role is mutated once by main prior to mission begin.
@@ -616,7 +616,7 @@ impl From<RTCTime> for EpochTime {
 
 async fn gps_broadcast() -> ! {
     loop {
-        let mut samples = [GPSSample::default(); 80];
+        let mut samples = [GPSSample::default(); 20];
 
         for sample in samples.iter_mut() {
             loop {
@@ -628,7 +628,7 @@ async fn gps_broadcast() -> ! {
                 })) = fix
                 {
                     *sample = GPSSample {
-                        timestamp: EpochTime::from(time).0,
+                        timestamp: current_rtc_time(),
                         latitude: gga.latitude.as_f64() as f32,
                         longitude: gga.longitude.as_f64() as f32,
                         altitude: gga.altitude.meters as f32,
@@ -637,12 +637,7 @@ async fn gps_broadcast() -> ! {
                 }
             }
         }
-        let radio_msg = MessageType::new_gps(samples.iter().cloned().enumerate().filter_map(
-            |(i, sample)| {
-                if i % 2 == 0 { Some(sample) } else { None }
-            },
-        ))
-        .into_message(radio_ctxt());
+        let radio_msg = MessageType::new_gps(samples.clone()).into_message(radio_ctxt());
 
         get_logger()
             .log(
