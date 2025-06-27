@@ -13,6 +13,7 @@ use crate::mission::PYRO_CONT2;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
+use crate::mission::buzz;
 use crate::mission::buzz_number;
 use crate::mission::current_rtc_time;
 use crate::pins::gps::PpsPin;
@@ -25,15 +26,19 @@ use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
+use cortex_m_semihosting::hprintln;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_rt::exception;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
+use embassy_futures::block_on;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
@@ -53,14 +58,13 @@ use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
 use hal::timer::Counter;
-use hal::timer::CounterHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
+use stm32f4xx_hal::timer::Delay;
 use storage_types::ConfigKey;
 use storage_types::Role;
-use storage_types::logs::LocalCtxt;
 use storage_types::logs::MessageType;
 use sx126x::SX126x;
 use sx126x::op::CalibParam;
@@ -107,7 +111,7 @@ static mut DIO1_PIN: Option<RadioInteruptPin> = None;
 
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
-static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
+static mut PANIC_TIMER: Option<Delay<TIM9, 10000>> = None;
 static mut BUZZER: Option<BuzzerPin> = None;
 static mut BUZZER_TIMER: Option<Counter<TIM13, 10000>> = None;
 static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
@@ -118,6 +122,8 @@ pub const PAGE_COUNT: usize = CAPACITY / 4096;
 
 static PPS_PIN: Mutex<RefCell<Option<PpsPin>>> = Mutex::new(RefCell::new(None));
 
+static DEBUGGER_ATTACHED: AtomicBool = AtomicBool::new(false);
+
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
@@ -127,6 +133,7 @@ async fn main(_spawner: Spawner) {
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {
+        DEBUGGER_ATTACHED.store((cp.DCB.dhcsr.read() & 0x1) != 0, Ordering::Release); // C_DEBUGEN
         let gpioa = dp.GPIOA.split();
         let gpiob = dp.GPIOB.split();
         let gpioc = dp.GPIOC.split();
@@ -160,7 +167,7 @@ async fn main(_spawner: Spawner) {
 
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
-            PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
+            PANIC_TIMER.replace(dp.TIM9.delay(&clocks));
             BUZZER.replace(buzzer_pin);
             BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
@@ -613,11 +620,13 @@ async fn main(_spawner: Spawner) {
             ")."
         );
 
-        get_logger().retry_log(
-            MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
-                .unwrap()
-                .into_message(current_rtc_time()),
-        ).await;
+        get_logger()
+            .retry_log(
+                MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
+                    .unwrap()
+                    .into_message(current_rtc_time()),
+            )
+            .await;
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
@@ -809,21 +818,19 @@ async fn build_config(
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    if let Ok(mut stdout) = hio::hstdout() {
-        writeln!(stdout, "A panic occured:\n {}", info).ok();
+    if DEBUGGER_ATTACHED.load(Ordering::Relaxed) {
+        if let Ok(mut stdout) = hio::hstdout() {
+            writeln!(stdout, "A panic occured:\n {}", info).ok();
+        }
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
-    timer.start(4.Hz()).ok();
-    let mut buzzer = unsafe { BUZZER.take() }.unwrap();
 
     loop {
-        buzzer.toggle();
         neopixel::update_pixel(1, [255, 0, 0]);
-        nb::block!(timer.wait()).ok();
+        block_on(buzz(250u32.millis()));
 
-        buzzer.toggle();
         neopixel::update_pixel(1, [0, 0, 0]);
-        nb::block!(timer.wait()).ok();
+        timer.delay_ms(250);
     }
 }
 

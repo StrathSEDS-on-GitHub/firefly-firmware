@@ -15,6 +15,7 @@ use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
+use stm32f4xx_hal::hal_02::digital::v2::OutputPin as _;
 use stm32f4xx_hal::{
     ClearFlags,
     adc::Adc,
@@ -1090,14 +1091,21 @@ pub async fn buzz(duration: Duration<u32, 1, 10000>) {
     let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
 
     // hack: the buzzer pin is not hooked up to a PWM channel, so we have to do this shittily
-    for i in 0..(2 * (duration / 250u32.micros::<1, 10000>())) {
-        if i % 2 == 0 {
-            buzz.set_high();
-        } else {
-            buzz.set_low();
+    timer.start(duration).unwrap();
+    let mut toggle = false;
+    let mut last_toggle_time = timer.now();
+    while let Err(nb::Error::WouldBlock) = timer.wait() {
+        let now = timer.now();
+
+        if now.ticks().saturating_sub(last_toggle_time.ticks())
+            > 250u32.micros::<1, 10000>().ticks()
+        {
+            toggle = !toggle;
+            buzz.set_state(toggle.into());
+            last_toggle_time = now;
         }
-        timer.start(250u32.micros()).unwrap();
-        NbFuture::new(|| timer.wait()).await.unwrap();
+
+        YieldFuture::new().await;
     }
     buzz.set_low();
 }
