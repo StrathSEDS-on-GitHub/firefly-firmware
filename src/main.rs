@@ -5,6 +5,7 @@
 #![no_main]
 #![no_std]
 
+use crate::logs::get_logger;
 use crate::logs::setup_logger;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_CONT1;
@@ -12,6 +13,8 @@ use crate::mission::PYRO_CONT2;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
+use crate::mission::buzz_number;
+use crate::mission::current_rtc_time;
 use crate::pins::gps::PpsPin;
 use crate::pins::i2c::I2c1Handle;
 use crate::pins::radio::RadioInteruptPin;
@@ -57,6 +60,8 @@ use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
 use storage_types::ConfigKey;
 use storage_types::Role;
+use storage_types::logs::LocalCtxt;
+use storage_types::logs::MessageType;
 use sx126x::SX126x;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -208,9 +213,6 @@ async fn main(_spawner: Spawner) {
         }
         delay.delay_ms(1000);
 
-        gpio.e.pe3.into_floating_input();
-        gpio.e.pe4.into_floating_input();
-
         unsafe {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM);
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM0);
@@ -311,17 +313,8 @@ async fn main(_spawner: Spawner) {
         .await
         .unwrap();
 
-        let res = sequential_storage::queue::push(
-            &mut wrapper,
-            LOGS_FLASH_RANGE,
-            &mut NoCache::new(),
-            b"---- Reset ----\n",
-            false,
-        )
-        .await;
-
-        if total < 10240 || res.is_err() {
-            // panic!("Logging failure");
+        if total < 10240 {
+            buzz_number(33).await;
         }
 
         let board_id: Result<Option<u64>, _> = map::fetch_item(
@@ -332,7 +325,7 @@ async fn main(_spawner: Spawner) {
             &ConfigKey::try_from("id").unwrap(),
         )
         .await;
-        
+
         let board_id = board_id.unwrap_or(Some(1)).unwrap_or(1);
         let role = match board_id {
             2 | 0 => Role::GroundMain,
@@ -410,7 +403,6 @@ async fn main(_spawner: Spawner) {
             {
                 None
             }
-
         } else {
             None
         };
@@ -476,7 +468,7 @@ async fn main(_spawner: Spawner) {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    40.MHz(),
+                    30.MHz(),
                     &clocks,
                 );
 
@@ -610,6 +602,22 @@ async fn main(_spawner: Spawner) {
 
         let conf = build_config(&mut wrapper).await;
         setup_logger(wrapper).unwrap();
+
+        const STARTUP_MESSAGE: &'static str = const_format::concatcp!(
+            "I awaken! ",
+            TARGET,
+            " firmware revision ",
+            env!("GIT_SHA"),
+            " (compiled ",
+            env!("BUILD_TIME"),
+            ")."
+        );
+
+        get_logger().retry_log(
+            MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
+                .unwrap()
+                .into_message(current_rtc_time()),
+        ).await;
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();

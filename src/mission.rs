@@ -1,3 +1,5 @@
+use crate::logs::FixedWriter;
+use crate::pins::TARGET;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bno080::{interface::SensorInterface, wrapper::BNO080};
@@ -15,12 +17,12 @@ use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
 use stm32f4xx_hal::{
     ClearFlags,
-    adc::{Adc, config::SampleTime},
+    adc::Adc,
     pac::{ADC1, TIM12},
     rcc::Clocks,
     timer::{self, Counter, Instance},
 };
-use storage_types::logs::AccelerometerSample;
+use storage_types::logs::{AccelerometerSample, CommandResponseType, CommandType};
 use storage_types::{
     CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
     logs::{GPSSample, IMUSample, LocalCtxt, MessageType, PressureTempSample, RadioCtxt},
@@ -76,7 +78,7 @@ pub async fn update_pyro_state() {
         let sample = {
             #[cfg(feature = "target-ultra")]
             {
-                adc.convert(pyro, SampleTime::Cycles_56)
+                adc.convert(pyro, stm32f4xx_hal::adc::config::SampleTime::Cycles_56)
             }
             #[cfg(not(feature = "target-ultra"))]
             {
@@ -366,11 +368,11 @@ pub async fn usb_handler() -> ! {
             arm().await;
             writeln!(get_serial(), "armed").unwrap();
         } else if split[0].starts_with(b"ufire") {
-            let pin = if split[2].starts_with(b"1") {
+            let pin = if split[1].starts_with(b"1") {
                 PyroPin::One
-            } else if split[2].starts_with(b"2") {
+            } else if split[1].starts_with(b"2") {
                 PyroPin::Two
-            } else if split[2].starts_with(b"both") {
+            } else if split[1].starts_with(b"both") {
                 PyroPin::Both
             } else {
                 writeln!(get_serial(), "Invalid test-pyro pin").unwrap();
@@ -383,6 +385,15 @@ pub async fn usb_handler() -> ! {
             let key = core::str::from_utf8(split[1]).unwrap().trim();
             let value = core::str::from_utf8(split[2]).unwrap().trim();
 
+            let command_id = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u32>()
+            {
+                Ok(command_id) => command_id,
+                _ => 0,
+            };
+
             // if CONFIG_KEYS.iter().map(|(k, _)| *k).any(|k| k != key) {
             //     writeln!(get_serial(), "err, invalid config key {}", key).unwrap();
             //     continue;
@@ -394,7 +405,7 @@ pub async fn usb_handler() -> ! {
             let key = ConfigKey::try_from(key).unwrap();
 
             get_logger().edit_config(&key, value).await;
-            get_serial().log("ok\n").await;
+            writeln!(get_serial(), "[REPLY#{command_id}] ok").unwrap();
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             if let Err(msg) = get_logger().erase_logs().await {
                 writeln!(get_serial(), "err, {}", msg).unwrap();
@@ -414,138 +425,197 @@ pub async fn usb_handler() -> ! {
             }
         } else if split.len() >= 1 && split[0].starts_with(b"logs") {
             if let Err(msg) = get_logger()
-                .get_logs(async |s| match &s.message {
+                .get_logs(async |s| {match &s.message {
                     MessageType::Log { timestamp, message } => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local log] {message}",
-                                            Into::<String<12>>::into(EpochTime(*timestamp))
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local log] {message}",
+                                Into::<String<12>>::into(EpochTime(*timestamp))
+                            )
+                            .unwrap();
+                        }
                     MessageType::Accelerometer(accel_compressed) => {
-                                        for sample in accel_compressed.decompress() {
-                                            if let Ok(AccelerometerSample {
-                                                timestamp,
-                                                acceleration,
-                                            }) = sample
-                                            {
-                                                writeln!(
-                                                    get_serial(),
-                                                    "[{}] [Local acc] {:?}",
-                                                    Into::<String<12>>::into(EpochTime(timestamp)),
-                                                    acceleration
-                                                )
-                                                .unwrap();
-                                            }
-                                        }
-                                    }
+                            for sample in accel_compressed.decompress() {
+                                if let Ok(AccelerometerSample {
+                                    timestamp,
+                                    acceleration,
+                                }) = sample
+                                {
+                                    writeln!(
+                                        get_serial(),
+                                        "[{}] [Local acc] {:?}",
+                                        Into::<String<12>>::into(EpochTime(timestamp)),
+                                        acceleration
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        }
                     MessageType::Gps(gps_compressed) => {
-                                        for sample in gps_compressed.decompress() {
-                                            if let Ok(GPSSample {
-                                                timestamp,
-                                                latitude,
-                                                longitude,
-                                                altitude,
-                                            }) = sample
-                                            {
-                                                writeln!(
-                                                    get_serial(),
-                                                    "[{}] [Local gps] {latitude},{longitude},{altitude}",
-                                                    Into::<String<12>>::into(EpochTime(timestamp))
-                                                )
-                                                .unwrap();
-                                            }
-                                        }
-                                    }
+                            for sample in gps_compressed.decompress() {
+                                if let Ok(GPSSample {
+                                    timestamp,
+                                    latitude,
+                                    longitude,
+                                    altitude,
+                                }) = sample
+                                {
+                                    writeln!(
+                                        get_serial(),
+                                        "[{}] [Local gps] {latitude},{longitude},{altitude}",
+                                        Into::<String<12>>::into(EpochTime(timestamp))
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        }
                     MessageType::PressureTemp(pressure_temp_compressed) => {
-                                        for sample in pressure_temp_compressed.decompress() {
-                                            if let Ok(PressureTempSample {
-                                                timestamp,
-                                                pressure,
-                                                temperature,
-                                            }) = sample
-                                            {
-                                                writeln!(
-                                                    get_serial(),
-                                                    "[{}] [Local prt] {pressure},{temperature}",
-                                                    Into::<String<12>>::into(EpochTime(timestamp))
-                                                )
-                                                .unwrap();
-                                            }
-                                        }
-                                    }
+                            for sample in pressure_temp_compressed.decompress() {
+                                if let Ok(PressureTempSample {
+                                    timestamp,
+                                    pressure,
+                                    temperature,
+                                }) = sample
+                                {
+                                    writeln!(
+                                        get_serial(),
+                                        "[{}] [Local prt] {pressure},{temperature}",
+                                        Into::<String<12>>::into(EpochTime(timestamp))
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        }
                     MessageType::Imu(imu_compressed) => {
-                                        for sample in imu_compressed.decompress() {
-                                            if let Ok(IMUSample {
-                                                acceleration,
-                                                angular_velocity,
-                                                timestamp,
-                                            }) = sample
-                                            {
-                                                writeln!(
-                                                    get_serial(),
-                                                    "[{}] [Local imu] {:?},{:?}",
-                                                    Into::<String<12>>::into(EpochTime(timestamp)),
-                                                    acceleration,
-                                                    angular_velocity
-                                                )
-                                                .unwrap();
-                                            }
-                                        }
-                                    }
+                            for sample in imu_compressed.decompress() {
+                                if let Ok(IMUSample {
+                                    acceleration,
+                                    angular_velocity,
+                                    timestamp,
+                                }) = sample
+                                {
+                                    writeln!(
+                                        get_serial(),
+                                        "[{}] [Local imu] {:?},{:?}",
+                                        Into::<String<12>>::into(EpochTime(timestamp)),
+                                        acceleration,
+                                        angular_velocity
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        }
                     MessageType::Arm(role) => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local log] Arm command from {role:?}",
-                                            current_rtc_time::<String<12>>()
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local log] Arm command from {role:?}",
+                                current_rtc_time::<String<12>>()
+                            )
+                            .unwrap();
+                        }
                     MessageType::Disarm(role) => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local log] Disarm command from {role:?}",
-                                            current_rtc_time::<String<12>>()
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local log] Disarm command from {role:?}",
+                                current_rtc_time::<String<12>>()
+                            )
+                            .unwrap();
+                        }
                     MessageType::TestPyro(role, pyro_pin, _) => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local log] Test pyro command to {role:?} on pin {pyro_pin:?}",
-                                            current_rtc_time::<String<12>>()
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local log] Test pyro command to {role:?} on pin {pyro_pin:?}",
+                                current_rtc_time::<String<12>>()
+                            )
+                            .unwrap();
+                        }
                     MessageType::SetStage(role, mission_stage) => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local log] Set stage command to {role:?} to {mission_stage:?}",
-                                            current_rtc_time::<String<12>>()
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local log] Set stage command to {role:?} to {mission_stage:?}",
+                                current_rtc_time::<String<12>>()
+                            )
+                            .unwrap();
+                        }
                     MessageType::Pyro(mv) => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local pyro] {mv}",
-                                            current_rtc_time::<String<12>>()
-                                        )
-                                        .unwrap();
-                                    }
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local pyro] {mv}",
+                                current_rtc_time::<String<12>>()
+                            )
+                            .unwrap();
+                        }
                     MessageType::MissionSumary { max_altitude, max_altitude_time, max_acceleration, max_velocity, time_of_flight } => {
-                                        writeln!(
-                                            get_serial(),
-                                            "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
-                                            current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(*max_altitude_time)), Into::<String<12>>::into(EpochTime(*time_of_flight))
-                                        )
-                                        .unwrap();},
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
+                                current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(*max_altitude_time)), Into::<String<12>>::into(EpochTime(*time_of_flight))
+                            )
+                            .unwrap();
+                        }
+                    MessageType::Command { role: _, id, command } => {
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local Command] ID: {id}, Command: {:?}",
+                                current_rtc_time::<String<12>>(), command
+                            )
+                            .unwrap();
+                        }
+                    MessageType::CommandResponse { id, response }   => {
+                            writeln!(
+                                get_serial(),
+                                "[{}] [Local Command Response] ID: {id}, Response: {:?}",
+                                current_rtc_time::<String<12>>(), response
+                            )
+                            .unwrap();
+                        }
+                    }
                 })
                 .await
             {
                 writeln!(get_serial(), "err, {}", msg).unwrap();
             }
+        } else if split.len() == 2 && split[0].starts_with(b"info") {
+            let Ok(command_id) = core::str::from_utf8(split[1])
+                .unwrap_or_default()
+                .trim()
+                .parse::<u32>()
+            else {
+                writeln!(get_serial(), "Invalid command ID").unwrap();
+                continue;
+            };
+            writeln!(
+                get_serial(),
+                "[REPLY#{command_id}] {},{},{:?}",
+                TARGET,
+                env!("GIT_SHA"),
+                role()
+            )
+            .unwrap();
+        } else if split.len() == 2 && split[0].starts_with(b"dumpconfig") {
+            let Ok(command_id) = core::str::from_utf8(split[1])
+                .unwrap_or_default()
+                .trim()
+                .parse::<u32>()
+            else {
+                writeln!(get_serial(), "Invalid command ID").unwrap();
+                continue;
+            };
+            let mut buf = [0u8; 256];
+            let mut writer = FixedWriter::new(&mut buf);
+            write!(writer, "[REPLY#{command_id}] ").unwrap();
+            for &(key, _) in CONFIG_KEYS.iter() {
+                let value = match get_logger().read_config(&key.try_into().unwrap()).await {
+                    Ok(value) => value,
+                    Err(_) => 0,
+                };
+                write!(writer, "{key}={value},").unwrap();
+            }
+            writeln!(writer).unwrap();
+            writeln!(get_serial(), "{}", unsafe {
+                core::str::from_utf8_unchecked(writer.data())
+            })
+            .unwrap();
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
@@ -621,12 +691,7 @@ async fn gps_broadcast() -> ! {
         for sample in samples.iter_mut() {
             loop {
                 let fix = gps::next_sentence().await;
-                if let ParseResult::GGA(Some(GGA {
-                    fix: Some(gga),
-                    time,
-                    ..
-                })) = fix
-                {
+                if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
                     *sample = GPSSample {
                         timestamp: current_rtc_time(),
                         latitude: gga.latitude.as_f64() as f32,
@@ -817,22 +882,21 @@ async fn handle_incoming_packets() -> ! {
                         .unwrap();
                     }
                     MessageType::TestPyro(role, pyro_pin, _) => {
-                        writeln!(
-                                                            get_serial(),
-                                                            "[{}] [{:?} log] Out of turn test pyro command from {source:?} on pin {pyro_pin:?}",
-                                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
-                                                            role
-                                                        )
-                                                        .unwrap();
+                        writeln!(get_serial(),
+                                    "[{}] [{:?} log] Out of turn test pyro command from {source:?} on pin {pyro_pin:?}",
+                                    <EpochTime as Into<String<12>>>::into(current_rtc_time()),
+                                    role
+                                )
+                                .unwrap();
                     }
                     MessageType::SetStage(role, mission_stage) => {
                         writeln!(
-                                                            get_serial(),
-                                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
-                                                            <EpochTime as Into<String<12>>>::into(current_rtc_time()),
-                                                            role
-                                                        )
-                                                        .unwrap();
+                                                                            get_serial(),
+                                                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
+                            current_rtc_time::<String<12>>(),
+                                                                            role
+                                                                        )
+                                                                        .unwrap();
                     }
                     MessageType::Pyro(mv) => {
                         writeln!(
@@ -850,11 +914,41 @@ async fn handle_incoming_packets() -> ! {
                         time_of_flight,
                     } => {
                         writeln!(
-                                            get_serial(),
-                                            "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
-                                            current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(max_altitude_time)), Into::<String<12>>::into(EpochTime(time_of_flight))
-                                        )
-                                        .unwrap();
+                            get_serial(),
+                            "[{}] [Local Mission Sumary] Max Altitude: {max_altitude} at time {}, Max Acceleration: {max_acceleration}, Max Velocity: {max_velocity}, Time of flight: {}",
+                            current_rtc_time::<String<12>>(), Into::<String<12>>::into(EpochTime(max_altitude_time)), Into::<String<12>>::into(EpochTime(time_of_flight))
+                        )
+                        .unwrap();
+                    }
+                    MessageType::Command {
+                        id,
+                        command,
+                        role: _,
+                    } => {
+                        writeln!(
+                            get_serial(),
+                            "[{}] [{:?} log] Out of turn command {id}: {command:?}",
+                            current_rtc_time::<String<12>>(),
+                            role()
+                        )
+                        .unwrap();
+                    }
+                    MessageType::CommandResponse { id, response } => {
+                        let mut buf = [0u8; 256];
+                        let mut writer = FixedWriter::new(&mut buf);
+                        match response {
+                            CommandResponseType::Info {
+                                hardware,
+                                firmware,
+                                role,
+                            } => {
+                                write!(writer, "{hardware},{firmware:?},{role:?}",).unwrap();
+                            }
+                        }
+                        writeln!(get_serial(), "[REPLY#{id}] {}", unsafe {
+                            core::str::from_utf8_unchecked(writer.data())
+                        })
+                        .unwrap();
                     }
                 },
                 _ => match packet.message {
@@ -866,6 +960,25 @@ async fn handle_incoming_packets() -> ! {
                     }
                     MessageType::TestPyro(r, pyro_pin, duration) if r == role() => {
                         fire_pyro(pyro_pin, duration).await;
+                    }
+                    MessageType::Command { role, id, command }
+                        if role == crate::mission::role() =>
+                    {
+                        match command {
+                            CommandType::Info => {
+                                radio::queue_packet(
+                                    MessageType::CommandResponse {
+                                        id,
+                                        response: CommandResponseType::Info {
+                                            hardware: TARGET.try_into().unwrap(),
+                                            firmware: env!("GIT_SHA").try_into().unwrap(),
+                                            role,
+                                        },
+                                    }
+                                    .into_message(radio_ctxt()),
+                                );
+                            }
+                        }
                     }
                     _ => {}
                 },
@@ -961,20 +1074,15 @@ pub async fn arm() {
         panic!("Pyro board is modified. Mini cannot be armed.");
     }
 
-    let buzz = unsafe { BUZZER.as_mut().unwrap() };
-    let timer = unsafe { BUZZER_TIMER.as_mut().unwrap() };
     let pyro_enable = unsafe { PYRO_ENABLE_PIN.as_mut().unwrap() };
-    buzz.set_high();
 
     pyro_enable.set_high();
     cortex_m::interrupt::free(|cs| {
         STAGE.borrow(cs).replace(MissionStage::Armed);
     });
     update_pyro_state().await;
-    timer.clear_flags(timer::Flag::Update);
-    timer.start(300u32.millis()).unwrap();
-    NbFuture::new(|| timer.wait()).await.unwrap();
-    buzz.set_low()
+
+    buzz(100.millis()).await;
 }
 
 pub async fn buzz(duration: Duration<u32, 1, 10000>) {
@@ -1028,7 +1136,7 @@ pub async fn buzz_number(number: u32) {
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     {
-        buzz(1000u32.millis()).await;
+        // buzz(1000u32.millis()).await;
         let buzzer = unsafe { BUZZER.as_mut().unwrap() };
         buzzer.set_low();
     }
@@ -1182,12 +1290,15 @@ where
 #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 pub async fn bmi323_imu_handler(
     mut bmi323: Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>,
-    mut timer: impl embedded_hal_async::delay::DelayNs,
+    mut timer: stm32f4xx_hal::timer::Counter<impl Instance, 100_000>,
 ) -> ! {
+    // So that the first iteration doesn't block forever
+    timer.start(10u32.millis()).unwrap();
+
     loop {
         let mut samples = [IMUSample::default(); 20];
-
         for sample in samples.iter_mut() {
+            NbFuture::new(|| timer.wait()).await.unwrap();
             sample.timestamp = current_rtc_time();
             sample.acceleration.copy_from_slice(
                 &bmi323
@@ -1213,7 +1324,7 @@ pub async fn bmi323_imu_handler(
                     .map(|it| [it.x, it.y, it.z])
                     .unwrap(),
             );
-            timer.delay_ms(10).await;
+            timer.start(10u32.millis()).unwrap();
         }
 
         let message = MessageType::new_imu(samples.into_iter());
@@ -1355,10 +1466,7 @@ pub async fn begin(
                     let _ = bno_imu;
                     let _ = icm_imu;
                     // ::futures::future::join(
-                    bmi323_imu_handler(
-                        bmi323_imu.unwrap(),
-                        TimerDelay::new(imu_timer.release().release(), clocks),
-                    )
+                    bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter())
                     // adxl_imu_handler(adxl_imu.unwrap()),
                     // )
                 }
@@ -1374,7 +1482,6 @@ pub async fn begin(
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
-                // imu_task
             )
             .0
         }

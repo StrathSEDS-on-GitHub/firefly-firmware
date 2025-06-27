@@ -167,5 +167,5 @@ fn OTG_FS() {
     use crate::interrupt_wake;
 
     get_serial().poll();
-    // interrupt_wake!(crate::futures::usb_wake);
+    interrupt_wake!(crate::futures::usb_wake);
 }

@@ -15,6 +15,7 @@ use storage_types::{CONFIG_KEYS, ConfigKey};
 use crate::futures::YieldFuture;
 use crate::mission::current_rtc_time;
 use crate::pins::QspiBank;
+use crate::usb_logger::get_serial;
 use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, PAGE_COUNT, neopixel};
 
 static LOGGER: Logger = Logger {
@@ -197,7 +198,7 @@ impl Logger {
                 continue;
             };
             let taken = flash.take().map(|(it, _)| it);
-            
+
             drop(flash);
             drop(cs);
             if mask.is_active() {
@@ -210,10 +211,7 @@ impl Logger {
         }
     }
 
-    async fn return_flash(
-        &self,
-        flash: W25QSequentialStorage<QspiBank, CAPACITY>,
-    ) {
+    async fn return_flash(&self, flash: W25QSequentialStorage<QspiBank, CAPACITY>) {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();
@@ -341,6 +339,56 @@ impl Logger {
         Ok(())
     }
 
+    pub async fn read_config(&self, key: &ConfigKey) -> Result<u64, &'static str> {
+        loop {
+            let mask = primask::read();
+            cortex_m::interrupt::disable();
+            let cs = unsafe { CriticalSection::new() };
+            let rc = self.flash.borrow(&cs);
+            let Ok(mut flash_ref) = rc.try_borrow_mut() else {
+                // Another task is using the flash, we can yield and try again.
+                drop(cs);
+                if mask.is_active() {
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                }
+                YieldFuture::new().await;
+                continue;
+            };
+
+            let Some((flash, cache)) = flash_ref.as_mut() else {
+                // Can't do anything if we don't even have the flash
+                drop(flash_ref);
+                drop(cs);
+                if mask.is_active() {
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                }
+                return Err("Flash not initialized");
+            };
+
+            let mut data_buffer = [0u8; 64];
+            let read_res =
+                map::fetch_item(flash, CONFIG_FLASH_RANGE, cache, &mut data_buffer, key).await;
+            drop(flash_ref);
+            drop(cs);
+            if mask.is_active() {
+                unsafe {
+                    cortex_m::interrupt::enable();
+                }
+            }
+            let value = match read_res {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => return Err("Key not found"),
+                Err(_) => return Err("Failed to read config"),
+            };
+            // Still can't do anything if there's no space though
+            return value;
+        }
+    }
+
     pub async fn edit_config(&self, key: &ConfigKey, value: u64) {
         let mask = primask::read();
         cortex_m::interrupt::disable();
@@ -365,7 +413,7 @@ impl Logger {
                 flash,
                 CONFIG_FLASH_RANGE,
                 cache,
-                &mut [0u8; 2048],
+                &mut [0u8; 64],
                 key,
                 &value,
             )

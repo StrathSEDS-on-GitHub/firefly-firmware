@@ -9,6 +9,13 @@ pub struct GpioBuses {
 }
 
 #[cfg(feature = "target-mini")]
+pub const TARGET: &str = "Firefly Mini";
+#[cfg(feature = "target-maxi")]
+pub const TARGET: &str = "Firefly Maxi";
+#[cfg(feature = "target-ultra")]
+pub const TARGET: &str = "Firefly Ultra";
+
+#[cfg(feature = "target-mini")]
 pub type BuzzerPin = gpiob::PB5<Output<PushPull>>;
 #[cfg(feature = "target-maxi")]
 pub type BuzzerPin = gpioe::PE1<Output<PushPull>>;
