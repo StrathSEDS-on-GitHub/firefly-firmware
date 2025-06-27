@@ -1,11 +1,14 @@
 #![feature(iterator_try_collect)]
 
 use clap::{self, Parser};
+use color_eyre::Section;
 use color_eyre::eyre::{self, Context, ContextCompat, eyre};
-use ffplotter_lib::ndarray::{Array1, s};
+use csv::WriterBuilder;
+use ffplotter_lib::ndarray::{Array1, Axis, s};
+use ffplotter_lib::time::Duration;
 use ffplotter_lib::{
     Column, ColumnType, Filter, RowToken, RowTokens, SampleType, generate_composite_columns,
-    match_column, parse_row_format,
+    match_column, parse_row_format, time_align_data,
 };
 use piston::EventLoop;
 use piston::WindowSettings;
@@ -33,8 +36,8 @@ struct Cli {
     /// Other tokens are treated as literals and will be matched exactly.  
     ///
     /// For example: `[time:t] [src:s sensor:s] temperature:f,pressure:f`
-    #[arg(value_parser = parse_row_format)]
-    row_format: RowTokens,
+    #[arg(long, value_parser = parse_row_format)]
+    row: Vec<RowTokens>,
 
     /// Filter to apply to the rows
     ///
@@ -79,65 +82,61 @@ fn main() -> eyre::Result<()> {
     let file = std::fs::File::open(&cli.input)
         .wrap_err_with(|| eyre!("Failed to open input file: {}", cli.input.display()))?;
 
-    let mut columns: Vec<Column> = cli
-        .row_format
-        .iter()
-        .filter_map(|token| match token {
-            RowToken::Sample { typ, name } => Some(match typ {
-                SampleType::Float => Column {
-                    header: name.to_string(),
-                    data: ColumnType::Float(Vec::new()),
-                },
-                SampleType::String => Column {
-                    header: name.to_string(),
-                    data: ColumnType::String(Vec::new()),
-                },
-                SampleType::Timestamp => Column {
-                    header: name.to_string(),
-                    data: ColumnType::Time(Vec::new()),
-                },
-            }),
-            RowToken::Literal(_) => None,
-        })
-        .collect();
+    if cli.row.len() == 0 {
+        return Err(eyre!(
+            "No row formats provided. Use --row to specify at least one format."
+        ));
+    }
+
+    // Each Vec<Column> represents a set of columns for a single row format.
+    let mut multi_columns: Vec<Vec<Column>> = cli.row.iter().map(|it| it.into()).collect();
 
     for (line_number, line) in std::io::BufReader::new(file).lines().enumerate() {
         let line = line.wrap_err("Failed to read line")?;
-        let Some(samples) = ffplotter_lib::parse_row(
-            &line,
-            &cli.row_format,
-            cli.filter.as_ref().unwrap_or(&Default::default()),
-        )
-        .wrap_err_with(|| {
-            eyre!(
-                "Failed to parse row at {}:{}",
-                cli.input.file_name().unwrap().display(),
-                line_number + 1
-            )
-        })?
-        else {
-            continue;
-        };
-        // Should be impossible, parse_row should take care of this.
-        assert!(
-            samples.len() == columns.len(),
-            "Row has {} samples but expected {}",
-            samples.len(),
-            columns.len()
-        );
 
-        columns.iter_mut().zip(samples).for_each(|(col, sample)| {
-            match_column!(
-                &mut col.data,
-                items => items.push(sample.try_into().expect("Sample type mismatch")
-            ))
-        });
+        let mut all_failed = true;
+        let mut errors = Vec::<eyre::Report>::new();
+        for (format, columns) in cli.row.iter().zip(&mut multi_columns) {
+            let Err(e) = ffplotter_lib::parse_row_to_columns(
+                &line,
+                format,
+                cli.filter.as_ref().unwrap_or(&Default::default()),
+                columns,
+            ) else {
+                all_failed = false;
+                break;
+            };
+
+            errors.push(e.wrap_err(format!("Format {format} did not match")));
+        }
+
+        if all_failed {
+            let error = errors.into_iter().fold(
+                eyre!(
+                    "No format strings matched the line at {}:{}",
+                    cli.input.file_name().unwrap().display(),
+                    line_number + 1
+                ),
+                |acc, e| acc.with_note(|| format!("{:#}", e)),
+            );
+
+            log::warn!("{:?}", error);
+            continue;
+        }
     }
 
     log::info!(
         "Parsed {} rows",
-        match_column!(&columns[0].data, items => items.len())
+        match_column!(&multi_columns[0][0].data, items => items.len())
     );
+
+    let mut columns = time_align_data(
+        &multi_columns
+            .iter()
+            .map(|it| it.as_slice())
+            .collect::<Vec<_>>(),
+        Duration::milliseconds(5),
+    )?;
 
     let mut headers = columns
         .iter_mut()
@@ -167,17 +166,26 @@ fn main() -> eyre::Result<()> {
         *it = it.saturating_sub(data_start_time);
     });
 
-    let mut data = ffplotter_lib::columns_into_data_matrix(columns)
+    let mut data = ffplotter_lib::columns_into_data_matrix(columns.clone())
         .wrap_err("Failed to convert columns into data matrix")?;
-
-    log::debug!("Data: {:?}", data);
-
-    log::debug!("Data matrix shape: {:?}", data.shape());
 
     generate_composite_columns(&mut headers, &mut data, &cli.expr)
         .wrap_err(eyre!("Failed to generate composite columns"))?;
 
     log::info!("Generated {} composite columns", cli.expr.len());
+
+    let format_elapsed = |elapsed: u64| {
+        let total = elapsed + data_start_time;
+        let hour = total / 3600_000;
+        let minute = (total % 3600_000) / 60_000;
+        let second = (total % 60_000) / 1000;
+        let millis = total % 1000;
+        format!("{:02}:{:02}:{:02}.{:03}", hour, minute, second, millis)
+    };
+
+    log::debug!("Data: {:?}", data);
+    log::debug!("Data matrix shape: {:?}", data.shape());
+    log::debug!("Headers: {:?}", headers);
 
     let plot_columns = if cli.plot.is_empty() {
         headers.clone()
@@ -197,7 +205,7 @@ fn main() -> eyre::Result<()> {
 
     let sample_count = data.dim().0;
 
-    let mut window: PistonWindow = WindowSettings::new("Real Time CPU Usage", [800, 300])
+    let mut window: PistonWindow = WindowSettings::new("ffplotter", [800, 300])
         .samples(4)
         .build()
         .map_err(|e| eyre!("Failed to initialise graphics window {:?}", e))?;
@@ -216,18 +224,15 @@ fn main() -> eyre::Result<()> {
 
         let mut cc = ChartBuilder::on(&root)
             .margin(10)
-            .caption("IMU data", ("sans-serif", 30))
             .x_label_area_size(40)
             .y_label_area_size(50)
             .build_cartesian_2d(0..sample_count, min_range..max_range)?;
 
         cc.configure_mesh()
-            .x_label_formatter(&|x| format!("{}", data_start_time + elapsed_times[*x as usize]))
+            .x_label_formatter(&|x| format_elapsed(*x as u64))
             .y_label_formatter(&|y: &f64| format!("{:.2}", *y))
             .x_labels(15)
             .y_labels(5)
-            .x_desc("Seconds")
-            .y_desc("Acceleration m/s^2")
             .axis_desc_style(("sans-serif", 15))
             .draw()?;
 
@@ -255,11 +260,7 @@ fn main() -> eyre::Result<()> {
             );
             min_range = min_range - (min_range * 0.1).abs();
 
-            cc.draw_series(LineSeries::new(series, &Palette99::pick(idx)))?
-                .label(format!("Acceleration (m/s^2)"))
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x - 5, y - 5), (x + 5, y + 5)], &Palette99::pick(idx))
-                });
+            cc.draw_series(LineSeries::new(series, &Palette99::pick(idx)))?;
         }
 
         cc.configure_series_labels()
@@ -268,6 +269,5 @@ fn main() -> eyre::Result<()> {
             .draw()?;
         Ok(())
     }) {}
-
     Ok(())
 }
