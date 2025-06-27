@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getSerialPorts, type Firefly } from '$lib';
+	import { getSerialPorts, type Firefly, type Role } from '$lib';
 	import '@fortawesome/fontawesome-free/css/all.min.css';
 	import type { PageProps } from './$types';
 	import UsbPopup from '$lib/usbpopup.svelte';
@@ -7,6 +7,7 @@
 	import Terminal from '$lib/terminal.svelte';
 	import { SerialFirefly } from '$lib/devices/serial-firefly';
 	import { SerialDevice } from '$lib/devices/serial-device';
+	import { RemoteFirefly } from '$lib/devices/remote-firefly';
 
 	let { data }: PageProps = $props();
 
@@ -26,8 +27,10 @@
 
 	setInterval(() => {
 		if (canvas) {
-			canvas.width = canvasContainer?.clientWidth || 0;
-			canvas.height = canvasContainer?.clientHeight || 0;
+			if (canvas.width != canvasContainer?.clientWidth) {
+				canvas.width = canvasContainer?.clientWidth || 0;
+				canvas.height = canvasContainer?.clientHeight || 0;
+			}
 			data.power('myplot');
 		}
 	}, 16);
@@ -39,10 +42,12 @@
 			let port = dev.port;
 			port.addEventListener('disconnect', () => {
 				console.log(`Port ${port} disconnected`);
-				devices = devices.filter((device) => device !== firefly);
-			});
-			dev.addLineHandler((line) => {
-				data.parse(line.content);
+				devices = devices.filter((device) => {
+					return (
+						device !== firefly && (device instanceof SerialFirefly || (device as RemoteFirefly).connection !== firefly)
+					);
+				});
+				console.log(`Devices after disconnect: ${devices.length}`);
 			});
 		}
 		devices.push(firefly);

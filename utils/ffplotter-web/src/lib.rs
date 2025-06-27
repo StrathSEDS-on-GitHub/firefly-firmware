@@ -3,14 +3,12 @@ use std::{
     collections::HashMap,
     sync::{
         Mutex,
-        atomic::{AtomicI64, Ordering},
     },
 };
 
 use color_eyre::eyre;
 use ffplotter_lib::{
-    Column, ColumnType, RowTokens, match_column,
-    ndarray::{Array1, Array2, Axis, s},
+    match_column, ndarray::{s, Array1, Array2, Axis}, Column, ColumnType, RowTokens, Sample
 };
 use once_cell::sync::{Lazy, OnceCell};
 use plotters::prelude::*;
@@ -188,7 +186,7 @@ static ELAPSED_TIMES: Lazy<Mutex<RefCell<Vec<Vec<u64>>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(RefCell::new(vec![vec![]; COLUMNS_TEMPLATE.len()])));
 
 #[wasm_bindgen]
-pub fn parse(line: String) -> Result<(), JsValue> {
+pub fn parse(line: String) -> Result<JsValue, JsValue> {
     for (((format, mut columns), data), elapsed) in ROW_FORMATS
         .iter()
         .zip(COLUMNS_TEMPLATE.clone())
@@ -219,15 +217,32 @@ pub fn parse(line: String) -> Result<(), JsValue> {
                 ));
             };
 
+            let mut samples = HashMap::new();
+            for column in &columns {
+                match &column.data {
+                    ColumnType::Float(items) => {
+                        samples.insert(column.header.clone(), Sample::Float(items[0]));
+                    }
+                    ColumnType::Time(items) => {
+                        samples.insert(column.header.clone(), Sample::Timestamp(items[0]));
+                    }
+                    ColumnType::String(items) => {
+                        samples.insert(column.header.clone(), Sample::String(items[0].clone()));
+                    }
+                }
+            }
+
             let array =
                 ffplotter_lib::columns_into_data_matrix(columns).map_err(|err| err.to_string())?;
 
             data.append(Axis(0), array.view())
                 .map_err(|it| it.to_string())?;
+
+            return Ok(serde_wasm_bindgen::to_value(&samples).unwrap());
         }
     }
 
-    Ok(())
+    Err("No match".to_owned().into())
 }
 
 #[wasm_bindgen]

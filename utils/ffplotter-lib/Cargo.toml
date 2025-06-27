@@ -10,4 +10,5 @@ log = "0.4.27"
 ndarray = "0.16.1"
 nom = "8.0.0"
 plotters = "0.3.7"
-time = { version = "0.3.41", features = ["macros", "parsing"] }
+serde = { version = "1.0.219", features = ["derive"] }
+time = { version = "0.3.41", features = ["macros", "parsing", "serde"] }

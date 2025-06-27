@@ -16,6 +16,10 @@ pub mod time {
     }
 }
 
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
 use ::time::{Time, macros::format_description};
 use evalexpr::{ContextWithMutableVariables, HashMapContext};
 use ndarray::*;
@@ -378,7 +382,7 @@ pub enum RowToken {
     Sample { name: String, typ: SampleType },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Sample {
     Float(f64),
     String(String),

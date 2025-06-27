@@ -590,6 +590,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
 dependencies = [
  "powerfmt",
+ "serde",
 ]
 
 [[package]]
@@ -777,6 +778,7 @@ dependencies = [
  "ndarray",
  "nom 8.0.0",
  "plotters",
+ "serde",
  "time",
 ]
 
@@ -790,6 +792,7 @@ dependencies = [
  "once_cell",
  "plotters",
  "plotters-canvas",
+ "serde-wasm-bindgen",
  "wasm-bindgen",
 ]
 
@@ -2388,6 +2391,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]

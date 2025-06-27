@@ -38,7 +38,14 @@ export async function getSerialPorts(): Promise<Error | SerialPort[]> {
 }
 
 export interface Firefly {
+	arm(): void;
+	disarm(): void;
+
+	testFire1(): void;
+	testFire2(): void;
+
     getConfig(): Promise<DeviceConfig>;
     setConfig(config: DeviceConfig): Promise<void>;
     getInfo(): Promise<DeviceInfo>;
+    isRemote(): boolean;
 }

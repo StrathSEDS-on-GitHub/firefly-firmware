@@ -79,6 +79,29 @@ export class SerialDevice {
         });
     }
 
+    async transactRetry(reqId: number, command: string, timeout: number): Promise<string> {
+        while (true) {
+            try {
+                this.sendCommand(command);
+                return await new Promise((resolve, reject) => {
+                    setTimeout(() => {
+                        if (this.replyHandlers.has(reqId)) {
+                            reject(new Error(`Timeout waiting for reply to`));
+                        }
+                    }, timeout);
+                    this.replyHandlers.set(reqId, (data: string) => {
+                        this.replyHandlers.delete(reqId);
+                        resolve(data);
+                    });
+                });
+            } catch (error) {
+                console.error(error);
+                console.log("Retrying command:", command);
+                this.replyHandlers.delete(reqId);
+            }
+        }
+    }
+
     async sendCommand(command: string): Promise<void> {
         await this.waitForPortReady();
         if (!this.port.writable) {

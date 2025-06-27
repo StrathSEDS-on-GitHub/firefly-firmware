@@ -1,8 +1,10 @@
 <script lang="ts">
 	import ffultra from '../assets/ffultra.png';
 	import Button from '$lib/button.svelte';
-	import { fireflyPid, fireflyVid } from '$lib';
-	let { addPort } = $props();
+	import { fireflyPid, fireflyVid, type Firefly } from '$lib';
+	import { SerialFirefly } from './devices/serial-firefly';
+	import { SerialDevice } from './devices/serial-device';
+	let { addPort } : { addPort : (ff: Firefly) => void} = $props();
 </script>
 
 <div class="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 z-50">
@@ -17,7 +19,7 @@
 					navigator.serial
 						.requestPort({ filters: [{ usbVendorId: fireflyVid, usbProductId: fireflyPid }] })
 						.then((port) => {
-							addPort(port);
+							addPort(new SerialFirefly(new SerialDevice(port)));
 						})
 						.catch((error) => {
 							console.error('Error selecting port:', error);

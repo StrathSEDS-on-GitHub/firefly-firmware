@@ -27,8 +27,16 @@
 	let deviceInfo = $state('Loading...');
 	// FIXME: weird race condition
 	setTimeout(async () => {
-		const info = await firefly.getInfo();
-		deviceInfo = `${info.hardware} (${info.role})`;
+		while (true) {
+			try {
+				const info = await firefly.getInfo();
+				deviceInfo = `${info.hardware} (${info.role})`;
+				break;
+			} catch (e) {
+				console.error('Error fetching device info:', e);
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+			}
+		}
 	}, 50);
 </script>
 
