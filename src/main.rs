@@ -26,7 +26,6 @@ use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
-use cortex_m_semihosting::hprintln;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
@@ -38,7 +37,6 @@ use cortex_m_rt::exception;
 use cortex_m_semihosting::hio;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
-use embassy_futures::block_on;
 use embedded_hal_bus::util::AtomicCell;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use f4_w25q::w25q::W25Q;
@@ -50,6 +48,7 @@ use hal::gpio::NoPin;
 use hal::pac::TIM9;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
+use hal::prelude::*;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
@@ -360,6 +359,39 @@ async fn main(_spawner: Spawner) {
             unsafe { I2C1_BUS = Some(UnsafeCell::new(i2c)) };
         }
 
+        /*
+            PWM test code for Ground Station.
+               let gpio2 = gpio.e.pe11;
+               let (_, (_, ch2, ..)) = dp.TIM1.pwm_hz(1.Hz(), &clocks);
+               let mut ch2 = ch2.with(gpio2);
+               let max_duty = ch2.get_max_duty();
+               ch2.set_duty(max_duty / 2);
+        */
+
+        let bmm = {
+            #[cfg(feature = "target-ultra")]
+            {
+                let bmm_pins = i2c1_pins!(gpio);
+                let i2c1 = dp.I2C1.i2c(bmm_pins, 300.kHz(), &clocks);
+                let mut bmm = bmm350::Bmm350::new_with_i2c(i2c1, 0x14, dp.TIM7.delay_us(&clocks));
+                bmm.init().unwrap();
+                bmm.set_power_mode(bmm350::PowerMode::Normal).unwrap();
+                bmm.set_odr_performance(bmm350::DataRate::ODR100Hz, bmm350::AverageNum::Avg1)
+                    .unwrap();
+                bmm.enable_axes(
+                    bmm350::AxisEnableDisable::Enable,
+                    bmm350::AxisEnableDisable::Enable,
+                    bmm350::AxisEnableDisable::Enable,
+                )
+                .unwrap();
+                Some(bmm)
+            }
+            #[cfg(not(feature = "target-ultra"))]
+            {
+                None
+            }
+        };
+
         #[allow(unused)]
         let i2c3 = {
             #[cfg(any(feature = "target-maxi", feature = "target-ultra"))]
@@ -458,6 +490,9 @@ async fn main(_spawner: Spawner) {
             }
         };
 
+        let conf = build_config(&mut wrapper).await;
+        setup_logger(wrapper).unwrap();
+
         let (bmi323, adxl375) = {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
@@ -475,7 +510,7 @@ async fn main(_spawner: Spawner) {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    30.MHz(),
+                    3.MHz(),
                     &clocks,
                 );
 
@@ -510,16 +545,31 @@ async fn main(_spawner: Spawner) {
                 .unwrap();
 
                 let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
-                // let mut buf = [0; 1];
-                // adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
-                // adxl.write(adxl375::Register::DataFormat, &[0b01011])
-                //     .await
-                //     .unwrap();
-                // adxl.write(adxl375::Register::PowerCtl, &[0x8])
-                //     .await
-                //     .unwrap();
-                // adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
-                // adxl.set_fifo_mode(adxl375::FifoMode::Bypass).await.unwrap();
+                let mut buf = [0; 1];
+                adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
+                adxl.write(adxl375::Register::DataFormat, &[0b01011])
+                    .await
+                    .unwrap();
+                adxl.write(adxl375::Register::PowerCtl, &[0x8])
+                    .await
+                    .unwrap();
+                adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
+                adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
+
+                let adxl_xoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_xoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+                let adxl_yoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_yoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+                let adxl_zoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_zoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+
+                adxl.set_software_offset(adxl_xoff as f32, adxl_yoff as f32, adxl_zoff as f32);
 
                 (Some(bmi), Some(adxl))
             }
@@ -607,9 +657,6 @@ async fn main(_spawner: Spawner) {
         let lora_dio1 = radio::RadioInterruptRefMut(lora_dio1);
         let lora_pins = (lora_nreset, lora_busy, lora_ant, lora_dio1);
 
-        let conf = build_config(&mut wrapper).await;
-        setup_logger(wrapper).unwrap();
-
         const STARTUP_MESSAGE: &'static str = const_format::concatcp!(
             "I awaken! ",
             TARGET,
@@ -666,6 +713,7 @@ async fn main(_spawner: Spawner) {
             bno080,
             bmi323,
             adxl375,
+            bmm,
             clocks,
         )
         .await;
@@ -827,7 +875,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 
     loop {
         neopixel::update_pixel(1, [255, 0, 0]);
-        block_on(buzz(250u32.millis()));
+        embassy_futures::block_on(buzz(250u32.millis()));
 
         neopixel::update_pixel(1, [0, 0, 0]);
         timer.delay_ms(250);

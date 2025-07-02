@@ -6,6 +6,7 @@ use cortex_m::register::primask;
 use embassy_futures::select::select;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
 use sequential_storage::cache::{NoCache, PagePointerCache};
+use sequential_storage::map::Value;
 use sequential_storage::{map, queue};
 
 use stm32f4xx_hal as hal;
@@ -15,7 +16,6 @@ use storage_types::{CONFIG_KEYS, ConfigKey};
 use crate::futures::YieldFuture;
 use crate::mission::current_rtc_time;
 use crate::pins::QspiBank;
-use crate::usb_logger::get_serial;
 use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, PAGE_COUNT, neopixel};
 
 static LOGGER: Logger = Logger {
@@ -339,7 +339,7 @@ impl Logger {
         Ok(())
     }
 
-    pub async fn read_config(&self, key: &ConfigKey) -> Result<u64, &'static str> {
+    pub async fn read_config<T: for<'a> Value<'a>>(&self, key: &ConfigKey) -> Result<T, &'static str> {
         loop {
             let mask = primask::read();
             cortex_m::interrupt::disable();

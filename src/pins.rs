@@ -332,7 +332,7 @@ macro_rules! i2c1_pins {
         }
         #[cfg(feature = "target-ultra")]
         {
-            ($gpio_buses.b.pb8, $gpio_buses.b.pb9)
+            ($gpio_buses.b.pb6, $gpio_buses.b.pb7)
         }
     }};
 }

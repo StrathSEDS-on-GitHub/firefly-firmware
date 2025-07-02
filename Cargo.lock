@@ -127,6 +127,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmm350"
+version = "0.0.2"
+dependencies = [
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "bmp388"
 version = "0.1.0"
 dependencies = [
@@ -161,6 +168,7 @@ dependencies = [
  "adxl375",
  "atomic_enum",
  "bmi323",
+ "bmm350",
  "bmp388",
  "bno080",
  "const_format",

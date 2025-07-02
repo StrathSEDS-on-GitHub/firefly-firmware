@@ -65,6 +65,7 @@ bmi323 = { version = "0.1.0", path="bmi323-rs" }
 embedded-hal-async = "1.0.0"
 derive_more = { version = "2.0.1", default-features = false, features = ["from", "into"] }
 const_format = { version = "0.2.34", features = ["rust_1_83", "nightly_const_generics"] }
+bmm350 = { version = "0.0.2", path = "bmm350-rs" }
 
 [build-dependencies]
 time = {version = "0.3.20", features = ["macros", "formatting"] }

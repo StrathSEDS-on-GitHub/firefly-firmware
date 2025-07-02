@@ -2,6 +2,8 @@ use crate::logs::FixedWriter;
 use crate::pins::TARGET;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
+#[cfg(feature = "target-ultra")]
+use bmm350::Bmm350;
 use bno080::{interface::SensorInterface, wrapper::BNO080};
 use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
@@ -15,7 +17,6 @@ use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
-use stm32f4xx_hal::hal_02::digital::v2::OutputPin as _;
 use stm32f4xx_hal::{
     ClearFlags,
     adc::Adc,
@@ -23,7 +24,9 @@ use stm32f4xx_hal::{
     rcc::Clocks,
     timer::{self, Counter, Instance},
 };
-use storage_types::logs::{AccelerometerSample, CommandResponseType, CommandType};
+use storage_types::logs::{
+    AccelerometerSample, CommandResponseType, CommandType, MagnetometerSample,
+};
 use storage_types::{
     CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
     logs::{GPSSample, IMUSample, LocalCtxt, MessageType, PressureTempSample, RadioCtxt},
@@ -68,18 +71,22 @@ pub async fn update_pyro_state() {
     // SAFETY: This is the only place we use these static muts
     //         and as we are not async, we can guarantee that
     //         we are not accessing them concurrently.
-    let mv = unsafe {
+    let (mv1, mv2) = unsafe {
         // Need to disarm pyro to read voltage correctly
         let pyro_enable = PYRO_ENABLE_PIN.as_mut().unwrap();
         let previous = pyro_enable.is_set_high().unwrap();
 
         pyro_enable.set_low();
         let pyro = PYRO_CONT1.as_mut().unwrap();
+        let pyro2 = PYRO_CONT2.as_mut().unwrap();
         let adc = PYRO_ADC.as_mut().unwrap();
         let sample = {
             #[cfg(feature = "target-ultra")]
             {
-                adc.convert(pyro, stm32f4xx_hal::adc::config::SampleTime::Cycles_56)
+                (
+                    adc.convert(pyro, stm32f4xx_hal::adc::config::SampleTime::Cycles_56),
+                    adc.convert(pyro2, stm32f4xx_hal::adc::config::SampleTime::Cycles_56),
+                )
             }
             #[cfg(not(feature = "target-ultra"))]
             {
@@ -90,10 +97,13 @@ pub async fn update_pyro_state() {
         if previous {
             pyro_enable.set_high();
         }
-        adc.sample_to_millivolts(sample)
+        (
+            adc.sample_to_millivolts(sample.0),
+            adc.sample_to_millivolts(sample.1),
+        )
     };
 
-    let pyro_msg = MessageType::new_pyro(mv);
+    let pyro_msg = MessageType::new_pyro(mv1, mv2);
     get_logger()
         .log(pyro_msg.clone().into_message(current_rtc_time()))
         .await;
@@ -538,10 +548,10 @@ pub async fn usb_handler() -> ! {
                             )
                             .unwrap();
                         }
-                    MessageType::Pyro(mv) => {
+                    MessageType::Pyro(mv1, mv2) => {
                             writeln!(
                                 get_serial(),
-                                "[{}] [Local pyro] {mv}",
+                                "[{}] [Local pyro] {mv1},{mv2}",
                                 current_rtc_time::<String<12>>()
                             )
                             .unwrap();
@@ -570,9 +580,19 @@ pub async fn usb_handler() -> ! {
                             )
                             .unwrap();
                         }
-                    }
-                })
-                .await
+                    MessageType::Magnetometer(magnetometer_compressed) => {
+                        for sample in magnetometer_compressed.decompress() {
+                            if let Ok(MagnetometerSample { timestamp, magnetic_field }) = sample {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [Local Magnetometer] {:?}",
+                                    String::from(EpochTime::from(timestamp)),
+                                    magnetic_field).unwrap();
+                            }
+                        }
+                    },
+                }
+            }).await
             {
                 writeln!(get_serial(), "err, {}", msg).unwrap();
             }
@@ -892,17 +912,16 @@ async fn handle_incoming_packets() -> ! {
                     }
                     MessageType::SetStage(role, mission_stage) => {
                         writeln!(
-                                                                            get_serial(),
-                                                                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
+                            get_serial(),
+                            "[{}] [{:?} log] Out of turn set stage command from {source:?} to {mission_stage:?}",
                             current_rtc_time::<String<12>>(),
-                                                                            role
-                                                                        )
-                                                                        .unwrap();
+                            role
+                        ).unwrap();
                     }
-                    MessageType::Pyro(mv) => {
+                    MessageType::Pyro(mv1, mv2) => {
                         writeln!(
                             get_serial(),
-                            "[{}] [{source:?} pyro] {mv}",
+                            "[{}] [{source:?} pyro] {mv1},{mv2}",
                             current_rtc_time::<String<12>>()
                         )
                         .unwrap();
@@ -950,6 +969,23 @@ async fn handle_incoming_packets() -> ! {
                             core::str::from_utf8_unchecked(writer.data())
                         })
                         .unwrap();
+                    }
+                    MessageType::Magnetometer(magnetometer_compressed) => {
+                        for sample in magnetometer_compressed.decompress() {
+                            if let Ok(MagnetometerSample {
+                                timestamp,
+                                magnetic_field,
+                            }) = sample
+                            {
+                                writeln!(
+                                    get_serial(),
+                                    "[{}] [{source:?} mag] {:?}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    magnetic_field
+                                )
+                                .unwrap();
+                            }
+                        }
                     }
                 },
                 _ => match packet.message {
@@ -1162,6 +1198,36 @@ async fn buzzer_controller() -> ! {
     }
 }
 
+#[cfg(false)]
+async fn bmm_350_handler(
+    bmm: Bmm350<
+        impl bmm350::interface::WriteData,
+        stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 100000>,
+    >,
+) {
+    use storage_types::logs::MagnetometerSample;
+
+    loop {
+        let mut samples = [MagnetometerSample::default(); 32];
+
+        for store in samples.iter_mut() {
+            store.timestamp = current_rtc_time();
+            store.magnetic_field = bmm;
+            embedded_hal_async::delay::DelayNs::delay_ms(&mut bmm, 10).await;
+        }
+
+        let message = MessageType::new_magnetometer(samples.into_iter());
+        let radio_msg = message.clone().into_message(radio_ctxt());
+        if role() == Role::Avionics {
+            radio::queue_packet(radio_msg);
+        }
+
+        get_logger()
+            .log(message.into_message(current_rtc_time()))
+            .await;
+    }
+}
+
 #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 async fn adxl_imu_handler(
     mut imu: adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
@@ -1173,9 +1239,7 @@ async fn adxl_imu_handler(
 
         for store in samples.iter_mut() {
             store.timestamp = current_rtc_time();
-            let mut buf = [0u8; 6];
-            imu.read(adxl375::Register::DataX0, &mut buf).await.unwrap();
-            store.acceleration = adxl375::convert(&buf);
+            store.acceleration = imu.read_and_convert().await.unwrap();
             embedded_hal_async::delay::DelayNs::delay_ms(&mut imu, 10).await;
         }
 
@@ -1304,7 +1368,7 @@ pub async fn bmi323_imu_handler(
     timer.start(10u32.millis()).unwrap();
 
     loop {
-        let mut samples = [IMUSample::default(); 20];
+        let mut samples = [IMUSample::default(); 12];
         for sample in samples.iter_mut() {
             NbFuture::new(|| timer.wait()).await.unwrap();
             sample.timestamp = current_rtc_time();
@@ -1417,6 +1481,12 @@ pub async fn begin(
     adxl_imu: Option<
         adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
     >,
+    bmm350: Option<
+        Bmm350<
+            impl bmm350::interface::WriteData,
+            stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>,
+        >,
+    >,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
@@ -1473,10 +1543,10 @@ pub async fn begin(
                 {
                     let _ = bno_imu;
                     let _ = icm_imu;
-                    // ::futures::future::join(
-                    bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter())
-                    // adxl_imu_handler(adxl_imu.unwrap()),
-                    // )
+                    ::futures::future::join(
+                        bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter()),
+                        adxl_imu_handler(adxl_imu.unwrap()),
+                    )
                 }
             };
 

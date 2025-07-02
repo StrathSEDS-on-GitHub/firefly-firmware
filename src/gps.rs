@@ -6,7 +6,6 @@ use core::{
 };
 
 use cortex_m::interrupt::Mutex;
-use stm32f4xx_hal::gpio::ExtiPin;
 use fugit::ExtU32;
 use hal::{
     dma::{Transfer, traits::StreamISR},
@@ -16,6 +15,7 @@ use hal::{
 };
 use heapless::Deque;
 use nmea0183::{GGA, ParseResult, datetime::Time};
+use stm32f4xx_hal::gpio::ExtiPin;
 use stm32f4xx_hal::{
     dma, interrupt, pac,
     prelude::_embedded_hal_serial_nb_Write,
@@ -196,51 +196,48 @@ pub async fn poll_for_sentences() -> ! {
 
     let mut bytes = crate::gps::rx(&mut rx_buf[start..]).await;
 
-    let mut nth = 0u32;
-
     let mut searching_fix_color = false;
     let mut got_fix = false;
 
     loop {
-        for (i, c) in rx_buf[start..bytes].iter().enumerate() {
-            if let Some(Ok(parse_result)) = parser.parse_from_byte(*c) {
-                searching_fix_color = !searching_fix_color;
-                if !got_fix {
-                    neopixel::update_pixel(
-                        1,
-                        [
-                            searching_fix_color as u8 * 100,
-                            searching_fix_color as u8 * 100,
-                            0,
-                        ],
-                    );
-                    if let ParseResult::GGA(Some(GGA {
-                        fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
-                        time,
-                        ..
-                    })) = parse_result.clone()
-                    {
-                        set_rtc(time);
-                        got_fix = true;
-                    }
+        for result in parser.parse_from_bytes(&rx_buf[start..bytes]) {
+            let Ok(parse_result) = result else {
+                continue;
+            };
+            searching_fix_color = !searching_fix_color;
+            if !got_fix {
+                neopixel::update_pixel(
+                    1,
+                    [
+                        searching_fix_color as u8 * 100,
+                        searching_fix_color as u8 * 100,
+                        0,
+                    ],
+                );
+                if let ParseResult::GGA(Some(GGA {
+                    fix: Some(_fix), // Don't care about the fix, just want to assure the time is valid.
+                    time,
+                    ..
+                })) = parse_result.clone()
+                {
+                    set_rtc(time);
+                    got_fix = true;
                 }
-
-                cortex_m::interrupt::free(|cs| {
-                    let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
-                    let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
-                    gps_sentence_buffer
-                        .push_back(parse_result)
-                        .or_else(|parse_result| {
-                            // Running behind, clear the buffer so old data is dropped.
-                            gps_sentence_buffer.clear();
-                            gps_sentence_buffer.push_back(parse_result)
-                        })
-                        .unwrap();
-                });
-                start = i + 1;
             }
+
+            cortex_m::interrupt::free(|cs| {
+                let mut gps_buffer_ref = GPS_SENTENCE_BUFFER.borrow(cs).borrow_mut();
+                let gps_sentence_buffer = gps_buffer_ref.as_mut().unwrap();
+                gps_sentence_buffer
+                    .push_back(parse_result)
+                    .or_else(|parse_result| {
+                        // Running behind, clear the buffer so old data is dropped.
+                        gps_sentence_buffer.clear();
+                        gps_sentence_buffer.push_back(parse_result)
+                    })
+                    .unwrap();
+            });
         }
-        nth = nth.wrapping_add(1);
 
         // Once we've processed all the bytes, or if the buffer is totally full then reset the buffer.
         // The buffer may be full if none of the bytes were parseable.

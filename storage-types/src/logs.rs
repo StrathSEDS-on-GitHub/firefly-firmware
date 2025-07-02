@@ -125,10 +125,14 @@ pub struct ImuCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 #[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
 pub struct AccelerometerCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 
+#[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
+pub struct MagnetometerCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
+
 decompress_impl!(GpsCompressed, GPSSample, 3);
 decompress_impl!(PressureTempCompressed, PressureTempSample, 2);
 decompress_impl!(ImuCompressed, IMUSample, 6);
 decompress_impl!(AccelerometerCompressed, AccelerometerSample, 3);
+decompress_impl!(MagnetometerCompressed, MagnetometerSample, 3);
 
 pub const TS_BUF_SIZE: usize = 222;
 
@@ -156,11 +160,12 @@ pub enum MessageType {
     PressureTemp(PressureTempCompressed),
     Imu(ImuCompressed),
     Accelerometer(AccelerometerCompressed),
+    Magnetometer(MagnetometerCompressed),
     Arm(Role),
     Disarm(Role),
     TestPyro(Role, PyroPin, u32),
     SetStage(Role, MissionStage),
-    Pyro(u16),
+    Pyro(u16, u16),
     MissionSumary {
         max_altitude: f32,
         max_altitude_time: u32,
@@ -230,6 +235,15 @@ impl Into<(u32, [f32; 2])> for PressureTempSample {
     }
 }
 
+impl From<(u32, [f32; 3])> for MagnetometerSample {
+    fn from(value: (u32, [f32; 3])) -> Self {
+        MagnetometerSample {
+            timestamp: value.0,
+            magnetic_field: value.1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct IMUSample {
     pub timestamp: u32,
@@ -241,6 +255,12 @@ pub struct IMUSample {
 pub struct AccelerometerSample {
     pub timestamp: u32,
     pub acceleration: [f32; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MagnetometerSample {
+    pub timestamp: u32,
+    pub magnetic_field: [f32; 3],
 }
 
 impl From<(u32, [f32; 6])> for IMUSample {
@@ -327,8 +347,8 @@ impl MessageType {
         MessageType::Disarm(role)
     }
 
-    pub fn new_pyro(mv: u16) -> Self {
-        MessageType::Pyro(mv)
+    pub fn new_pyro(mv1: u16, mv2: u16) -> Self {
+        MessageType::Pyro(mv1, mv2)
     }
 
     pub fn new_test_pyro(role: Role, pin: PyroPin, duration: u32) -> Self {
