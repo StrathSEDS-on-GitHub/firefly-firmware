@@ -7,11 +7,11 @@
 	let { addPort } : { addPort : (ff: Firefly) => void} = $props();
 </script>
 
-<div class="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 z-50">
-	<div class="p-8 rounded-xl border-teal-300 border-2 flex flex-col items-center justify-center">
-		<h2 class="text-xl text-teal-300">No Fireflies detected.</h2>
+<div class="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-gray-100 z-50">
+	<div class="p-8 rounded-xl border-teal-500 border-2 flex flex-col items-center justify-center">
+		<h2 class="text-xl text-teal-500">No Fireflies detected.</h2>
 		<img src={ffultra} alt="Firefly patch" class="max-w-50 max-h-50" />
-		<p class="text-gray-200">Please connect a Firefly and press authorize.</p>
+		<p class="text-gray-900">Please connect a Firefly and press authorize.</p>
 
 		<Button
 			onclick={() => {

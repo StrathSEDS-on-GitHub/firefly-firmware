@@ -8,11 +8,13 @@
 	let {
 		device,
 		addFirefly,
-		parse
+		parse,
+		addMarker
 	}: {
 		device: Firefly;
 		addFirefly: (ff: Firefly) => void;
 		parse: (line: string) => Map<String, any>;
+		addMarker: ([lat, long]: [number, number], color: string) => void;
 	} = $props();
 	let configExpanded = $state(false);
 	let controlsExpanded = $state(false);
@@ -20,6 +22,9 @@
 	let editableConfig: DeviceConfig | null = $state(null);
 
 	let deviceInfo: DeviceInfo | null = $state(null);
+
+	let file: FileSystemWritableFileStream | null = $state(null);
+
 	let linkInfo: DeviceInfo | null = $state(null);
 
 	let remotes = $state<Role[]>([]);
@@ -30,6 +35,14 @@
 		while (true) {
 			try {
 				deviceInfo = await device.getInfo();
+
+				navigator.storage.getDirectory().then(async (root) => {
+					file = await (
+						await root.getFileHandle((deviceInfo?.role || 'not got') + ' - ' + new Date(), {
+							create: true
+						})
+					).createWritable();
+				});
 				break;
 			} catch (e) {
 				console.error('Error fetching device info:', e);
@@ -65,6 +78,9 @@
 
 	if (!isRemote) {
 		(device as SerialFirefly).device.addLineHandler((line) => {
+			if (file) {
+				file.write(line.content + "\n");
+			}
 			try {
 				let row: Map<String, any> = parse(line.content);
 				if (row && row.get('src')) {
@@ -73,25 +89,35 @@
 						remotes = [...remotes, src];
 						addFirefly(new RemoteFirefly(src as Role, device as SerialFirefly));
 					}
+
+					if (row.get('gpx') && row.get('gpy')) {
+						let lat = row.get('gpx').Float;
+						let long = row.get('gpy').Float;
+						if (lat && long) {
+							addMarker([lat, long], src == 'Avionics' ? 'red' : 'blue');
+						}
+					}
 				}
-			} catch (e) {}
+			} catch (e) {
+				console.error(e, line);
+			}
 		});
 	}
 </script>
 
 <div transition:fly={{ y: 100 }}>
 	{#if !deviceInfo}
-		<div class="p-3 mb-2 bg-gray-800 rounded-lg">
-			<h3 class="text-teal-300 text-lg">
+		<div class="p-3 mb-2 bg-gray-300 rounded-lg">
+			<h3 class="text-teal-500 text-lg">
 				<i class="fas fa-circle-notch fa-spin"></i> Still loading
 			</h3>
 		</div>
 	{:else}
-		<div class="p-3 mb-2 bg-gray-800 rounded-lg">
+		<div class="p-3 mb-2 bg-gray-300 rounded-lg">
 			<div class="flex justify-between">
 				<div class="flex items-baseline">
-					<h3 class="text-teal-300 text-lg">
-						<i class={`fas ${isRemote ? 'fa-satellite-dish' : 'fa-plug'} text-teal-300`}></i>
+					<h3 class="text-teal-500 text-lg">
+						<i class={`fas ${isRemote ? 'fa-satellite-dish' : 'fa-plug'} text-teal-500`}></i>
 						{deviceInfo.hardware}
 					</h3>
 					{#if linkInfo}
@@ -134,13 +160,11 @@
 						<hr class="border-red-300 my-1 min-w-7/8" />
 						<Button
 							extraClasses="[&&]:bg-red-400 [&&]:hover:bg-red-300 px-4 py-1 font-mono min-w-40"
-                            onclick={() => device.testFire1()}
-							>TEST FIRE 1</Button
+							onclick={() => device.testFire1()}>TEST FIRE 1</Button
 						>
 						<Button
 							extraClasses="[&&]:bg-red-400 [&&]:hover:bg-red-300 px-4 py-1 font-mono min-w-40"
-                            onclick={() => device.testFire2()}
-							>TEST FIRE 2</Button
+							onclick={() => device.testFire2()}>TEST FIRE 2</Button
 						>
 					</div>
 				{/if}
@@ -148,7 +172,7 @@
 
 			<!-- Config -->
 			<div
-				class={`flex flex-col text-teal-300 border-2 border-teal-500
+				class={`flex flex-col text-teal-500 border-2 border-teal-500
             rounded-md p-2 mt-5`}
 				transition:slide
 			>
@@ -187,7 +211,7 @@
 					<div transition:slide>
 						<hr class="border-teal-500 w-full my-3" />
 						{#if editableConfig === null}
-							<h3 class="text-teal-300 text-xs p-2">
+							<h3 class="text-teal-500 text-xs p-2">
 								<i class="fas fa-circle-notch fa-spin"></i> Still loading
 							</h3>
 						{:else}
@@ -199,7 +223,7 @@
 								<input
 									name="frequency"
 									type="number"
-									class="w-full text-sm bg-gray-900 p-2 mr-2 rounded-xl"
+									class="w-full text-sm bg-gray-100 p-2 mr-2 rounded-xl"
 									bind:value={editableConfig.rf_freq}
 								/>
 								<i class={`fas fa-dot-circle self-center text-[0.65rem] m-0 ${syncColor('id')}`}
@@ -208,7 +232,7 @@
 								<input
 									name="id"
 									type="number"
-									class="w-full text-sm bg-gray-900 p-2 mr-2 rounded-xl"
+									class="w-full text-sm bg-gray-100 p-2 mr-2 rounded-xl"
 									bind:value={editableConfig.id}
 								/>
 								<i class={`fas fa-dot-circle self-center text-[0.65rem] m-0 ${syncColor('bw')}`}
@@ -217,7 +241,7 @@
 								<input
 									name="bw"
 									type="number"
-									class="w-full text-sm bg-gray-900 p-2 mr-2 rounded-xl"
+									class="w-full text-sm bg-gray-100 p-2 mr-2 rounded-xl"
 									bind:value={editableConfig.bw}
 								/>
 								<i class={`fas fa-dot-circle self-center text-[0.65rem] m-0 ${syncColor('cr')}`}
@@ -226,7 +250,7 @@
 								<input
 									name="cr"
 									type="number"
-									class="w-full text-sm bg-gray-900 p-2 mr-2 rounded-xl"
+									class="w-full text-sm bg-gray-100 p-2 mr-2 rounded-xl"
 									bind:value={editableConfig.cr}
 								/>
 								<i class={`fas fa-dot-circle self-center text-[0.65rem] m-0 ${syncColor('sf')}`}
@@ -235,7 +259,7 @@
 								<input
 									name="sf"
 									type="number"
-									class="w-full text-sm bg-gray-900 p-2 mr-2 rounded-xl"
+									class="w-full text-sm bg-gray-100 p-2 mr-2 rounded-xl"
 									bind:value={editableConfig.sf}
 								/>
 							</div>

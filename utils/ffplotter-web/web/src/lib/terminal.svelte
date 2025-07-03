@@ -4,7 +4,7 @@
 	import type { SerialDevice } from './devices/serial-device';
 	import type { SerialFirefly } from './devices/serial-firefly';
 
-	const MAX_LINES = 100;
+	const MAX_LINES = 1000;
 
 	let { firefly }: { firefly: SerialFirefly } = $props();
 	let lines = $state<Line[]>([]);
@@ -41,14 +41,14 @@
 </script>
 
 <div class="w-full h-full flex flex-col font-mono">
-	<div class="w-full h-10 bg-gray-700 text-teal-300 p-2">{deviceInfo}</div>
-	<div class="scrollbar flex flex-col grow bg-gray-800 overflow-y-scroll" bind:this={textBuffer}>
+	<div class="w-full h-10 bg-gray-300 text-teal-500 p-2">{deviceInfo}</div>
+	<div class="scrollbar flex flex-col grow bg-gray-200 overflow-y-scroll" bind:this={textBuffer}>
 		{#each lines as line}
 			<div
-				class={`text-gray-200 break-words flex items-center p-2 ${line.kind === 'tx' ? 'bg-gray-900/25' : 'bg-gray-900/75'}`}
+				class={`text-gray-900 break-words flex items-center p-2 ${line.kind === 'tx' ? 'bg-gray-100/25' : 'bg-gray-100/75'}`}
 			>
 				<i
-					class={`mr-4 text-xs fas ${line.kind === 'tx' ? 'fa-right-from-bracket text-orange-300' : 'fa-right-to-bracket text-teal-300'}`}
+					class={`mr-4 text-xs fas ${line.kind === 'tx' ? 'fa-right-from-bracket text-orange-300' : 'fa-right-to-bracket text-teal-500'}`}
 				></i>
 				{line.content}
 			</div>
@@ -57,7 +57,7 @@
 
 	<input
 		name="line"
-		class="w-full h-10 bg-gray-900 text-gray-100 p-2"
+		class="w-full h-10 bg-gray-100 text-gray-900 p-2"
 		placeholder="Enter command..."
 		onkeydown={(ev) => {
 			if (ev.key === 'Enter') {

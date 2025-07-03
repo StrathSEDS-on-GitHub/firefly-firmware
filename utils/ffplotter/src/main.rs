@@ -120,7 +120,7 @@ fn main() -> eyre::Result<()> {
                 |acc, e| acc.with_note(|| format!("{:#}", e)),
             );
 
-            log::warn!("{:?}", error);
+            // log::warn!("{:?}", error);
             continue;
         }
     }

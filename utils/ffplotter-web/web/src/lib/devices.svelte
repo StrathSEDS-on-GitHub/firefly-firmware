@@ -9,19 +9,21 @@
 	let {
 		devices,
 		addFirefly,
-		parse
+		parse,
+		addMarker
 	}: {
 		devices: Firefly[];
 		addFirefly: (port: Firefly) => void;
 		parse: (line: string) => Map<String, any>;
+		addMarker: ([lat, long]: [number, number], color: string) => void;
 	} = $props();
 </script>
 
 <div
 	class="w-110 flex flex-col
-	bg-gray-900 z-50 border-l-1 border-gray-950 p-4 overflow-y-auto"
+	bg-gray-100 z-50 border-l-1 border-gray-950 p-4 overflow-y-auto"
 >
-	<h2 class="text-teal-200 text-2xl mb-5">
+	<h2 class="text-teal-500 text-2xl mb-5">
 		<i class="fa-brands fa-usb p-1"></i>
 		Attached Fireflies
 	</h2>
@@ -29,7 +31,7 @@
 	<div transition:slide>
 		{#each devices as device}
 			{#if device instanceof SerialFirefly}
-				<Device {addFirefly} {parse} {device} />
+				<Device {addFirefly} {parse} {device} {addMarker} />
 			{/if}
 		{/each}
 	</div>
@@ -54,20 +56,20 @@
 		>
 	</div>
 
-	<hr class="my-4 border-teal-300" />
+	<hr class="my-4 border-teal-500" />
 
-	<h2 class="text-teal-200 text-2xl mb-5">
+	<h2 class="text-teal-500 text-2xl mb-5">
 		<i class="fa-solid fa-tower-broadcast p-1"></i>
 		Remote Fireflies
 	</h2>
 
 	<div transition:slide>
 		{#if devices.filter((d) => d instanceof RemoteFirefly).length === 0}
-			<p class="text-gray-400">No remote Fireflies found. Check configuration.</p>
+			<p class="text-gray-600">No remote Fireflies found. Check configuration.</p>
 		{:else}
 			{#each devices as device}
 				{#if device instanceof RemoteFirefly}
-					<Device {addFirefly} {parse} {device} />
+					<Device {addFirefly} {parse} {device} {addMarker} />
 				{/if}
 			{/each}
 		{/if}
