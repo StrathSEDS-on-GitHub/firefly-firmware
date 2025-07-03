@@ -1458,7 +1458,6 @@ pub async fn ms5607_altimeter_handler(
 ) {
     let mut counter = unsafe { ms5607.timer().start_counter(10) };
     loop {
-        use cortex_m_semihosting::hprintln;
 
         let mut samples = [PressureTempSample::default(); 40];
 
@@ -1587,12 +1586,6 @@ pub async fn begin<
     };
 
     let bmm_task = {
-        #[cfg(feature = "target-ultra")]
-        {
-            bmm_350_handler(bmm350.unwrap(), bmm_timer)
-        }
-
-        #[cfg(not(feature = "target-ultra"))]
         {
             let _ = bmm350;
             core::future::ready(())

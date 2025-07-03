@@ -26,7 +26,6 @@ use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
-use cortex_m_semihosting::hprintln;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
@@ -370,26 +369,6 @@ async fn main(_spawner: Spawner) {
         */
 
         let bmm = {
-            #[cfg(feature = "target-ultra")]
-            {
-                use bmm350::MagConfig;
-
-                let bmm_pins = i2c1_pins!(gpio);
-                let i2c1 = dp.I2C1.i2c(bmm_pins, 100.kHz(), &clocks);
-                let mut bmm = bmm350::Bmm350::new_with_i2c(i2c1, 0x14, dp.TIM7.delay_us(&clocks));
-                bmm.init().unwrap();
-                bmm.set_power_mode(bmm350::PowerMode::Normal).unwrap();
-                bmm.set_odr_performance(bmm350::DataRate::ODR100Hz, bmm350::AverageNum::Avg1)
-                    .unwrap();
-                bmm.enable_axes(
-                    bmm350::AxisEnableDisable::Enable,
-                    bmm350::AxisEnableDisable::Enable,
-                    bmm350::AxisEnableDisable::Enable,
-                )
-                .unwrap();
-                Some(bmm)
-            }
-            #[cfg(not(feature = "target-ultra"))]
             {
                 use bmm350::Bmm350;
                 use stm32f4xx_hal::{pac::{I2C1, TIM7}, timer};
@@ -880,13 +859,15 @@ pub fn panic(info: &PanicInfo) -> ! {
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
 
-    loop {
+    for _ in 0..5 {
         neopixel::update_pixel(1, [255, 0, 0]);
         embassy_futures::block_on(buzz(250u32.millis()));
 
         neopixel::update_pixel(1, [0, 0, 0]);
         timer.delay_ms(250);
     }
+
+    cortex_m::peripheral::SCB::sys_reset();
 }
 
 #[exception]
