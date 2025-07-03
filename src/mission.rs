@@ -2,7 +2,6 @@ use crate::logs::FixedWriter;
 use crate::pins::TARGET;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
-#[cfg(feature = "target-ultra")]
 use bmm350::Bmm350;
 use bno080::{interface::SensorInterface, wrapper::BNO080};
 use core::sync::atomic::AtomicU32;
@@ -17,6 +16,11 @@ use heapless::{String, Vec};
 use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "target-ultra")]
+use stm32f4xx_hal::i2c;
+use stm32f4xx_hal::pac::{TIM8, TIM9};
+#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+use stm32f4xx_hal::timer::TimerExt;
 use stm32f4xx_hal::{
     ClearFlags,
     adc::Adc,
@@ -90,7 +94,7 @@ pub async fn update_pyro_state() {
             }
             #[cfg(not(feature = "target-ultra"))]
             {
-                0
+                (0, 0)
             }
         };
 
@@ -108,7 +112,9 @@ pub async fn update_pyro_state() {
         .log(pyro_msg.clone().into_message(current_rtc_time()))
         .await;
     let radio_msg = pyro_msg.clone().into_message(radio_ctxt());
-    radio::queue_packet(radio_msg);
+    if role() == Role::Avionics {
+        radio::queue_packet(radio_msg);
+    }
 }
 
 pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
@@ -223,7 +229,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
             MissionStage::DescentMain => {
                 // If our average velocity is less than 1m/s, we must have landed
                 let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
-                if velocities_abs.clone().filter(|x| *x < 0.02).count() > 12 {
+                if velocities_abs.clone().filter(|x| *x < 0.2).count() > 12 {
                     get_logger()
                         .log_str("stage,detected entering landed stage")
                         .await;
@@ -417,6 +423,12 @@ pub async fn usb_handler() -> ! {
 
             get_logger().edit_config(&key, value).await;
             writeln!(get_serial(), "[REPLY#{command_id}] ok").unwrap();
+        } else if split.len() >= 2 && split[0].starts_with(b"remote-erase") {
+            let Some(role) = parse_role(split[1]) else {
+                continue;
+            };
+
+            get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             if let Err(msg) = get_logger().erase_logs().await {
                 writeln!(get_serial(), "err, {}", msg).unwrap();
@@ -801,7 +813,7 @@ async fn handle_incoming_packets() -> ! {
             let RadioCtxt {
                 source,
                 counter: _counter,
-                stage: _stage,
+                stage,
             } = packet.context;
             match role() {
                 Role::GroundMain | Role::GroundBackup => match packet.message {
@@ -822,8 +834,9 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 writeln!(
                                     get_serial(),
-                                    "[{}] [{source:?} acc] {:?}",
+                                    "[{}] [{source:?} {:?} acc] {:?}",
                                     Into::<String<12>>::into(EpochTime(timestamp)),
+                                    stage,
                                     acceleration
                                 )
                                 .unwrap();
@@ -841,8 +854,9 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 writeln!(
                                     get_serial(),
-                                    "[{}] [{source:?} gps] {latitude},{longitude},{altitude}",
-                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                    "[{}] [{source:?} {:?} gps] {latitude},{longitude},{altitude}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    stage,
                                 )
                                 .unwrap();
                             }
@@ -858,8 +872,9 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 writeln!(
                                     get_serial(),
-                                    "[{}] [{source:?} prt] {pressure},{temperature}",
-                                    Into::<String<12>>::into(EpochTime(timestamp))
+                                    "[{}] [{source:?} {:?} prt] {pressure},{temperature}",
+                                    Into::<String<12>>::into(EpochTime(timestamp)),
+                                    stage,
                                 )
                                 .unwrap();
                             }
@@ -875,8 +890,9 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 writeln!(
                                     get_serial(),
-                                    "[{}] [{source:?} imu] {:?},{:?}",
+                                    "[{}] [{source:?} {:?} imu] {:?},{:?}",
                                     Into::<String<12>>::into(EpochTime(timestamp)),
+                                    stage,
                                     acceleration,
                                     angular_velocity
                                 )
@@ -921,8 +937,9 @@ async fn handle_incoming_packets() -> ! {
                     MessageType::Pyro(mv1, mv2) => {
                         writeln!(
                             get_serial(),
-                            "[{}] [{source:?} pyro] {mv1},{mv2}",
-                            current_rtc_time::<String<12>>()
+                            "[{}] [{source:?} {:?} pyro] {mv1},{mv2}",
+                            current_rtc_time::<String<12>>(),
+                            stage,
                         )
                         .unwrap();
                     }
@@ -964,6 +981,9 @@ async fn handle_incoming_packets() -> ! {
                             } => {
                                 write!(writer, "{hardware},{firmware:?},{role:?}",).unwrap();
                             }
+                            CommandResponseType::Erase => {
+                                write!(writer, "ok").unwrap();
+                            }
                         }
                         writeln!(get_serial(), "[REPLY#{id}] {}", unsafe {
                             core::str::from_utf8_unchecked(writer.data())
@@ -979,8 +999,9 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 writeln!(
                                     get_serial(),
-                                    "[{}] [{source:?} mag] {:?}",
+                                    "[{}] [{source:?} {:?} mag] {:?}",
                                     Into::<String<12>>::into(EpochTime(timestamp)),
+                                    stage,
                                     magnetic_field
                                 )
                                 .unwrap();
@@ -1011,6 +1032,17 @@ async fn handle_incoming_packets() -> ! {
                                             firmware: env!("GIT_SHA").try_into().unwrap(),
                                             role,
                                         },
+                                    }
+                                    .into_message(radio_ctxt()),
+                                );
+                            }
+                            CommandType::Erase => {
+                                get_logger().erase_logs().await.unwrap();
+
+                                radio::queue_packet(
+                                    MessageType::CommandResponse {
+                                        id,
+                                        response: CommandResponseType::Erase,
                                     }
                                     .into_message(radio_ctxt()),
                                 );
@@ -1198,12 +1230,13 @@ async fn buzzer_controller() -> ! {
     }
 }
 
-#[cfg(false)]
-async fn bmm_350_handler(
-    bmm: Bmm350<
-        impl bmm350::interface::WriteData,
-        stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 100000>,
-    >,
+#[cfg(feature = "target-ultra")]
+async fn bmm_350_handler<
+    T: bmm350::interface::WriteData<Error = bmm350::Error<i2c::Error>>
+        + bmm350::interface::ReadData<Error = bmm350::Error<i2c::Error>>,
+>(
+    mut bmm: Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
+    mut bmm_timer: Counter<impl timer::Instance, 10000>,
 ) {
     use storage_types::logs::MagnetometerSample;
 
@@ -1211,9 +1244,12 @@ async fn bmm_350_handler(
         let mut samples = [MagnetometerSample::default(); 32];
 
         for store in samples.iter_mut() {
-            store.timestamp = current_rtc_time();
-            store.magnetic_field = bmm;
-            embedded_hal_async::delay::DelayNs::delay_ms(&mut bmm, 10).await;
+            NbFuture::new(|| bmm_timer.wait()).await.unwrap();
+            if let Ok(bmm350::Sensor3DData { x, y, z }) = bmm.read_mag_data() {
+                store.timestamp = current_rtc_time();
+                store.magnetic_field = [x as f32, y as f32, z as f32];
+                bmm_timer.start(10.millis()).unwrap();
+            }
         }
 
         let message = MessageType::new_magnetometer(samples.into_iter());
@@ -1415,15 +1451,20 @@ pub async fn bmi323_imu_handler(
 pub async fn ms5607_altimeter_handler(
     mut ms5607: crate::ms5607::MS5607<
         impl I2c,
-        impl embedded_hal_async::delay::DelayNs,
+        TimerDelay<impl timer::Instance>,
         crate::ms5607::Calibrated,
     >,
     pressure_sender: thingbuf::mpsc::StaticSender<FifoFrames>,
 ) {
+    let mut counter = unsafe { ms5607.timer().start_counter(10) };
     loop {
+        use cortex_m_semihosting::hprintln;
+
         let mut samples = [PressureTempSample::default(); 40];
 
         for i in 0..samples.len() {
+            NbFuture::new(|| counter.wait()).await.unwrap();
+            unsafe { ms5607.timer() }.return_counter(counter);
             let crate::altimeter::PressureTemp {
                 pressure,
                 temperature,
@@ -1436,7 +1477,7 @@ pub async fn ms5607_altimeter_handler(
                 pressure,
                 temperature,
             };
-            embedded_hal_async::delay::DelayNs::delay_ms(&mut ms5607, 10).await;
+            counter = unsafe { ms5607.timer().start_counter(10) };
         }
 
         pressure_sender
@@ -1461,7 +1502,9 @@ pub async fn ms5607_altimeter_handler(
 
         let message = MessageType::new_pressure_temp(samples.into_iter());
         let radio_msg = message.clone().into_message(radio_ctxt());
-        radio::queue_packet(radio_msg);
+        if role() == Role::Avionics {
+            radio::queue_packet(radio_msg);
+        }
 
         get_logger()
             .log(message.into_message(current_rtc_time()))
@@ -1471,7 +1514,10 @@ pub async fn ms5607_altimeter_handler(
     }
 }
 
-pub async fn begin(
+pub async fn begin<
+    T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
+        + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
+>(
     altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
     icm_imu: Option<IcmImu<impl I2c, NoDmp>>,
@@ -1482,11 +1528,9 @@ pub async fn begin(
         adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
     >,
     bmm350: Option<
-        Bmm350<
-            impl bmm350::interface::WriteData,
-            stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>,
-        >,
+        Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
     >,
+    bmm_timer: Counter<TIM8, 10000>,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
@@ -1515,6 +1559,45 @@ pub async fn begin(
     } else {
         core::pin::pin!(core::future::ready(()))
     };
+    let imu_task = {
+        #[cfg(feature = "target-mini")]
+        {
+            let _ = bmi323_imu;
+            let _ = bno_imu;
+            icm_imu_handler(
+                icm_imu.unwrap(),
+                TimerDelay::new(imu_timer.release().release(), clocks),
+            )
+        }
+        #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+        {
+            let _ = icm_imu;
+            let _ = bmi323_imu;
+            bno_imu_handler(bno_imu.unwrap(), imu_timer)
+        }
+        #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+        {
+            let _ = bno_imu;
+            let _ = icm_imu;
+            ::futures::future::join(
+                bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter()),
+                adxl_imu_handler(adxl_imu.unwrap()),
+            )
+        }
+    };
+
+    let bmm_task = {
+        #[cfg(feature = "target-ultra")]
+        {
+            bmm_350_handler(bmm350.unwrap(), bmm_timer)
+        }
+
+        #[cfg(not(feature = "target-ultra"))]
+        {
+            let _ = bmm350;
+            core::future::ready(())
+        }
+    };
 
     match unsafe { ROLE } {
         Role::GroundMain | Role::GroundBackup =>
@@ -1522,34 +1605,8 @@ pub async fn begin(
             #[allow(unreachable_code)]
             join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
         }
-        Role::Avionics => {
-            let imu_task = {
-                #[cfg(feature = "target-mini")]
-                {
-                    let _ = bmi323_imu;
-                    let _ = bno_imu;
-                    icm_imu_handler(
-                        icm_imu.unwrap(),
-                        TimerDelay::new(imu_timer.release().release(), clocks),
-                    )
-                }
-                #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-                {
-                    let _ = icm_imu;
-                    let _ = bmi323_imu;
-                    bno_imu_handler(bno_imu.unwrap(), imu_timer)
-                }
-                #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-                {
-                    let _ = bno_imu;
-                    let _ = icm_imu;
-                    ::futures::future::join(
-                        bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter()),
-                        adxl_imu_handler(adxl_imu.unwrap()),
-                    )
-                }
-            };
-
+        Role::Avionics =>
+        {
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
@@ -1560,40 +1617,28 @@ pub async fn begin(
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
+                bmm_task
             )
             .0
         }
-        Role::Cansat => {
-            #[allow(unreachable_code)]
-            join!(
-                usb_handler(),
-                buzzer_controller(),
-                gps_handler(),
-                gps_broadcast(),
-                handle_incoming_packets(),
-                altimeter_task,
-                stage_update_handler(pressure_receiver),
-                // bno_handler(bno_imu.unwrap(), imu_timer),
-            )
-            .0
-        }
-        Role::CansatBackup =>
+        Role::Cansat =>
         {
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
                 buzzer_controller(),
+                imu_task,
                 gps_handler(),
                 gps_broadcast(),
-                handle_incoming_packets(),
                 altimeter_task,
-                icm_imu_handler(
-                    icm_imu.unwrap(),
-                    TimerDelay::new(imu_timer.release().release(), clocks)
-                ),
+                handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
+                bmm_task
             )
             .0
+        }
+        Role::CansatBackup => {
+            panic!("Removed in a hurry");
         }
     }
 }

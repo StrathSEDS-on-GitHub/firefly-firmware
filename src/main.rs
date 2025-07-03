@@ -26,6 +26,7 @@ use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
 use bno080::interface::I2cInterface;
 use bno080::wrapper::BNO080;
+use cortex_m_semihosting::hprintln;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
@@ -371,8 +372,10 @@ async fn main(_spawner: Spawner) {
         let bmm = {
             #[cfg(feature = "target-ultra")]
             {
+                use bmm350::MagConfig;
+
                 let bmm_pins = i2c1_pins!(gpio);
-                let i2c1 = dp.I2C1.i2c(bmm_pins, 300.kHz(), &clocks);
+                let i2c1 = dp.I2C1.i2c(bmm_pins, 100.kHz(), &clocks);
                 let mut bmm = bmm350::Bmm350::new_with_i2c(i2c1, 0x14, dp.TIM7.delay_us(&clocks));
                 bmm.init().unwrap();
                 bmm.set_power_mode(bmm350::PowerMode::Normal).unwrap();
@@ -388,7 +391,10 @@ async fn main(_spawner: Spawner) {
             }
             #[cfg(not(feature = "target-ultra"))]
             {
-                None
+                use bmm350::Bmm350;
+                use stm32f4xx_hal::{pac::{I2C1, TIM7}, timer};
+
+                None::<Bmm350<bmm350::interface::I2cInterface<I2c<I2C1>>, Delay<TIM7, 1000000>>>
             }
         };
 
@@ -446,7 +452,7 @@ async fn main(_spawner: Spawner) {
             None
         };
 
-        let icm = if role != Role::GroundMain && cfg!(feature = "target-mini") {
+        let icm = if cfg!(feature = "target-mini") {
             let icm_proxy = crate::pins::i2c::DMAAtomicDevice::new(
                 unsafe { I2C1_BUS.as_ref().unwrap() },
                 &I2C1_BUSY,
@@ -714,6 +720,7 @@ async fn main(_spawner: Spawner) {
             bmi323,
             adxl375,
             bmm,
+            dp.TIM8.counter(&clocks),
             clocks,
         )
         .await;

@@ -139,6 +139,7 @@ pub const TS_BUF_SIZE: usize = 222;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandType {
     Info,
+    Erase
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +149,7 @@ pub enum CommandResponseType {
         firmware: String<32>,
         role: Role,
     },
+    Erase
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,6 +306,11 @@ impl From<AccelerometerSample> for (u32, [f32; 3]) {
     }
 }
 
+impl From<MagnetometerSample> for (u32, [f32; 3]) {
+    fn from(other: MagnetometerSample) -> Self {
+        (other.timestamp, other.magnetic_field)
+    }
+}
 macro_rules! impl_message_type {
     ($name:ident, $sample:ident, $cardinality:literal, $message_kind: ident) => {
         pub fn $name(data: impl IntoIterator<Item = $sample>) -> Self {
@@ -330,6 +337,7 @@ impl MessageType {
     impl_message_type!(new_pressure_temp, PressureTempSample, 2, PressureTemp);
     impl_message_type!(new_imu, IMUSample, 6, Imu);
     impl_message_type!(new_accel, AccelerometerSample, 3, Accelerometer);
+    impl_message_type!(new_magnetometer, MagnetometerSample, 3, Magnetometer);
 
     pub fn new_log(timestamp: u32, message: impl AsRef<str>) -> Option<Self> {
         message
