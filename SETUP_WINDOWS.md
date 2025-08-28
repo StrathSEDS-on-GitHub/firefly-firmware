@@ -13,26 +13,44 @@
 
 * Follow [SETUP.md](./SETUP.md)
 
-* Clone the repo: `git clone https://github.com/finlaysr/firefly-firmware-fork --recursive`
+* Clone the repo: 
+    ```
+    git clone https://github.com/finlaysr/firefly-firmware-fork --recursive
+    ```
 
-    * If you forget the recursive: `git submodule update --init –recursive`
+    * If you forget the recursive: 
+        ```
+        git submodule update --init --recursive
+        ```
 
 ## File changes
 
-* Change this line in ./cargo/config.toml: `runner = "powershell.exe -ExecutionPolicy Bypass -File run.ps1"`
+* Change this line in `./cargo/config.toml`: 
+    ```
+    runner = "powershell.exe -ExecutionPolicy Bypass -File run.ps1"
+    ```
 
-* Add this file ./run.ps1 -> 
-    
-    `$path = $args[0] - replace '\\', '/'`
+* Create the file `./run.ps1` containing:
+    ```
+    $path = $args[0] - replace '\\', '/'
 
-    `arm-none-eabi-gdb -ex "target extended-remote localhost:3333" -ex "load $path" -ex "set confirm off" -ex "file $path" -ex "monitor arm semihosting enable"`
+    arm-none-eabi-gdb -ex "target extended-remote localhost:3333" -ex "load $path" -ex "set confirm off" -ex "file $path" -ex "monitor arm semihosting enable"
+    ```
     
 ## Useful commands
 
-* `cargo build --release --features target-ultra`
+*   ```
+    cargo build --release --features target-ultra
+    ```
 
-* `openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init"`
+*   ```
+    openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init"
+    ```
 
-* `socat - /dev/ttyS10`
+*   ```
+    socat - /dev/ttyS10
+    ```
 
-* `git submodule update --init –recursive`
+*   ```
+    git submodule update --init --recursive
+    ```
