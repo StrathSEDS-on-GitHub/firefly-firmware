@@ -1,0 +1,17 @@
+[package]
+name = "ffplotter-web"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.100"
+ffplotter-lib = { version = "0.1", path = "../ffplotter-lib" }
+plotters-canvas = "0.3.1"
+color-eyre = "0.6.5"
+plotters = "0.3.7"
+once_cell = "1.21.3"
+console_error_panic_hook = "0.1.7"
+serde-wasm-bindgen = "0.6.5"

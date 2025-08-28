@@ -24,7 +24,6 @@ pub struct LocalCtxt {
     pub timestamp: u32,
 }
 
-
 impl private::MessageContext for LocalCtxt {}
 impl private::MessageContext for RadioCtxt {}
 
@@ -106,7 +105,9 @@ where
 macro_rules! decompress_impl {
     ($compressed:ident, $sample:ident, $width:literal) => {
         impl $compressed {
-            pub fn decompress(&self) -> impl Iterator<Item = Result<$sample, DecompressError>> + '_ {
+            pub fn decompress(
+                &self,
+            ) -> impl Iterator<Item = Result<$sample, DecompressError>> + '_ {
                 gortsz::Decompressor::<$width, 3, WhitepaperOptions>::new(self.0.as_bitslice())
                     .map(|it| it.map(From::from))
             }
@@ -130,6 +131,21 @@ decompress_impl!(ImuCompressed, IMUSample, 6);
 decompress_impl!(AccelerometerCompressed, AccelerometerSample, 3);
 
 pub const TS_BUF_SIZE: usize = 222;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CommandType {
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CommandResponseType {
+    Info {
+        hardware: String<32>,
+        firmware: String<32>,
+        role: Role,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageType {
     Log {
@@ -145,13 +161,22 @@ pub enum MessageType {
     TestPyro(Role, PyroPin, u32),
     SetStage(Role, MissionStage),
     Pyro(u16),
-    MissionSumary{
+    MissionSumary {
         max_altitude: f32,
         max_altitude_time: u32,
         max_acceleration: f32,
         max_velocity: f32,
         time_of_flight: u32,
-    }
+    },
+    Command {
+        role: Role,
+        id: u16,
+        command: CommandType,
+    },
+    CommandResponse {
+        id: u16,
+        response: CommandResponseType,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

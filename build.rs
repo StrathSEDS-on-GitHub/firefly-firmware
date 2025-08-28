@@ -30,5 +30,13 @@ fn main() {
     let current_time = time::OffsetDateTime::now_utc();
     let formatted = current_time.format(format_description!("[day],[month],[year],[hour],[minute],[second]")).unwrap();
 
+    let current_sha = match std::process::Command::new("git")
+        .args(["describe", "--always", "--dirty=-dev"])
+        .output() {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            Err(_) => "unknown".to_string(),
+        };
+
     println!("cargo:rustc-env=BUILD_TIME={}", formatted);
+    println!("cargo:rustc-env=GIT_SHA={}", current_sha);
 }
