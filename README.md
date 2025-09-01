@@ -1,5 +1,9 @@
 # firefly-firmware
 
+Installation Instructions: [Setup](docs/SETUP.md) | [Windows Setup](docs/SETUP_WINDOWS.md)
+
+---
+
 The firmware for the [firefly flight computer](https://github.com/StrathSEDS-on-GitHub/Mach23-Firefly). 
 
 Developed by StrathSEDS for the Mach-23 launch competition and flown for the first time at IRW 2023 at 
