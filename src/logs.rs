@@ -168,7 +168,7 @@ impl Logger {
     /// using the flash.
     pub async fn log_str(&self, msg: &str) {
         let time: u32 = current_rtc_time();
-        self.log(
+        self.retry_log(
             MessageType::new_log(time, msg)
                 .unwrap()
                 .into_message(LocalCtxt { timestamp: time }),
@@ -371,7 +371,7 @@ impl Logger {
 
             let mut data_buffer = [0u8; 64];
             let read_res =
-                map::fetch_item(flash, CONFIG_FLASH_RANGE, cache, &mut data_buffer, key).await;
+                map::fetch_item(flash, CONFIG_FLASH_RANGE, &mut NoCache::new(), &mut data_buffer, key).await;
             drop(flash_ref);
             drop(cs);
             if mask.is_active() {
@@ -412,7 +412,7 @@ impl Logger {
             let _ = map::store_item(
                 flash,
                 CONFIG_FLASH_RANGE,
-                cache,
+                &mut NoCache::new(),
                 &mut [0u8; 64],
                 key,
                 &value,

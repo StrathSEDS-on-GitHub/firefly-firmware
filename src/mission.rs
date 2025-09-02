@@ -109,7 +109,7 @@ pub async fn update_pyro_state() {
 
     let pyro_msg = MessageType::new_pyro(mv1, mv2);
     get_logger()
-        .log(pyro_msg.clone().into_message(current_rtc_time()))
+        .retry_log(pyro_msg.clone().into_message(current_rtc_time()))
         .await;
     let radio_msg = pyro_msg.clone().into_message(radio_ctxt());
     if role() == Role::Avionics {
