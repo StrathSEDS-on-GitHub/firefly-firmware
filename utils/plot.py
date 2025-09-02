@@ -82,6 +82,8 @@ def plot_data():
         df = df.iloc[:, :len(header)]
     df.columns = header
 
+    print(df)
+
     df = df[df["sensor"] == args.sensor]
     if df.empty:
         print(f"No data found for sensor {args.sensor}.")
@@ -124,11 +126,13 @@ def plot_data():
             samples.loc[i + 1, 'time'] = samples['time'].loc[i] + pd.Timedelta(milliseconds=(1000//args.sample_rate))
     samples['times'] = samples['time'].apply(lambda x: format_millis(x.total_seconds() * 1000, None))
 
+    print("times ms:\n", samples['time'] / pd.Timedelta(microseconds=1000))
+
     frame_time_ms = ((samples['time'].iloc[-1] - samples['time'].iloc[0])) / pd.Timedelta(microseconds=1000) / len(samples)
     print(f"Average frame time: {frame_time_ms}")
 
     # Align the data with the video
-    clip = VideoFileClip(args.video, target_resolution=(720, 1280))
+    clip = VideoFileClip(args.video, target_resolution=(1280, 720))
 
     if clip.reader is None:
         print("Error: could not read video file.")
@@ -138,11 +142,28 @@ def plot_data():
     framecount = clip.reader.n_frames
     video_duration_frames = clip.duration * 1000 / frame_time_ms
     video_align_frame: int = (args.video_align) / pd.Timedelta(milliseconds=frame_time_ms)
+    print("video align frame", video_align_frame)
 
     samples_start = max(int(align_sample_idx - video_align_frame), 0)
     samples_end = min(int(samples_start + video_duration_frames), len(samples))
-    print("Sample range: ", samples_start, samples_end)
-    print("Video duration: ", clip.duration )
+
+    video_frames_per_sample = (frame_time_ms * clip.fps / 1000)
+    print("Video frames per sample: ", video_frames_per_sample)
+
+    samples_before_align = align_sample_idx - samples_start
+    samples_after_align = samples_end - align_sample_idx
+
+    print("samples before align: ", samples_before_align)
+    print("samples after align: ", samples_after_align)
+
+    print((video_align_frame + samples_after_align) , framecount);
+
+
+    video_start_frame = max(int((video_align_frame - samples_before_align) * video_frames_per_sample), 0)
+    video_end_frame = min(int((video_align_frame + samples_after_align) * video_frames_per_sample), framecount)
+
+
+    print("Video range: ", video_start_frame, video_end_frame)
     samples = samples.iloc[samples_start:samples_end]
     samples = samples.reset_index(drop=True)
     print("Sample time: ", samples['time'].iloc[-1] - samples['time'].iloc[0])
@@ -199,8 +220,8 @@ def plot_data():
 
             v.cla()
             v.axis('off')
-            percent = i / video_duration_frames
-            frame = clip.get_frame(percent * framecount / clip.fps)
+            pct_done = (video_start_frame + i * video_frames_per_sample) / framecount
+            frame = clip.get_frame(pct_done * clip.duration)
             # rotate the frame by 90 degrees
             # frame = np.rot90(frame)
             v.imshow(frame)

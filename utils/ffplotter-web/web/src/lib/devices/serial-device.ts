@@ -1,6 +1,13 @@
 import type { DeviceConfig, DeviceInfo, Line, Role } from "$lib";
 
-export class SerialDevice {
+export interface SerialDeviceInterface {
+	port: any;
+    addLineHandler(addLine: (line: Line) => void): void;
+    sendCommand(command: string): Promise<void>;
+    transactRetry(reqId: number, command: string, timeout: number): Promise<string>;
+}
+
+export class SerialDevice implements SerialDeviceInterface {
     port: SerialPort;
     portReady: boolean = false;
     lineHandlers: ((line: Line) => void)[] = [];

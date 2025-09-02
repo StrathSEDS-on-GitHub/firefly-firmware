@@ -40,8 +40,8 @@ export class RemoteFirefly implements Firefly {
         console.log("Requesting remote info for role:", this.role, "with ID:", reqId);
 
         return Promise.resolve({
-            hardware: "unknown",
-            firmware: "unknown",
+            hardware: "[Unable to request]",
+            firmware: "[Unable to request]",
             role: this.role
         });
 

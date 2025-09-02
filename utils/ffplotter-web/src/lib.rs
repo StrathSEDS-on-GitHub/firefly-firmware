@@ -20,6 +20,7 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
     root.fill(&RGBColor(255, 255, 255))?;
 
     let lock = &DATA.lock().unwrap();
+
     let data = &lock.borrow()[0];
 
     if DISPLAY_START_TIME.get().is_none() {
@@ -30,6 +31,10 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
     let elapsed_times = &elapsed_lock.borrow()[1];
 
     if elapsed_times.is_empty() {
+        return Ok(());
+    }
+
+    if data.dim().1 != 3  {
         return Ok(());
     }
 
@@ -83,13 +88,13 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         .insert(canvas_id, latency);
 
     let min = *data
-        .slice(s![.., 0])
+        .slice(s![.., 2])
         .iter()
         .take(sample_count)
         .max_by(|l, r| r.partial_cmp(l).unwrap())
         .unwrap_or(&0.);
     let max = *data
-        .slice(s![.., 0])
+        .slice(s![.., 2])
         .iter()
         .take(sample_count)
         .max_by(|l, r| l.partial_cmp(r).unwrap())
@@ -124,7 +129,7 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         .axis_desc_style(("sans-serif", 15))
         .draw()?;
 
-    for &idx in &[1] {
+    for &idx in &[2] {
         let series = Array1::from_iter(
             data.slice(s![.., idx])
                 .iter()
@@ -246,11 +251,20 @@ pub fn parse(line: String) -> Result<JsValue, JsValue> {
             let mut array =
                 ffplotter_lib::columns_into_data_matrix(columns).map_err(|err| err.to_string())?;
 
-            // let _ = ffplotter_lib::generate_composite_columns(
-            //     &mut headers,
-            //     &mut array,
-            //     &["(powf(100600/pr ,1.0 / 5.257) - 1) * (tmp + 273.15) / 0.0065"],
-            // );
+            
+
+            if headers.iter().any(|it| it == "pr") {
+                let _ = ffplotter_lib::generate_composite_columns(
+                    &mut headers,
+                    &mut array,
+                    &["(powf(102184/pr ,1.0 / 5.257) - 1) * (tmp + 273.15) / 0.0065"],
+                );
+                // Extend DATA with the new column
+                if data.dim().1 == 2 {
+                    data.push(Axis(1), Array1::from(vec![0.0; data.dim().0]).view())
+                        .map_err(|it| it.to_string())?;
+                }
+            }
 
             data.append(Axis(0), array.view())
                 .map_err(|it| it.to_string())?;

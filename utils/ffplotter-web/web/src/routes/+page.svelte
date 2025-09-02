@@ -11,15 +11,24 @@
 	//leaflet css
 	import { circle, map, marker, tileLayer } from 'leaflet';
 	import { onMount } from 'svelte';
+	import { TestSerial } from '$lib/devices/test-serial';
 
 	let { data }: PageProps = $props();
 
 	let devices: Firefly[] = $state([]);
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let canvasContainer: HTMLDivElement | null = $state(null);
+	let files: string[] = $state([]);
 
 	let leafletMap: HTMLDivElement | null = $state(null);
 	let mapContainer: HTMLDivElement | null = $state(null);
+
+	navigator.storage.getDirectory().then(async (root) => {
+		const entries = root.values();
+		for await (const entry of entries) {
+			files.push(entry.name);
+		}
+	});
 
 	(async () => {
 		let x = await getSerialPorts();
@@ -76,10 +85,7 @@
 			maxZoom: 19
 		}).addTo(m);
 		addMarker = ([lat, long]: [number, number], color: string) => {
-			console.log("add ", lat, long);
 			circle([lat, long], { color, radius: 1 }).addTo(m);
-
-			m.setView([lat, long], 14);
 		};
 	}, 300);
 </script>
@@ -101,7 +107,42 @@
 				</div>
 			</div>
 		</main>
-		<Devices {devices} parse={data.parse} {addFirefly} {addMarker} />
+		<div class="flex flex-col justify-between">
+			<Devices {devices} parse={data.parse} {addFirefly} {addMarker} />
+			<div class="p-4 flex flex-col max-h-100 w-110">
+				<h2 class="text-teal-500 text-2xl mb-5">
+					<i class="fa-solid fa-folder p-1"></i>
+					Previous logs
+				</h2>
+				
+				<ul class="flex flex-col gap-1 max-h-full overflow-y-scroll">
+					{#each files as file_name}
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+						<li
+							class="bg-gray-100 p-2 text-sm text-teal-900 cursor-pointer"
+							onclick={(evt) => {
+								navigator.storage.getDirectory().then(async (root) => {
+									const fileHandle = await root.getFileHandle(file_name);
+									const file = await fileHandle.getFile();
+
+									const fileURL = URL.createObjectURL(file);
+									const downloadLink = document.createElement('a');
+									downloadLink.href = fileURL;
+									downloadLink.download = file_name + '.log';
+									document.body.appendChild(downloadLink);
+									downloadLink.click();
+								});
+							}}
+						>
+							<i class="fa-solid fa-file"></i>
+							{file_name}
+						</li>
+					{/each}
+				</ul>
+			</div>
+		</div>
 	</div>
 {:else}
 	<UsbPopup addPort={addFirefly} />

@@ -24,6 +24,7 @@
 	let deviceInfo: DeviceInfo | null = $state(null);
 
 	let file: FileSystemWritableFileStream | null = $state(null);
+	let fileName: string = $state('');
 
 	let linkInfo: DeviceInfo | null = $state(null);
 
@@ -36,16 +37,29 @@
 			try {
 				deviceInfo = await device.getInfo();
 
+				fileName = (deviceInfo?.role || 'not got') + ' - ' + new Date();
 				navigator.storage.getDirectory().then(async (root) => {
 					file = await (
-						await root.getFileHandle((deviceInfo?.role || 'not got') + ' - ' + new Date(), {
+						await root.getFileHandle(fileName, {
 							create: true
 						})
 					).createWritable();
+
+					setInterval(async () => {
+						await file?.close();
+						console.log('recreated');
+
+						const root = await navigator.storage.getDirectory();
+						file = await (
+							await root.getFileHandle(fileName, {
+								create: false
+							})
+						).createWritable({ keepExistingData: true });
+					}, 1000);
 				});
 				break;
 			} catch (e) {
-				console.error('Error fetching device info:', e);
+				// console.error('Error fetching device info:', e);
 			}
 		}
 	})();
@@ -77,9 +91,9 @@
 	};
 
 	if (!isRemote) {
-		(device as SerialFirefly).device.addLineHandler((line) => {
+		(device as SerialFirefly).device.addLineHandler(async (line) => {
 			if (file) {
-				file.write(line.content + "\n");
+				file.write(line.content + '\n');
 			}
 			try {
 				let row: Map<String, any> = parse(line.content);
@@ -99,7 +113,7 @@
 					}
 				}
 			} catch (e) {
-				console.error(e, line);
+				// console.error(e, line);
 			}
 		});
 	}

@@ -10,16 +10,20 @@ use ffplotter_lib::{
     Column, ColumnType, Filter, RowToken, RowTokens, SampleType, generate_composite_columns,
     match_column, parse_row_format, time_align_data,
 };
+use ndarray_csv::Array2Writer as _;
 use piston::EventLoop;
 use piston::WindowSettings;
 use piston_window::PistonWindow;
 use plotters::chart::ChartBuilder;
-use plotters::prelude::IntoDrawingArea;
-use plotters::prelude::Rectangle;
+use plotters::prelude::{BitMapBackend, IntoDrawingArea};
+use plotters::prelude::{DrawingBackend, Rectangle};
 use plotters::series::LineSeries;
 use plotters::style::WHITE;
 use plotters::style::{BLACK, Color, Palette, Palette99};
-use plotters_piston::draw_piston_window;
+use plotters_backend::{BackendColor, BackendCoord, BackendStyle, DrawingErrorKind, rasterizer};
+use plotters_piston::{PistonBackend, draw_piston_window};
+use std::error::Error;
+use std::fs::File;
 use std::{io::BufRead, path::PathBuf};
 
 #[derive(clap::Parser, Debug)]
@@ -55,6 +59,9 @@ struct Cli {
 
     #[arg(long, short, default_value = "1")]
     time_warp: f64,
+
+    #[arg(long, short)]
+    gif: PathBuf,
 }
 
 pub fn parse_filter(input: &str) -> eyre::Result<Filter> {
@@ -72,6 +79,103 @@ pub fn parse_filter(input: &str) -> eyre::Result<Filter> {
         filter.insert(key, value);
     }
     Ok(filter)
+}
+
+struct MultiBackend<A: DrawingBackend, B: DrawingBackend> {
+    a: A,
+    b: B,
+}
+
+#[derive(Debug, Clone)]
+enum EitherErr<A, B>
+where
+    A: std::error::Error,
+    B: std::error::Error,
+{
+    A(A),
+    B(B),
+}
+
+impl<A, B> std::fmt::Display for EitherErr<A, B>
+where
+    A: std::error::Error,
+    B: std::error::Error,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EitherErr::A(a) => std::fmt::Display::fmt(&a, f),
+            EitherErr::B(b) => std::fmt::Display::fmt(&b, f),
+        }
+    }
+}
+
+impl<A, B> From<A> for EitherErr<A, B>
+where
+    A: Error,
+    B: Error,
+{
+    fn from(value: A) -> Self {
+        Self::A(value)
+    }
+}
+
+impl<A, B> std::error::Error for EitherErr<A, B>
+where
+    A: std::error::Error,
+    B: std::error::Error,
+{
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            EitherErr::A(a) => a.source(),
+            EitherErr::B(b) => b.source(),
+        }
+    }
+
+    fn description(&self) -> &str {
+        "description() is deprecated; use Display"
+    }
+
+    fn cause(&self) -> Option<&dyn Error> {
+        self.source()
+    }
+}
+
+impl<A, B> DrawingBackend for MultiBackend<A, B>
+where
+    A: DrawingBackend,
+    B: DrawingBackend,
+{
+    type ErrorType = EitherErr<A::ErrorType, B::ErrorType>;
+
+    fn get_size(&self) -> (u32, u32) {
+        let sz1 = self.a.get_size();
+        let sz2 = self.b.get_size();
+        assert_eq!(sz1, sz2);
+
+        sz1
+    }
+
+    fn ensure_prepared(&mut self) -> Result<(), DrawingErrorKind<Self::ErrorType>> {
+        self.a.ensure_prepared().unwrap();
+        self.b.ensure_prepared().unwrap();
+        Ok(())
+    }
+
+    fn present(&mut self) -> Result<(), DrawingErrorKind<Self::ErrorType>> {
+        self.a.present().unwrap();
+        self.b.present().unwrap();
+        Ok(())
+    }
+
+    fn draw_pixel(
+        &mut self,
+        point: BackendCoord,
+        color: BackendColor,
+    ) -> Result<(), DrawingErrorKind<Self::ErrorType>> {
+        self.a.draw_pixel(point, color).unwrap();
+        self.b.draw_pixel(point, color).unwrap();
+        Ok(())
+    }
 }
 
 fn main() -> eyre::Result<()> {
@@ -171,6 +275,12 @@ fn main() -> eyre::Result<()> {
 
     generate_composite_columns(&mut headers, &mut data, &cli.expr)
         .wrap_err(eyre!("Failed to generate composite columns"))?;
+    {
+        let file = File::create("test.csv")?;
+        let mut writer = WriterBuilder::new().has_headers(false).from_writer(file);
+        writer.serialize_array2(&data)?;
+    }
+
 
     log::info!("Generated {} composite columns", cli.expr.len());
 
@@ -218,17 +328,35 @@ fn main() -> eyre::Result<()> {
 
     log::info!("Plotting {} rows", sample_count);
 
-    while let Some(_) = draw_piston_window(&mut window, |b| {
-        let root = b.into_drawing_area();
-        root.fill(&WHITE)?;
+    let gif_backend = BitMapBackend::gif(cli.gif, (1920, 1080), 1)
+        .wrap_err_with(|| eyre!("Unable to create gif backend"))?;
 
-        let mut cc = ChartBuilder::on(&root)
+    let root2 = gif_backend.into_drawing_area();
+    while let Some(_) = draw_piston_window(&mut window, |b| {
+        let root1 = b.into_drawing_area();
+
+        root1.fill(&WHITE)?;
+        root2.fill(&WHITE)?;
+
+        let mut cc1 = ChartBuilder::on(&root1)
+            .margin(10)
+            .x_label_area_size(40)
+            .y_label_area_size(50)
+            .build_cartesian_2d(0..sample_count, min_range..max_range)?;
+        let mut cc2 = ChartBuilder::on(&root2)
             .margin(10)
             .x_label_area_size(40)
             .y_label_area_size(50)
             .build_cartesian_2d(0..sample_count, min_range..max_range)?;
 
-        cc.configure_mesh()
+        cc1.configure_mesh()
+            .x_label_formatter(&|x| format_elapsed(*x as u64))
+            .y_label_formatter(&|y: &f64| format!("{:.2}", *y))
+            .x_labels(15)
+            .y_labels(5)
+            .axis_desc_style(("sans-serif", 15))
+            .draw()?;
+        cc2.configure_mesh()
             .x_label_formatter(&|x| format_elapsed(*x as u64))
             .y_label_formatter(&|y: &f64| format!("{:.2}", *y))
             .x_labels(15)
@@ -249,6 +377,7 @@ fn main() -> eyre::Result<()> {
                     .map(|(val, _)| val)
                     .enumerate(),
             );
+
             max_range = series.iter().fold(
                 series.first().map(|it| it.1).unwrap_or_default(),
                 |acc, &(_, val)| acc.max(val),
@@ -260,13 +389,23 @@ fn main() -> eyre::Result<()> {
             );
             min_range = min_range - (min_range * 0.1).abs();
 
-            cc.draw_series(LineSeries::new(series, &Palette99::pick(idx)))?;
+            let series_len = series.len();
+            cc1.draw_series(LineSeries::new(series.clone(), &Palette99::pick(idx)))?;
+            cc2.draw_series(LineSeries::new(series, &Palette99::pick(idx)))?;
+            if series_len == elapsed_times.len() {
+            }
         }
 
-        cc.configure_series_labels()
+        cc1.configure_series_labels()
             .background_style(&WHITE.mix(0.2))
             .border_style(&BLACK)
             .draw()?;
+        cc2.configure_series_labels()
+            .background_style(&WHITE.mix(0.2))
+            .border_style(&BLACK)
+            .draw()?;
+        root2.present().unwrap();
+
         Ok(())
     }) {}
     Ok(())
