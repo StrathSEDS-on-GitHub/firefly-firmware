@@ -613,11 +613,13 @@ async fn main(_spawner: Spawner) {
             ")."
         );
 
-        get_logger().retry_log(
-            MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
-                .unwrap()
-                .into_message(current_rtc_time()),
-        ).await;
+        get_logger()
+            .retry_log(
+                MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
+                    .unwrap()
+                    .into_message(current_rtc_time()),
+            )
+            .await;
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
