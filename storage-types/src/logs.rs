@@ -125,16 +125,21 @@ pub struct ImuCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 #[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
 pub struct AccelerometerCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
 
+#[derive(Debug, Clone, Serialize, Deserialize, From, Into)]
+pub struct MagnetometerCompressed(BitBuffer<[u8; TS_BUF_SIZE]>);
+
 decompress_impl!(GpsCompressed, GPSSample, 3);
 decompress_impl!(PressureTempCompressed, PressureTempSample, 2);
 decompress_impl!(ImuCompressed, IMUSample, 6);
 decompress_impl!(AccelerometerCompressed, AccelerometerSample, 3);
+decompress_impl!(MagnetometerCompressed, MagnetometerSample, 3);
 
 pub const TS_BUF_SIZE: usize = 222;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandType {
     Info,
+    Erase
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +149,7 @@ pub enum CommandResponseType {
         firmware: String<32>,
         role: Role,
     },
+    Erase
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,11 +162,12 @@ pub enum MessageType {
     PressureTemp(PressureTempCompressed),
     Imu(ImuCompressed),
     Accelerometer(AccelerometerCompressed),
+    Magnetometer(MagnetometerCompressed),
     Arm(Role),
     Disarm(Role),
     TestPyro(Role, PyroPin, u32),
     SetStage(Role, MissionStage),
-    Pyro(u16),
+    Pyro(u16, u16),
     MissionSumary {
         max_altitude: f32,
         max_altitude_time: u32,
@@ -230,6 +237,15 @@ impl Into<(u32, [f32; 2])> for PressureTempSample {
     }
 }
 
+impl From<(u32, [f32; 3])> for MagnetometerSample {
+    fn from(value: (u32, [f32; 3])) -> Self {
+        MagnetometerSample {
+            timestamp: value.0,
+            magnetic_field: value.1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct IMUSample {
     pub timestamp: u32,
@@ -241,6 +257,12 @@ pub struct IMUSample {
 pub struct AccelerometerSample {
     pub timestamp: u32,
     pub acceleration: [f32; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MagnetometerSample {
+    pub timestamp: u32,
+    pub magnetic_field: [f32; 3],
 }
 
 impl From<(u32, [f32; 6])> for IMUSample {
@@ -284,6 +306,11 @@ impl From<AccelerometerSample> for (u32, [f32; 3]) {
     }
 }
 
+impl From<MagnetometerSample> for (u32, [f32; 3]) {
+    fn from(other: MagnetometerSample) -> Self {
+        (other.timestamp, other.magnetic_field)
+    }
+}
 macro_rules! impl_message_type {
     ($name:ident, $sample:ident, $cardinality:literal, $message_kind: ident) => {
         pub fn $name(data: impl IntoIterator<Item = $sample>) -> Self {
@@ -310,6 +337,7 @@ impl MessageType {
     impl_message_type!(new_pressure_temp, PressureTempSample, 2, PressureTemp);
     impl_message_type!(new_imu, IMUSample, 6, Imu);
     impl_message_type!(new_accel, AccelerometerSample, 3, Accelerometer);
+    impl_message_type!(new_magnetometer, MagnetometerSample, 3, Magnetometer);
 
     pub fn new_log(timestamp: u32, message: impl AsRef<str>) -> Option<Self> {
         message
@@ -327,8 +355,8 @@ impl MessageType {
         MessageType::Disarm(role)
     }
 
-    pub fn new_pyro(mv: u16) -> Self {
-        MessageType::Pyro(mv)
+    pub fn new_pyro(mv1: u16, mv2: u16) -> Self {
+        MessageType::Pyro(mv1, mv2)
     }
 
     pub fn new_test_pyro(role: Role, pin: PyroPin, duration: u32) -> Self {

@@ -29,13 +29,21 @@ export class RemoteFirefly implements Firefly {
     setConfig(config: DeviceConfig): Promise<void> {
         throw new Error("Method not implemented.");
     }
-    
+
     getInfo(): Promise<DeviceInfo> {
         if (this.deviceInfo) {
             return Promise.resolve(this.deviceInfo);
         }
         let reqId = Math.floor(Math.random() * 10000);
         this.connection.device.sendCommand(`remote-info,${this.role},${reqId}`);
+
+        console.log("Requesting remote info for role:", this.role, "with ID:", reqId);
+
+        return Promise.resolve({
+            hardware: "[Unable to request]",
+            firmware: "[Unable to request]",
+            role: this.role
+        });
 
         return new Promise((resolve, reject) => {
             setTimeout(() => {

@@ -181,4 +181,11 @@ impl<I2C: I2c, DELAY: DelayNs> MS5607<I2C, DELAY, Calibrated> {
 
         Ok(self.compensate(d1, d2))
     }
+
+    /// Access the internal timer.
+    /// SAFETY: Ensure the timer is properly reset as a delay
+    /// device before the next usage.
+    pub unsafe fn timer(&mut self) -> &mut DELAY {
+        &mut self.delay
+    }
 }

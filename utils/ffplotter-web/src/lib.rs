@@ -1,14 +1,9 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::{
-        Mutex,
-    },
-};
+use std::{cell::RefCell, collections::HashMap, sync::Mutex};
 
 use color_eyre::eyre;
 use ffplotter_lib::{
-    match_column, ndarray::{s, Array1, Array2, Axis}, Column, ColumnType, RowTokens, Sample
+    Column, ColumnType, RowTokens, Sample, match_column,
+    ndarray::{Array1, Array2, Axis, s},
 };
 use once_cell::sync::{Lazy, OnceCell};
 use plotters::prelude::*;
@@ -22,10 +17,11 @@ static LATENCIES: Lazy<Mutex<RefCell<HashMap<String, i32>>>> =
 pub fn draw(canvas_id: String) -> eyre::Result<()> {
     let backend = CanvasBackend::new(canvas_id.as_str()).expect("cannot find canvas");
     let root = backend.into_drawing_area();
-    root.fill(&RGBColor(31, 41, 55))?;
+    root.fill(&RGBColor(255, 255, 255))?;
 
     let lock = &DATA.lock().unwrap();
-    let data = &lock.borrow()[1];
+
+    let data = &lock.borrow()[0];
 
     if DISPLAY_START_TIME.get().is_none() {
         DISPLAY_START_TIME.set(now()).unwrap();
@@ -35,6 +31,10 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
     let elapsed_times = &elapsed_lock.borrow()[1];
 
     if elapsed_times.is_empty() {
+        return Ok(());
+    }
+
+    if data.dim().1 != 3  {
         return Ok(());
     }
 
@@ -50,7 +50,9 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
     let elapsed_time = now() - DISPLAY_START_TIME.get().unwrap();
     let sample_count = elapsed_times
         .into_iter()
-        .take_while(|&t| (*t as i64 - data_start_time as i64) < elapsed_time as i64 + latency as i64)
+        // .take_while(|&t| {
+        //     (*t as i64 - data_start_time as i64) < elapsed_time as i64 - latency as i64
+        // })
         .count();
 
     if sample_count == 0 {
@@ -65,14 +67,19 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         format!("{:02}:{:02}:{:02}.{:03}", hour, minute, second, millis)
     };
 
-    let hidden_samples = data.dim().0 - sample_count;
-    let latency = if hidden_samples > 20 {
-        latency + (hidden_samples as i32 / 10)
-    } else if hidden_samples < 5 {
-        latency - 2
-    } else {
-        latency
-    };
+    // let hidden_samples = data.dim().0 - sample_count;
+
+    // let latency = if hidden_samples > 70 {
+    //     latency - (hidden_samples as i32 / 10)
+    // } else if hidden_samples < 3 {
+    //     latency + 10
+    // } else {
+    //     latency
+    // };
+    // log(&format!(
+    //     "Canvas: {}, latency: {}, hidden samples: {}",
+    //     canvas_id, latency, hidden_samples
+    // ));
 
     LATENCIES
         .lock()
@@ -81,17 +88,17 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         .insert(canvas_id, latency);
 
     let min = *data
-        .slice(s![.., 0])
+        .slice(s![.., 2])
         .iter()
         .take(sample_count)
         .max_by(|l, r| r.partial_cmp(l).unwrap())
-        .unwrap();
+        .unwrap_or(&0.);
     let max = *data
-        .slice(s![.., 0])
+        .slice(s![.., 2])
         .iter()
         .take(sample_count)
         .max_by(|l, r| l.partial_cmp(r).unwrap())
-        .unwrap();
+        .unwrap_or(&0.);
 
     let mut cc = ChartBuilder::on(&root)
         .margin(20)
@@ -105,7 +112,9 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
             // Only show last label
             let n = sample_count * (NUM_LABELS - 2) / NUM_LABELS;
             if n <= x {
-                format_elapsed(elapsed_times[std::cmp::min(x as usize, elapsed_times.len() - 1)] as usize)
+                format_elapsed(
+                    elapsed_times[std::cmp::min(x as usize, elapsed_times.len() - 1)] as usize,
+                )
             } else {
                 "".to_owned()
             }
@@ -120,7 +129,7 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         .axis_desc_style(("sans-serif", 15))
         .draw()?;
 
-    for &idx in &[0] {
+    for &idx in &[2] {
         let series = Array1::from_iter(
             data.slice(s![.., idx])
                 .iter()
@@ -153,9 +162,11 @@ pub fn power(canvas: String) -> Result<(), JsValue> {
 }
 static ROW_FORMATS: Lazy<Vec<RowTokens>> = once_cell::sync::Lazy::new(|| {
     vec![
-        ffplotter_lib::parse_row_format("[time:t] [src:s prt] pr:f,tmp:f").unwrap(),
-        ffplotter_lib::parse_row_format("[time:t] [src:s imu] [accx:f,accy:f,accz:f]").unwrap(),
-        ffplotter_lib::parse_row_format("[time:t] [src:s gps] gpx:f, gpy:f, gpz:f").unwrap(),
+        ffplotter_lib::parse_row_format("[time:t] [src:s state:s prt] pr:f,tmp:f").unwrap(),
+        ffplotter_lib::parse_row_format("[time:t] [src:s state:s imu] [accx:f,accy:f,accz:f]")
+            .unwrap(),
+        ffplotter_lib::parse_row_format("[time:t] [src:s state:s gps] gpx:f, gpy:f, gpz:f")
+            .unwrap(),
     ]
 });
 static COLUMNS_TEMPLATE: Lazy<Vec<Vec<Column>>> =
@@ -231,9 +242,29 @@ pub fn parse(line: String) -> Result<JsValue, JsValue> {
                     }
                 }
             }
+            let mut headers = columns
+                .iter_mut()
+                .filter(|it| matches!(it.data, ColumnType::Float(_)))
+                .map(|col| std::mem::replace(&mut col.header, String::new()))
+                .collect::<Vec<_>>();
 
-            let array =
+            let mut array =
                 ffplotter_lib::columns_into_data_matrix(columns).map_err(|err| err.to_string())?;
+
+            
+
+            if headers.iter().any(|it| it == "pr") {
+                let _ = ffplotter_lib::generate_composite_columns(
+                    &mut headers,
+                    &mut array,
+                    &["(powf(102184/pr ,1.0 / 5.257) - 1) * (tmp + 273.15) / 0.0065"],
+                );
+                // Extend DATA with the new column
+                if data.dim().1 == 2 {
+                    data.push(Axis(1), Array1::from(vec![0.0; data.dim().0]).view())
+                        .map_err(|it| it.to_string())?;
+                }
+            }
 
             data.append(Axis(0), array.view())
                 .map_err(|it| it.to_string())?;

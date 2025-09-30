@@ -765,6 +765,7 @@ dependencies = [
  "piston",
  "piston_window",
  "plotters",
+ "plotters-backend",
  "plotters-piston",
 ]
 

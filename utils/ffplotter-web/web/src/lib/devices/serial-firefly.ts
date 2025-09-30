@@ -1,11 +1,11 @@
 import type { DeviceConfig, DeviceInfo, Error, Firefly, Role } from "$lib";
-import type { SerialDevice } from "./serial-device";
+import type { SerialDevice, SerialDeviceInterface } from "./serial-device";
 
 export class SerialFirefly implements Firefly {
-    device: SerialDevice;
+    device: SerialDeviceInterface;
     info: DeviceInfo | null = null;
 
-    constructor(device: SerialDevice) {
+    constructor(device: SerialDeviceInterface) {
         this.device = device;
     }
 
@@ -51,7 +51,15 @@ export class SerialFirefly implements Firefly {
 
         if (Object.keys(config).length !== 6) {
             console.error("Invalid device config format:", data);
-            throw new Error("Invalid device config format");
+            // throw new Error("Invalid device config format");
+            return {
+                cr: 0,
+                sf: 0,
+                rf_freq: 0,
+                bw: 0,
+                power: 0,
+                id: 0
+            }
         }
         return ({
             cr: parseFloat(config["cr"]),
@@ -70,10 +78,11 @@ export class SerialFirefly implements Firefly {
 
         const reqId = Math.floor(Math.random() * 10000);
         let data = await this.device.transactRetry(reqId, `info,${reqId}`, 1000);
-        const parts = data.split(",");
+        let parts = data.split(",");
         if (parts.length !== 3) {
             console.error("Invalid device info format:", data);
-            throw new Error("Invalid device info format");
+            // throw new Error("Invalid device info format");
+            parts = ["unknown", "unknown", "Cansat"];
         }
         const [hardware, firmware, role] = parts;
         let info = {

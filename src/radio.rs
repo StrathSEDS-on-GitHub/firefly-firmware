@@ -185,6 +185,7 @@ fn RTC_WKUP() {
             if rtc.is_pending(rtc::Event::Wakeup) {
                 rtc.clear_interrupt(rtc::Event::Wakeup);
             }
+            return;
 
             let time = rtc.get_datetime();
 
@@ -244,6 +245,7 @@ fn receive_message() {
 /// Called from timer interrupt and when the radio interrupt fires.
 /// The radio interrupt fires when the radio is done transmitting a packet.
 fn set_radio() {
+    return;
     let state = cortex_m::interrupt::free(|cs| RADIO_STATE.borrow(cs).get());
 
     let r = match state {

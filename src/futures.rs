@@ -8,7 +8,7 @@ use embedded_hal_async::delay::DelayNs;
 use fugit::ExtU32;
 use stm32f4xx_hal::{
     rcc::Clocks,
-    timer::{self, TimerExt},
+    timer::{self, Counter, TimerExt},
 };
 use thingbuf::mpsc::{errors::TrySendError, StaticSender};
 
@@ -22,13 +22,23 @@ where
 
 impl<TIM> TimerDelay<TIM>
 where
-    TIM: TimerExt,
+    TIM: TimerExt + timer::Instance,
 {
     pub fn new(timer: TIM, clocks: Clocks) -> Self {
         TimerDelay {
             timer: Some(timer),
             clocks,
         }
+    }
+
+    pub fn start_counter(&mut self, ms: u32) -> Counter<TIM, 10000> {
+        let mut counter = self.timer.take().unwrap().counter::<10000>(&self.clocks);
+        counter.start(ms.millis()).unwrap();
+        counter
+    }
+
+    pub fn return_counter(&mut self, counter: Counter<TIM, 10000>) {
+        self.timer.replace(counter.release().release());
     }
 }
 

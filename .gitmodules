@@ -37,3 +37,9 @@
 [submodule "utils/ffplotter/plotters-piston"]
 	path = utils/ffplotter/plotters-piston
 	url = ssh://git@github.com/X-yl/plotters-piston
+[submodule "bmm350-wq"]
+	path = bmm350-rs
+	url = https://github.com/X-yl/bmm350-rs
+[submodule "bmm350-rs"]
+	path = bmm350-rs
+	url = https://github.com/X-yl/bmm350-rs

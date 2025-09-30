@@ -17,11 +17,9 @@ pub mod time {
 }
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "wasm")]
-use wasm_bindgen::prelude::*;
 
 use ::time::{Time, macros::format_description};
-use evalexpr::{ContextWithMutableVariables, HashMapContext};
+use evalexpr::{ContextWithMutableFunctions, ContextWithMutableVariables, Function, HashMapContext};
 use ndarray::*;
 
 pub fn columns_into_data_matrix(columns: Vec<Column>) -> eyre::Result<Array2<f64>> {
@@ -340,7 +338,7 @@ pub fn generate_composite_columns(
         .collect::<Vec<_>>();
 
     let mut new_columns = Array2::zeros((data.shape()[0], expressions.len()));
-    println!("New cols shape: {:?}", new_columns.shape());
+    use evalexpr::Context;
 
     for ((i, expr), mut new_col) in expressions
         .iter()
@@ -354,6 +352,19 @@ pub fn generate_composite_columns(
         println!("new col {:?}", new_col);
         let calculated = data.axis_iter(Axis(0)).map(|it| {
             let mut ctxt = HashMapContext::new();
+            ctxt.set_builtin_functions_disabled(false).unwrap();
+            ctxt.set_function("powf".to_owned(), Function::new(| x| {
+                match x {
+                    evalexpr::Value::Tuple(values) => {
+                        if values.len() == 2 {
+                            Ok(evalexpr::Value::Float(values[0].as_float().unwrap().powf(values[1].as_float().unwrap())))
+                        } else {
+                            Ok(evalexpr::Value::Float(0.))
+                        }
+                    },
+                    _ => panic!()
+                }
+            }));
             for (name, idx) in &var_map {
                 ctxt.set_value(name.to_string(), evalexpr::Value::Float(it[*idx as usize]))?;
             }

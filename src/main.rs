@@ -13,6 +13,7 @@ use crate::mission::PYRO_CONT2;
 use crate::mission::PYRO_ENABLE_PIN;
 use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
+use crate::mission::buzz;
 use crate::mission::buzz_number;
 use crate::mission::current_rtc_time;
 use crate::pins::gps::PpsPin;
@@ -28,6 +29,8 @@ use bno080::wrapper::BNO080;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::ExceptionFrame;
 use cortex_m_rt::exception;
@@ -45,6 +48,7 @@ use hal::gpio::NoPin;
 use hal::pac::TIM9;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
+use hal::prelude::*;
 use hal::qspi::FlashSize;
 use hal::qspi::Qspi;
 use hal::qspi::QspiConfig;
@@ -53,14 +57,13 @@ use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
 use hal::timer::Counter;
-use hal::timer::CounterHz;
 use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
 use stm32f4xx_hal::i2c::I2c;
+use stm32f4xx_hal::timer::Delay;
 use storage_types::ConfigKey;
 use storage_types::Role;
-use storage_types::logs::LocalCtxt;
 use storage_types::logs::MessageType;
 use sx126x::SX126x;
 use sx126x::op::CalibParam;
@@ -107,7 +110,7 @@ static mut DIO1_PIN: Option<RadioInteruptPin> = None;
 
 const F_XTAL: u32 = 32_000_000; // 32MHz
 
-static mut PANIC_TIMER: Option<CounterHz<TIM9>> = None;
+static mut PANIC_TIMER: Option<Delay<TIM9, 10000>> = None;
 static mut BUZZER: Option<BuzzerPin> = None;
 static mut BUZZER_TIMER: Option<Counter<TIM13, 10000>> = None;
 static mut PYRO_TIMER: Option<Counter<TIM14, 10000>> = None;
@@ -118,6 +121,8 @@ pub const PAGE_COUNT: usize = CAPACITY / 4096;
 
 static PPS_PIN: Mutex<RefCell<Option<PpsPin>>> = Mutex::new(RefCell::new(None));
 
+static DEBUGGER_ATTACHED: AtomicBool = AtomicBool::new(false);
+
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
@@ -127,6 +132,7 @@ async fn main(_spawner: Spawner) {
         pac::Peripherals::take(),
         cortex_m::peripheral::Peripherals::take(),
     ) {
+        DEBUGGER_ATTACHED.store((cp.DCB.dhcsr.read() & 0x1) != 0, Ordering::Release); // C_DEBUGEN
         let gpioa = dp.GPIOA.split();
         let gpiob = dp.GPIOB.split();
         let gpioc = dp.GPIOC.split();
@@ -160,7 +166,7 @@ async fn main(_spawner: Spawner) {
 
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
-            PANIC_TIMER.replace(dp.TIM9.counter_hz(&clocks));
+            PANIC_TIMER.replace(dp.TIM9.delay(&clocks));
             BUZZER.replace(buzzer_pin);
             BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
             PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
@@ -353,6 +359,24 @@ async fn main(_spawner: Spawner) {
             unsafe { I2C1_BUS = Some(UnsafeCell::new(i2c)) };
         }
 
+        /*
+            PWM test code for Ground Station.
+               let gpio2 = gpio.e.pe11;
+               let (_, (_, ch2, ..)) = dp.TIM1.pwm_hz(1.Hz(), &clocks);
+               let mut ch2 = ch2.with(gpio2);
+               let max_duty = ch2.get_max_duty();
+               ch2.set_duty(max_duty / 2);
+        */
+
+        let bmm = {
+            {
+                use bmm350::Bmm350;
+                use stm32f4xx_hal::{pac::{I2C1, TIM7}, timer};
+
+                None::<Bmm350<bmm350::interface::I2cInterface<I2c<I2C1>>, Delay<TIM7, 1000000>>>
+            }
+        };
+
         #[allow(unused)]
         let i2c3 = {
             #[cfg(any(feature = "target-maxi", feature = "target-ultra"))]
@@ -407,7 +431,7 @@ async fn main(_spawner: Spawner) {
             None
         };
 
-        let icm = if role != Role::GroundMain && cfg!(feature = "target-mini") {
+        let icm = if cfg!(feature = "target-mini") {
             let icm_proxy = crate::pins::i2c::DMAAtomicDevice::new(
                 unsafe { I2C1_BUS.as_ref().unwrap() },
                 &I2C1_BUSY,
@@ -451,6 +475,9 @@ async fn main(_spawner: Spawner) {
             }
         };
 
+        let conf = build_config(&mut wrapper).await;
+        setup_logger(wrapper).unwrap();
+
         let (bmi323, adxl375) = {
             #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
             {
@@ -468,7 +495,7 @@ async fn main(_spawner: Spawner) {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    30.MHz(),
+                    3.MHz(),
                     &clocks,
                 );
 
@@ -503,16 +530,31 @@ async fn main(_spawner: Spawner) {
                 .unwrap();
 
                 let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
-                // let mut buf = [0; 1];
-                // adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
-                // adxl.write(adxl375::Register::DataFormat, &[0b01011])
-                //     .await
-                //     .unwrap();
-                // adxl.write(adxl375::Register::PowerCtl, &[0x8])
-                //     .await
-                //     .unwrap();
-                // adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
-                // adxl.set_fifo_mode(adxl375::FifoMode::Bypass).await.unwrap();
+                let mut buf = [0; 1];
+                adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
+                adxl.write(adxl375::Register::DataFormat, &[0b01011])
+                    .await
+                    .unwrap();
+                adxl.write(adxl375::Register::PowerCtl, &[0x8])
+                    .await
+                    .unwrap();
+                adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
+                adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
+
+                let adxl_xoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_xoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+                let adxl_yoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_yoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+                let adxl_zoff: f64 = get_logger()
+                    .read_config(&ConfigKey::try_from("adxl_zoff").unwrap())
+                    .await
+                    .unwrap_or_default();
+
+                adxl.set_software_offset(adxl_xoff as f32, adxl_yoff as f32, adxl_zoff as f32);
 
                 (Some(bmi), Some(adxl))
             }
@@ -600,9 +642,6 @@ async fn main(_spawner: Spawner) {
         let lora_dio1 = radio::RadioInterruptRefMut(lora_dio1);
         let lora_pins = (lora_nreset, lora_busy, lora_ant, lora_dio1);
 
-        let conf = build_config(&mut wrapper).await;
-        setup_logger(wrapper).unwrap();
-
         const STARTUP_MESSAGE: &'static str = const_format::concatcp!(
             "I awaken! ",
             TARGET,
@@ -613,18 +652,20 @@ async fn main(_spawner: Spawner) {
             ")."
         );
 
-        get_logger().retry_log(
-            MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
-                .unwrap()
-                .into_message(current_rtc_time()),
-        ).await;
+        get_logger()
+            .retry_log(
+                MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
+                    .unwrap()
+                    .into_message(current_rtc_time()),
+            )
+            .await;
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
 
         Radio::init(lora);
         unsafe {
-            pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
+            //pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
             pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
 
             if cfg!(not(feature = "target-ultra")) {
@@ -657,6 +698,8 @@ async fn main(_spawner: Spawner) {
             bno080,
             bmi323,
             adxl375,
+            bmm,
+            dp.TIM8.counter(&clocks),
             clocks,
         )
         .await;
@@ -809,22 +852,22 @@ async fn build_config(
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    if let Ok(mut stdout) = hio::hstdout() {
-        writeln!(stdout, "A panic occured:\n {}", info).ok();
+    if DEBUGGER_ATTACHED.load(Ordering::Relaxed) {
+        if let Ok(mut stdout) = hio::hstdout() {
+            writeln!(stdout, "A panic occured:\n {}", info).ok();
+        }
     }
     let mut timer = unsafe { PANIC_TIMER.take() }.unwrap();
-    timer.start(4.Hz()).ok();
-    let mut buzzer = unsafe { BUZZER.take() }.unwrap();
 
-    loop {
-        buzzer.toggle();
+    for _ in 0..5 {
         neopixel::update_pixel(1, [255, 0, 0]);
-        nb::block!(timer.wait()).ok();
+        embassy_futures::block_on(buzz(250u32.millis()));
 
-        buzzer.toggle();
         neopixel::update_pixel(1, [0, 0, 0]);
-        nb::block!(timer.wait()).ok();
+        timer.delay_ms(250);
     }
+
+    cortex_m::peripheral::SCB::sys_reset();
 }
 
 #[exception]
