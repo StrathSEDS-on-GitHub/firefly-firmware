@@ -25,16 +25,9 @@
 
 ## File changes
 
-* Change this line in `./cargo/config.toml`: 
+* Change the line `runner = ` in `./cargo/config.toml` to: 
     ```
     runner = "powershell.exe -ExecutionPolicy Bypass -File run.ps1"
-    ```
-
-* Create the file `./run.ps1` containing:
-    ```
-    $path = $args[0] -replace '\\', '/'
-
-    arm-none-eabi-gdb -ex "target extended-remote localhost:3333" -ex "load $path" -ex "set confirm off" -ex "file $path" -ex "monitor arm semihosting enable"
     ```
     
 ## Useful commands
