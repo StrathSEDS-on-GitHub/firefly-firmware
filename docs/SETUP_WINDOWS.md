@@ -32,7 +32,7 @@
 
 * Create the file `./run.ps1` containing:
     ```
-    $path = $args[0] - replace '\\', '/'
+    $path = $args[0] -replace '\\', '/'
 
     arm-none-eabi-gdb -ex "target extended-remote localhost:3333" -ex "load $path" -ex "set confirm off" -ex "file $path" -ex "monitor arm semihosting enable"
     ```
