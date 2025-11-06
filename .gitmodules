@@ -30,13 +30,13 @@
 	url = https://github.com/rust-embedded/embedded-hal
 [submodule "bmi323-rs"]
 	path = bmi323-rs
-	url = ssh://git@github.com/X-yl/bmi323-rs
+	url = https://github.com/X-yl/bmi323-rs
 [submodule "adxl375"]
 	path = adxl375
-	url = ssh://git@github.com/X-yl/adxl375-rs
+	url = https://github.com/X-yl/adxl375-rs
 [submodule "utils/ffplotter/plotters-piston"]
 	path = utils/ffplotter/plotters-piston
-	url = ssh://git@github.com/X-yl/plotters-piston
+	url = https://github.com/X-yl/plotters-piston
 [submodule "bmm350-wq"]
 	path = bmm350-rs
 	url = https://github.com/X-yl/bmm350-rs
