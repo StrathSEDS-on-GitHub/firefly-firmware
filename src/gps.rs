@@ -178,9 +178,9 @@ fn set_rtc(time: Time) {
         .unwrap();
         rtc.enable_wakeup(2u32.millis().into());
 
-        // NVIC::unpend(pac::Interrupt::RTC_WKUP);
+        NVIC::unpend(pac::Interrupt::RTC_WKUP);
         unsafe {
-            // NVIC::unmask(pac::Interrupt::RTC_WKUP);
+            NVIC::unmask(pac::Interrupt::RTC_WKUP);
         }
 
         neopixel::update_pixel(1, [0, 65, 32])
