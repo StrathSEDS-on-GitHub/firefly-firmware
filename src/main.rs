@@ -665,7 +665,7 @@ async fn main(_spawner: Spawner) {
 
         Radio::init(lora);
         unsafe {
-            //pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
+            pac::NVIC::unmask(pac::Interrupt::RTC_WKUP);
             pac::NVIC::unpend(pac::Interrupt::RTC_WKUP);
 
             if cfg!(not(feature = "target-ultra")) {
