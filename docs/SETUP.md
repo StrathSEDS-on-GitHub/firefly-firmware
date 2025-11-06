@@ -73,8 +73,9 @@ To test your setup, try adding this code in main.rs after the `neopixel::new\_ne
         loop {
             neopixel::update_pixel(0, [0, color, 0]);
             color  = !color;
-            timer.wait().unwrap();
+            crate::futures::NbFuture::new(||timer.wait()).await.unwrap();
         }
+        neopixel::update_pixel(0, [255, 0, 0]);
 ```
 
 ## Step 5: Run your code
