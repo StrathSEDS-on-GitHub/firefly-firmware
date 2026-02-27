@@ -1,3 +1,4 @@
+use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
 use crate::pins::TARGET;
 use crate::{futures::TimerDelay, pins::pyro::*};
@@ -658,10 +659,6 @@ pub async fn usb_handler() -> ! {
     }
 }
 
-async fn gps_handler() -> ! {
-    gps::poll_for_sentences().await
-}
-
 pub type RTCTime = (u8, u8, u8, u16);
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, From, Into)]
 #[repr(transparent)]
@@ -717,13 +714,15 @@ impl From<RTCTime> for EpochTime {
     }
 }
 
-async fn gps_broadcast() -> ! {
+async fn gps_handler(gps: GPS) -> ! {
+    let mut gps_parser = GPSParser::new();
     loop {
         let mut samples = [GPSSample::default(); 20];
 
+
         for sample in samples.iter_mut() {
             loop {
-                let fix = gps::next_sentence().await;
+                let fix = gps_parser.next(&gps).await;
                 if let ParseResult::GGA(Some(GGA { fix: Some(gga), .. })) = fix {
                     *sample = GPSSample {
                         timestamp: current_rtc_time(),
@@ -735,6 +734,13 @@ async fn gps_broadcast() -> ! {
                 }
             }
         }
+
+        if role() == Role::GroundMain || role() == Role::GroundBackup {
+            // Ground doesn't need GPS for anything except timing so 
+            // we can discard the results.
+            continue;
+        }
+
         let radio_msg = MessageType::new_gps(samples.clone()).into_message(radio_ctxt());
 
         get_logger()
@@ -1530,6 +1536,7 @@ pub async fn begin<
         Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
     >,
     bmm_timer: Counter<TIM8, 10000>,
+    gps: GPS,
     clocks: Clocks,
 ) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
@@ -1596,7 +1603,7 @@ pub async fn begin<
         Role::GroundMain | Role::GroundBackup =>
         {
             #[allow(unreachable_code)]
-            join!(usb_handler(), gps_handler(), handle_incoming_packets()).0
+            join!(usb_handler(), gps_handler(gps), handle_incoming_packets()).0
         }
         Role::Avionics =>
         {
@@ -1605,8 +1612,7 @@ pub async fn begin<
                 usb_handler(),
                 buzzer_controller(),
                 imu_task,
-                gps_handler(),
-                gps_broadcast(),
+                gps_handler(gps),
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
@@ -1621,8 +1627,7 @@ pub async fn begin<
                 usb_handler(),
                 buzzer_controller(),
                 imu_task,
-                gps_handler(),
-                gps_broadcast(),
+                gps_handler(gps),
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),

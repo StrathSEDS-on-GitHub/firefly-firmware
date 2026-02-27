@@ -189,7 +189,6 @@ macro_rules! interrupt_wake {
 }
 
 interrupt_wake_channel!(usb_wake);
-interrupt_wake_channel!(gps_rx_wake);
 #[cfg(not(feature = "target-ultra"))]
 interrupt_wake_channel!(bmp_wake);
 

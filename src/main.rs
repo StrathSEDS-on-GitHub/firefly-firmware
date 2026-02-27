@@ -5,6 +5,7 @@
 #![no_main]
 #![no_std]
 
+use crate::gps::GPS;
 use crate::logs::get_logger;
 use crate::logs::setup_logger;
 use crate::mission::PYRO_ADC;
@@ -80,7 +81,7 @@ use ws2812_spi::Ws2812;
 use core::cell::RefCell;
 use core::panic::PanicInfo;
 
-use crate::hal::{pac, prelude::*};
+use crate::hal::pac;
 use stm32f4xx_hal as hal;
 
 mod altimeter;
@@ -263,7 +264,7 @@ async fn main(_spawner: Spawner) {
         let gps_streams = gps_dma_streams!(dp);
         let rx_stream = gps_rx_stream!(gps_streams);
 
-        gps::setup(rx_stream, gps_serial);
+        let mut gps = GPS::setup(rx_stream, gps_serial);
 
         delay.delay_ms(2);
 
@@ -271,17 +272,19 @@ async fn main(_spawner: Spawner) {
             all(feature = "target-maxi", feature = "ultra-dev"),
             feature = "target-ultra"
         )) {
-            gps::init_teseo().await;
-            delay.delay_ms(2);
-            gps::set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None).await;
-            gps::set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None).await;
-            gps::set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None).await;
+            gps.init_teseo().await;
+            gps.set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None)
+                .await;
+            gps.set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None)
+                .await;
+            gps.set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None)
+                .await;
         } else {
-            gps::tx(b"$PMTK251,115200*1F\r\n").await;
+            gps.tx(b"$PMTK251,115200*1F\r\n").await;
             delay.delay_ms(10);
-            gps::change_baudrate(115200).await;
-            gps::set_nmea_output().await;
-            gps::tx(b"$PMTK220,100*2F\r\n").await;
+            gps = gps.reinit_with_rate(115200).await;
+            gps.set_nmea_output().await;
+            gps.tx(b"$PMTK220,100*2F\r\n").await;
         }
 
         let mut syscfg = dp.SYSCFG.constrain();
@@ -304,11 +307,6 @@ async fn main(_spawner: Spawner) {
                 pac::NVIC::unpend(pac::Interrupt::EXTI2);
             }
         }
-
-        // gps::tx(b"$PMTK251,115200*1F\r\n").await;
-        // gps::change_baudrate(115200).await;
-        // gps::set_nmea_output().await;
-        // gps::tx(b"$PMTK220,100*2F\r\n").await;
 
         let mut wrapper = W25QSequentialStorage::new(flash);
         let total = sequential_storage::queue::space_left(
@@ -371,7 +369,7 @@ async fn main(_spawner: Spawner) {
         let bmm = {
             {
                 use bmm350::Bmm350;
-                use stm32f4xx_hal::{pac::{I2C1, TIM7}, timer};
+                use stm32f4xx_hal::pac::{I2C1, TIM7};
 
                 None::<Bmm350<bmm350::interface::I2cInterface<I2c<I2C1>>, Delay<TIM7, 1000000>>>
             }
@@ -700,6 +698,7 @@ async fn main(_spawner: Spawner) {
             adxl375,
             bmm,
             dp.TIM8.counter(&clocks),
+            gps,
             clocks,
         )
         .await;
