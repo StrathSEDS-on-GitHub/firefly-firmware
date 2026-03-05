@@ -1,3 +1,4 @@
+#![feature(ptr_metadata)]
 #![allow(clippy::empty_loop)]
 #![feature(const_slice_make_iter)]
 #![feature(impl_trait_in_assoc_type)]
@@ -101,6 +102,7 @@ mod stepper;
 mod usb_logger;
 #[cfg(feature = "msc")]
 mod usb_msc;
+mod otp;
 
 #[cfg(feature = "msc")]
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
