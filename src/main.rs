@@ -97,13 +97,13 @@ mod mission;
 #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
 mod ms5607;
 mod neopixel;
+mod otp;
 mod pins;
 mod radio;
 mod stepper;
 mod usb_logger;
 #[cfg(feature = "msc")]
 mod usb_msc;
-mod otp;
 
 #[cfg(feature = "msc")]
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
@@ -370,10 +370,26 @@ async fn main(_spawner: Spawner) {
 
         let bmm = {
             {
-                use bmm350::Bmm350;
-                use stm32f4xx_hal::pac::{I2C1, TIM7};
+                #[cfg(feature = "target-ultra")]
+                {
+                    use bmm350::MagConfig;
 
-                None::<Bmm350<bmm350::interface::I2cInterface<I2c<I2C1>>, Delay<TIM7, 1000000>>>
+                    let bmm_pins = i2c1_pins!(gpio);
+                    let i2c1 = dp.I2C1.i2c(bmm_pins, 100u32.kHz(), &clocks);
+                    let mut bmm =
+                        bmm350::Bmm350::new_with_i2c(i2c1, 0x14, dp.TIM7.delay_us(&clocks));
+                    bmm.init().unwrap();
+                    bmm.set_power_mode(bmm350::PowerMode::Normal).unwrap();
+                    bmm.set_odr_performance(bmm350::DataRate::ODR100Hz, bmm350::AverageNum::Avg1)
+                        .unwrap();
+                    bmm.enable_axes(
+                        bmm350::AxisEnableDisable::Enable,
+                        bmm350::AxisEnableDisable::Enable,
+                        bmm350::AxisEnableDisable::Enable,
+                    )
+                    .unwrap();
+                    Some(bmm)
+                }
             }
         };
 
