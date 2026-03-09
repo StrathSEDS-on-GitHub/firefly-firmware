@@ -1246,6 +1246,7 @@ async fn bmm_350_handler<
 ) {
     use storage_types::logs::MagnetometerSample;
 
+    bmm_timer.start(10.millis()).unwrap();
     loop {
         let mut samples = [MagnetometerSample::default(); 32];
 
@@ -1254,8 +1255,9 @@ async fn bmm_350_handler<
             if let Ok(bmm350::Sensor3DData { x, y, z }) = bmm.read_mag_data() {
                 store.timestamp = current_rtc_time();
                 store.magnetic_field = [x as f32, y as f32, z as f32];
-                bmm_timer.start(10.millis()).unwrap();
             }
+
+            bmm_timer.start(10.millis()).unwrap();
         }
 
         let message = MessageType::new_magnetometer(samples.into_iter());
@@ -1464,7 +1466,6 @@ pub async fn ms5607_altimeter_handler(
 ) {
     let mut counter = unsafe { ms5607.timer().start_counter(10) };
     loop {
-
         let mut samples = [PressureTempSample::default(); 40];
 
         for i in 0..samples.len() {
@@ -1592,12 +1593,7 @@ pub async fn begin<
         }
     };
 
-    let bmm_task = {
-        {
-            let _ = bmm350;
-            core::future::ready(())
-        }
-    };
+    let bmm_task = { bmm_350_handler(bmm350.unwrap(), bmm_timer) };
 
     match unsafe { ROLE } {
         Role::GroundMain | Role::GroundBackup =>
