@@ -52,17 +52,16 @@ where
         BitBuffer { bits, used }
     }
 
-    pub fn from_slice(bits: &BitSlice<T::Store, A>) -> Self {
+    pub fn from_slice(bits: &BitSlice<T::Store, A>) -> Option<Self> {
         let mut array = BitArray::new(T::ZERO);
-        assert!(
-            bits.len() <= array.len(),
-            "BitSlice length exceeds capacity of BitBuffer"
-        );
+        if bits.len() > array.len() {
+            return None;
+        }
         array[..bits.len()].copy_from_bitslice(bits);
-        BitBuffer {
+        Some(BitBuffer {
             bits: array,
             used: bits.len(),
-        }
+        })
     }
 
     pub fn as_bitslice(&self) -> &BitSlice<T::Store, A> {
@@ -98,7 +97,9 @@ where
         D: serde::Deserializer<'de>,
     {
         let bitslice = <&BitSlice<u8, A>>::deserialize(deserializer)?;
-        Ok(BitBuffer::from_slice(bitslice))
+        BitBuffer::from_slice(bitslice).ok_or_else(|| {
+            serde::de::Error::custom("BitBuffer deserialization failed: input too large")
+        })
     }
 }
 
@@ -139,7 +140,7 @@ pub const TS_BUF_SIZE: usize = 222;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandType {
     Info,
-    Erase
+    Erase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,7 +150,7 @@ pub enum CommandResponseType {
         firmware: String<32>,
         role: Role,
     },
-    Erase
+    Erase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
