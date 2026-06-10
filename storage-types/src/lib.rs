@@ -24,9 +24,7 @@ pub enum PyroPin {
 pub enum Role {
     Cansat,
     Avionics,
-    CansatBackup,
     GroundMain,
-    GroundBackup,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]

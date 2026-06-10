@@ -1,10 +1,10 @@
 use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
 use crate::pins::TARGET;
+use crate::pins::i2c::LrhpImu;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
-use bno080::{interface::SensorInterface, wrapper::BNO080};
 use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
@@ -14,19 +14,15 @@ use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice}
 use fugit::{Duration, ExtU32};
 use futures::join;
 use heapless::{String, Vec};
-use icm20948_driver::icm20948::{NoDmp, i2c::IcmImu};
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "target-ultra")]
 use stm32f4xx_hal::i2c;
-use stm32f4xx_hal::pac::{TIM8, TIM9};
-#[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-use stm32f4xx_hal::timer::TimerExt;
+use stm32f4xx_hal::pac::TIM8;
 use stm32f4xx_hal::{
     ClearFlags,
     adc::Adc,
     pac::{ADC1, TIM12},
-    rcc::Clocks,
     timer::{self, Counter, Instance},
 };
 use storage_types::logs::{
@@ -42,7 +38,6 @@ use crate::{
     BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
     altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames},
     futures::{NbFuture, YieldFuture},
-    gps,
     logs::get_logger,
     pins::i2c::Altimeter,
     radio::{self, RECEIVED_MESSAGE_QUEUE},
@@ -173,7 +168,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 // If we're above 10m, we must be ascending
                 if altitudes
                     .iter()
-                    .filter(|a| **a > 15.0 + start_altitude)
+                    .filter(|&a| *a > 15.0 + start_altitude)
                     .count()
                     > 12
                 {
@@ -429,6 +424,8 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
 
+            // TODO: Remote erase
+
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             if let Err(msg) = get_logger().erase_logs().await {
@@ -639,7 +636,7 @@ pub async fn usb_handler() -> ! {
             let mut writer = FixedWriter::new(&mut buf);
             write!(writer, "[REPLY#{command_id}] ").unwrap();
             for &(key, _) in CONFIG_KEYS.iter() {
-                let value = match get_logger().read_config(&key.try_into().unwrap()).await {
+                let value: u64 = match get_logger().read_config(&key.try_into().unwrap()).await {
                     Ok(value) => value,
                     Err(_) => 0,
                 };
@@ -719,7 +716,6 @@ async fn gps_handler(gps: GPS) -> ! {
     loop {
         let mut samples = [GPSSample::default(); 20];
 
-
         for sample in samples.iter_mut() {
             loop {
                 let fix = gps_parser.next(&gps).await;
@@ -735,8 +731,8 @@ async fn gps_handler(gps: GPS) -> ! {
             }
         }
 
-        if role() == Role::GroundMain || role() == Role::GroundBackup {
-            // Ground doesn't need GPS for anything except timing so 
+        if role() == Role::GroundMain {
+            // Ground doesn't need GPS for anything except timing so
             // we can discard the results.
             continue;
         }
@@ -783,6 +779,14 @@ async fn bmp_altimeter_handler(
                     temperature,
                 };
             }
+
+            if role() == Role::GroundMain {
+                let alt = (libm::powf(1013.25 / sample.pressure, 1.0 / 5.257) - 1.0)
+                    * (sample.temperature + 273.15)
+                    / 0.0065;
+                crate::gs::update_self_alt(alt);
+            }
+
             pressure_sender
                 .send(Vec::from_slice(&frames).unwrap())
                 .await
@@ -822,7 +826,7 @@ async fn handle_incoming_packets() -> ! {
                 stage,
             } = packet.context;
             match role() {
-                Role::GroundMain | Role::GroundBackup => match packet.message {
+                Role::GroundMain => match packet.message {
                     MessageType::Log { timestamp, message } => {
                         writeln!(
                             get_serial(),
@@ -876,6 +880,14 @@ async fn handle_incoming_packets() -> ! {
                                 temperature,
                             }) = sample
                             {
+                                #[cfg(feature = "target-maxi")]
+                                if role() == Role::GroundMain {
+                                    let altitude = (libm::powf(1013.25 / pressure, 1.0 / 5.257)
+                                        - 1.0)
+                                        * (temperature + 273.15)
+                                        / 0.0065;
+                                    crate::gs::update_target_alt(altitude);
+                                }
                                 writeln!(
                                     get_serial(),
                                     "[{}] [{source:?} {:?} prt] {pressure},{temperature}",
@@ -1299,6 +1311,7 @@ async fn adxl_imu_handler(
     }
 }
 
+#[cfg(feature = "target-mini")]
 async fn icm_imu_handler(
     mut imu: IcmImu<impl I2c, NoDmp>,
     mut imu_timer: impl embedded_hal_async::delay::DelayNs,
@@ -1358,9 +1371,12 @@ fn quaternion_to_euler(quat: [f32; 4]) -> [f32; 3] {
 }
 
 #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-async fn bno_imu_handler<SI, SE>(mut bno: BNO080<SI>, delay: Counter<impl Instance, 100000>) -> !
+async fn bno_imu_handler<SI, SE>(
+    mut bno: bno080::wrapper::BNO080<SI>,
+    delay: Counter<impl Instance, 100000>,
+) -> !
 where
-    SI: SensorInterface<SensorError = SE>,
+    SI: bno080::interface::SensorInterface<SensorError = SE>,
     SE: core::fmt::Debug,
 {
     let mut delay = delay.release().delay();
@@ -1412,7 +1428,7 @@ pub async fn bmi323_imu_handler(
     timer.start(10u32.millis()).unwrap();
 
     loop {
-        let mut samples = [IMUSample::default(); 12];
+        let mut samples = [IMUSample::default(); 16];
         for sample in samples.iter_mut() {
             NbFuture::new(|| timer.wait()).await.unwrap();
             sample.timestamp = current_rtc_time();
@@ -1445,6 +1461,7 @@ pub async fn bmi323_imu_handler(
 
         let message = MessageType::new_imu(samples.into_iter());
         let radio_msg = message.clone().into_message(radio_ctxt());
+
         if role() == Role::Avionics {
             radio::queue_packet(radio_msg);
         }
@@ -1521,29 +1538,34 @@ pub async fn ms5607_altimeter_handler(
 }
 
 pub async fn begin<
-    T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
+    #[cfg(feature = "target-ultra")] T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
         + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
+    I,
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] T: core::fmt::Debug,
 >(
     altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
-    icm_imu: Option<IcmImu<impl I2c, NoDmp>>,
+    imu: LrhpImu<I>,
     imu_timer: Counter<impl Instance, 100000>,
-    bno_imu: Option<BNO080<impl SensorInterface<SensorError = impl core::fmt::Debug>>>,
-    bmi323_imu: Option<Bmi323<SpiInterface<impl SpiDevice>, impl DelayNs>>,
-    adxl_imu: Option<
-        adxl375::spi::ADXL375<impl SpiDevice<u8>, impl embedded_hal_async::delay::DelayNs>,
-    >,
-    bmm350: Option<
+    // #[cfg(feature = "target-ultra")] adxl_imu: HrlpImu<impl SpiDevice<u8>>,
+    #[cfg(feature = "target-ultra")] bmm350: Option<
         Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
     >,
     bmm_timer: Counter<TIM8, 10000>,
     gps: GPS,
-    clocks: Clocks,
-) -> ! {
+) -> !
+where
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    I: SpiDevice,
+    #[cfg(feature = "target-mini")]
+    I: I2c,
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+    I: bno080::interface::SensorInterface<SensorError = T>,
+{
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
-    let altimeter_task: core::pin::Pin<&mut dyn Future<Output = ()>> = if role() != Role::GroundMain
-    {
+
+    let altimeter_task: core::pin::Pin<&mut dyn Future<Output = ()>> = {
         #[cfg(any(
             feature = "target-mini",
             all(feature = "target-maxi", not(feature = "ultra-dev"))
@@ -1563,40 +1585,29 @@ pub async fn begin<
                 pressure_sender
             ))
         }
-    } else {
-        core::pin::pin!(core::future::ready(()))
     };
     let imu_task = {
         #[cfg(feature = "target-mini")]
         {
-            let _ = bmi323_imu;
-            let _ = bno_imu;
-            icm_imu_handler(
-                icm_imu.unwrap(),
-                TimerDelay::new(imu_timer.release().release(), clocks),
-            )
+            icm_imu_handler(imu, TimerDelay::new(imu_timer.release().release(), clocks))
         }
         #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
         {
-            let _ = icm_imu;
-            let _ = bmi323_imu;
-            bno_imu_handler(bno_imu.unwrap(), imu_timer)
+            bno_imu_handler(imu, imu_timer)
         }
         #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
         {
-            let _ = bno_imu;
-            let _ = icm_imu;
-            ::futures::future::join(
-                bmi323_imu_handler(bmi323_imu.unwrap(), imu_timer.release().counter()),
-                adxl_imu_handler(adxl_imu.unwrap()),
-            )
+            bmi323_imu_handler(imu, imu_timer.release().counter()) // ,adxl_imu_handler(adxl_imu.unwrap())
         }
     };
 
+    #[cfg(any(feature = "target-ultra"))]
     let bmm_task = { bmm_350_handler(bmm350.unwrap(), bmm_timer) };
+    #[cfg(not(feature = "target-ultra"))]
+    let bmm_task = core::future::ready(());
 
     match unsafe { ROLE } {
-        Role::GroundMain | Role::GroundBackup =>
+        Role::GroundMain =>
         {
             #[allow(unreachable_code)]
             join!(usb_handler(), gps_handler(gps), handle_incoming_packets()).0
@@ -1630,9 +1641,6 @@ pub async fn begin<
                 bmm_task
             )
             .0
-        }
-        Role::CansatBackup => {
-            panic!("Removed in a hurry");
         }
     }
 }

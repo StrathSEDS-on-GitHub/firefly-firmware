@@ -1,22 +1,20 @@
 use core::fmt::Write as _;
 
 use fugit::ExtU32 as _;
-use stm32f4xx_hal::interrupt;
-use stm32f4xx_hal::prelude::_embedded_hal_serial_nb_Write;
-
-use hal::{
-    dma::Transfer,
-    pac::NVIC,
-    prelude::_stm32f4xx_hal_time_U32Ext,
-    serial::{RxListen, SerialExt},
+use stm32f4xx_hal::{
+    Listen, interrupt,
+    rcc::Rcc,
+    serial::{RxEvent, SerialExt as _},
 };
+
+use hal::{dma::Transfer, pac::NVIC, prelude::_stm32f4xx_hal_time_U32Ext};
 use nmea0183::{ParseResult, Parser, datetime::Time};
 use stm32f4xx_hal::{dma::config::DmaConfig, gpio::ExtiPin, pac};
 use thingbuf::mpsc::{RecvRef, StaticReceiver};
 use time::{Date, PrimitiveDateTime};
 
 use crate::{
-    CLOCKS, PPS_PIN, RTC,
+    PPS_PIN, RTC,
     logs::FixedWriter,
     neopixel,
     pins::gps::{GPSRxStream, GPSUsart},
@@ -131,7 +129,7 @@ impl GPS {
         };
 
         let (tx, mut rx) = serial.split();
-        rx.listen_idle();
+        rx.listen(RxEvent::Idle);
         let mut rx_transfer = Transfer::init_peripheral_to_memory(
             rx_stream,
             rx,
@@ -183,30 +181,29 @@ impl GPS {
         self.tx(msg).await;
     }
 
-    pub async fn reinit_with_rate(self, baudrate: u32) -> Self {
+    pub async fn reinit_with_rate(self, baudrate: u32, rcc: &mut Rcc) -> Self {
         cortex_m::interrupt::free(|cs| {
             let rx_transfer = dma::RX_TRANSFER.borrow(cs).replace(None).unwrap();
 
             let (rx_stream, rx, rx_buf, _) = rx_transfer.release();
-            let clocks = CLOCKS.borrow(cs).get().unwrap();
 
             let serial = {
                 let serial = rx.join(self.tx);
                 let (usart, txrx) = serial.release();
                 usart
                     .serial(
-                        txrx,
+                        (txrx.0.unwrap(), txrx.1.unwrap()),
                         hal::serial::config::Config {
                             baudrate: baudrate.bps(),
                             dma: hal::serial::config::DmaConfig::Rx,
                             ..Default::default()
                         },
-                        &clocks,
+                        rcc,
                     )
                     .unwrap()
             };
             let (tx, mut rx) = serial.split();
-            rx.listen_idle();
+            rx.listen(RxEvent::Idle);
             let mut rx_transfer = Transfer::init_peripheral_to_memory(
                 rx_stream,
                 rx,

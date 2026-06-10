@@ -1,12 +1,16 @@
 #![feature(ptr_metadata)]
 #![allow(clippy::empty_loop)]
-#![feature(const_slice_make_iter)]
+#![feature(where_clause_attrs)]
 #![feature(impl_trait_in_assoc_type)]
 #![allow(static_mut_refs)]
 #![no_main]
 #![no_std]
 
 use crate::gps::GPS;
+#[cfg(feature = "target-maxi")]
+use crate::gs::{
+    TIMER5, X_DIR_PIN, X_PWM_CHANNEL, X_PWM_MANAGER, Y_DIR_PIN, Y_PWM_CHANNEL, Y_PWM_MANAGER,
+};
 use crate::logs::get_logger;
 use crate::logs::setup_logger;
 use crate::mission::PYRO_ADC;
@@ -19,17 +23,12 @@ use crate::mission::buzz;
 use crate::mission::buzz_number;
 use crate::mission::current_rtc_time;
 use crate::pins::gps::PpsPin;
-use crate::pins::i2c::I2c1Handle;
 use crate::pins::radio::RadioInteruptPin;
 use crate::pins::radio::RadioSpi;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::radio::TDM_CONFIG_MAIN;
 use bmi323::Bmi323;
-use bno080::interface::I2cInterface;
-use bno080::wrapper::BNO080;
-use core::cell::Cell;
-use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
@@ -46,7 +45,6 @@ use fugit::ExtU64;
 use hal::adc::Adc;
 use hal::adc::config::AdcConfig;
 use hal::gpio;
-use hal::gpio::NoPin;
 use hal::pac::TIM9;
 use hal::pac::TIM13;
 use hal::pac::TIM14;
@@ -59,10 +57,9 @@ use hal::rtc::Rtc;
 use hal::spi;
 use hal::spi::Spi;
 use hal::timer::Counter;
-use icm20948_driver::icm20948::i2c::IcmImu;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map;
-use stm32f4xx_hal::i2c::I2c;
+use stm32f4xx_hal::rcc;
 use stm32f4xx_hal::timer::Delay;
 use storage_types::ConfigKey;
 use storage_types::Role;
@@ -92,6 +89,8 @@ mod bmp388;
 mod bmp581;
 mod futures;
 mod gps;
+#[cfg(feature = "target-maxi")]
+mod gs;
 mod logs;
 mod mission;
 #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
@@ -107,7 +106,7 @@ mod usb_msc;
 
 #[cfg(feature = "msc")]
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
-static CLOCKS: Mutex<Cell<Option<hal::rcc::Clocks>>> = Mutex::new(Cell::new(None));
+pub static CLOCKS: Mutex<RefCell<Option<hal::rcc::Rcc>>> = Mutex::new(RefCell::new(None));
 
 static mut DIO1_PIN: Option<RadioInteruptPin> = None;
 
@@ -129,6 +128,17 @@ static DEBUGGER_ATTACHED: AtomicBool = AtomicBool::new(false);
 const CONFIG_FLASH_RANGE: core::ops::Range<u32> = 0..8192;
 const LOGS_FLASH_RANGE: core::ops::Range<u32> = 8192..CAPACITY as u32;
 
+macro_rules! with_rcc {
+    ($name:ident, $it:expr) => {
+        cortex_m::interrupt::free(|cs| {
+            let mut refmut = CLOCKS.borrow(cs).borrow_mut();
+            #[allow(unused_mut)]
+            let mut $name = refmut.as_mut().unwrap();
+            $it
+        })
+    };
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     if let (Some(mut dp), Some(cp)) = (
@@ -136,11 +146,11 @@ async fn main(_spawner: Spawner) {
         cortex_m::peripheral::Peripherals::take(),
     ) {
         DEBUGGER_ATTACHED.store((cp.DCB.dhcsr.read() & 0x1) != 0, Ordering::Release); // C_DEBUGEN
-        let gpioa = dp.GPIOA.split();
-        let gpiob = dp.GPIOB.split();
-        let gpioc = dp.GPIOC.split();
-        let gpiod = dp.GPIOD.split();
-        let gpioe = dp.GPIOE.split();
+        let gpioa = dp.GPIOA.split(&mut dp.RCC);
+        let gpiob = dp.GPIOB.split(&mut dp.RCC);
+        let gpioc = dp.GPIOC.split(&mut dp.RCC);
+        let gpiod = dp.GPIOD.split(&mut dp.RCC);
+        let gpioe = dp.GPIOE.split(&mut dp.RCC);
 
         let gpio = GpioBuses {
             a: gpioa,
@@ -154,50 +164,54 @@ async fn main(_spawner: Spawner) {
             .ahb3enr()
             .modify(|r, w| unsafe { w.bits(r.bits()).qspien().enabled() });
         let rcc = dp.RCC.constrain();
+        let mut rcc = rcc.freeze(
+            rcc::Config::default()
+                .sysclk(100.MHz())
+                .use_hse(16.MHz())
+                .pclk1(50.MHz())
+                .pclk2(100.MHz())
+                .require_pll48clk(),
+        );
 
-        let clocks = rcc
-            .cfgr
-            .sysclk(100.MHz())
-            .use_hse(16.MHz())
-            .pclk1(50.MHz())
-            .pclk2(100.MHz())
-            .require_pll48clk()
-            .freeze();
-
-        let mut delay = cp.SYST.delay(&clocks);
+        let mut delay = cp.SYST.delay(&rcc.clocks);
         let buzzer_pin = buzzer_pin!(gpio);
 
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
-            PANIC_TIMER.replace(dp.TIM9.delay(&clocks));
+            PANIC_TIMER.replace(dp.TIM9.delay(&mut rcc));
             BUZZER.replace(buzzer_pin);
-            BUZZER_TIMER.replace(dp.TIM13.counter(&clocks));
-            PYRO_TIMER.replace(dp.TIM14.counter(&clocks));
+            BUZZER_TIMER.replace(dp.TIM13.counter(&mut rcc));
+            PYRO_TIMER.replace(dp.TIM14.counter(&mut rcc));
         }
 
         let neopixel_spi = Spi::new(
             neopixel_spi!(dp),
-            (NoPin::new(), NoPin::new(), {
-                let mut pin = neopixel_pin!(gpio).into_alternate();
-                pin.set_speed(gpio::Speed::VeryHigh);
-                pin
-            }),
+            (
+                None::<stm32f4xx_hal::gpio::Pin<'B', 12>>,
+                None::<stm32f4xx_hal::gpio::Pin<'B', 4>>,
+                {
+                    let mut pin = neopixel_pin!(gpio).into_alternate();
+                    pin.set_speed(gpio::Speed::VeryHigh);
+                    Some(pin)
+                },
+            ),
             MODE,
             3.MHz(),
-            &clocks,
+            &mut rcc,
         );
 
         neopixel::new_neopixel(Ws2812::new(neopixel_spi));
         neopixel::update_pixel(0, [255, 0, 0]);
 
-        let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut dp.PWR);
+        let mut rtc = hal::rtc::Rtc::new(dp.RTC, &mut rcc, &mut dp.PWR);
         rtc.listen(&mut dp.EXTI, rtc::Event::Wakeup);
         if TDM_CONFIG_MAIN.len() == 1 {
             rtc.enable_wakeup(50u64.millis());
         }
         cortex_m::interrupt::free(|cs| {
-            CLOCKS.borrow(cs).set(Some(clocks));
             RTC.borrow(cs).borrow_mut().replace(rtc);
+            CLOCKS.borrow(cs).borrow_mut().replace(rcc);
+
             unsafe {
                 let (enable, p2, p1, cont2, cont1) = pyro_pins!(gpio);
                 PYRO_CONT1.replace(cont1);
@@ -205,7 +219,10 @@ async fn main(_spawner: Spawner) {
                 PYRO_ENABLE_PIN.replace(enable);
                 PYRO_FIRE2.replace(p2);
                 PYRO_FIRE1.replace(p1);
-                PYRO_ADC.replace(Adc::new(dp.ADC1, false, AdcConfig::default()));
+                with_rcc!(
+                    rcc,
+                    PYRO_ADC.replace(Adc::new(dp.ADC1, false, AdcConfig::default(), &mut rcc,))
+                );
             }
         });
 
@@ -217,24 +234,27 @@ async fn main(_spawner: Spawner) {
                 dp.OTG_FS_PWRCLK,
                 gpio.a.pa11,
                 gpio.a.pa12,
-                &clocks,
+                &with_rcc!(rcc, rcc.clocks),
             );
         }
-        delay.delay_ms(1000);
 
         unsafe {
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM);
             pac::NVIC::unmask(hal::interrupt::DMA1_STREAM0);
         }
 
-        let qspi = Qspi::<QspiBank>::new(
-            dp.QUADSPI,
-            qspi_pins!(gpio),
-            QspiConfig::default()
-                .address_size(hal::qspi::AddressSize::Addr24Bit)
-                .flash_size(FlashSize::from_megabytes(16))
-                .clock_prescaler(0)
-                .sample_shift(hal::qspi::SampleShift::HalfACycle),
+        let qspi = with_rcc!(
+            rcc,
+            Qspi::<QspiBank>::new(
+                dp.QUADSPI,
+                qspi_pins!(gpio),
+                QspiConfig::default()
+                    .address_size(hal::qspi::AddressSize::Addr24Bit)
+                    .flash_size(FlashSize::from_megabytes(16))
+                    .clock_prescaler(0)
+                    .sample_shift(hal::qspi::SampleShift::HalfACycle),
+                &mut rcc,
+            )
         );
 
         let flash = W25Q::new(qspi).unwrap();
@@ -252,18 +272,20 @@ async fn main(_spawner: Spawner) {
             );
             loop {}
         }
-        let gps_serial = gps_usart_peripheral!(dp)
-            .serial(
+        let gps_serial = with_rcc!(
+            rcc,
+            gps_usart_peripheral!(dp).serial(
                 gps_pins!(gpio),
                 hal::serial::config::Config {
                     baudrate: gps_serial_baudrate!(),
                     dma: hal::serial::config::DmaConfig::Rx,
                     ..Default::default()
                 },
-                &clocks,
+                &mut rcc,
             )
-            .unwrap();
-        let gps_streams = gps_dma_streams!(dp);
+        )
+        .unwrap();
+        let gps_streams = with_rcc!(rcc, gps_dma_streams!(dp, rcc));
         let rx_stream = gps_rx_stream!(gps_streams);
 
         let mut gps = GPS::setup(rx_stream, gps_serial);
@@ -279,17 +301,19 @@ async fn main(_spawner: Spawner) {
                 .await;
             gps.set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None)
                 .await;
-            gps.set_par(gps::ConfigBlock::ConfigCurrent, 226, b"3", None)
-                .await;
         } else {
             gps.tx(b"$PMTK251,115200*1F\r\n").await;
             delay.delay_ms(10);
-            gps = gps.reinit_with_rate(115200).await;
+            let mut rcc =
+                cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().take().unwrap());
+            gps = gps.reinit_with_rate(115200, &mut rcc).await;
+            cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().replace(rcc));
+
             gps.set_nmea_output().await;
             gps.tx(b"$PMTK220,100*2F\r\n").await;
         }
 
-        let mut syscfg = dp.SYSCFG.constrain();
+        let mut syscfg = with_rcc!(rcc, dp.SYSCFG.constrain(&mut rcc));
         let mut pps_pin = pps_pin!(gpio);
         pps_pin.make_interrupt_source(&mut syscfg);
         pps_pin.trigger_on_edge(&mut dp.EXTI, gpio::Edge::Rising);
@@ -334,50 +358,91 @@ async fn main(_spawner: Spawner) {
 
         let board_id = board_id.unwrap_or(Some(1)).unwrap_or(1);
         let role = match board_id {
-            2 | 0 => Role::GroundMain,
-            3 => Role::GroundBackup,
-            4 => Role::Cansat,
             1 => Role::Avionics,
+            2 => Role::GroundMain,
+            4 => Role::Cansat,
             _ => panic!("Invalid board ID {}", board_id),
         };
 
+        #[cfg(feature = "target-maxi")]
+        if role == Role::GroundMain {
+            use stm32f4xx_hal::timer::Event;
+
+            let (mut man1, ch) = with_rcc!(rcc, dp.TIM1.pwm_hz(1300.Hz(), &mut rcc));
+            let mut ch2 = ch.1.with(gpio.e.pe11);
+            let max_duty = ch2.get_max_duty();
+            ch2.set_duty(max_duty / 2);
+
+            let mut tim5 = with_rcc!(rcc, dp.TIM5.counter_hz(&mut rcc));
+            tim5.listen(Event::Update);
+            tim5.start(100.Hz()).unwrap();
+
+            let (mut man2, ch_tim2) = with_rcc!(rcc, dp.TIM2.pwm_hz(1300.Hz(), &mut rcc));
+            let mut ch3 = ch_tim2.2.with(gpio.a.pa2);
+            let max_duty = ch3.get_max_duty();
+            ch3.set_duty(max_duty / 2);
+
+            let x_dir = gpio
+                .e
+                .pe12
+                .into_push_pull_output_in_state(gpio::PinState::Low);
+
+            let y_dir = gpio
+                .c
+                .pc3
+                .into_push_pull_output_in_state(gpio::PinState::Low);
+
+            man1.set_period(1000u32.Hz());
+            man2.set_period(1000u32.Hz());
+
+            unsafe {
+                TIMER5 = Some(tim5);
+                X_PWM_CHANNEL = Some(ch2);
+                Y_PWM_CHANNEL = Some(ch3);
+
+                X_PWM_MANAGER = Some(man1);
+                Y_PWM_MANAGER = Some(man2);
+
+                Y_DIR_PIN = Some(y_dir);
+                X_DIR_PIN = Some(x_dir);
+
+                pac::NVIC::unmask(pac::Interrupt::TIM5);
+            }
+        }
+
         unsafe { mission::ROLE = role };
 
-        static mut I2C1_BUS: Option<UnsafeCell<I2c1Handle>> = None;
+        #[cfg(not(feature = "target-ultra"))]
+        static mut I2C1_BUS: Option<core::cell::UnsafeCell<i2c::I2c1Handle>> = None;
+        #[cfg(not(feature = "target-ultra"))]
         static I2C1_BUSY: i2c::AtomicBusyState = i2c::AtomicBusyState::new(i2c::BusyState::Free);
 
         #[cfg(not(feature = "target-ultra"))]
         {
-            let i2c_streams = i2c_dma_streams!(dp, gps_streams);
+            let i2c_streams = with_rcc!(rcc, i2c_dma_streams!(dp, gps_streams, rcc));
             let tx_stream = i2c_streams.1;
             let rx_stream = i2c_streams.0;
-            let i2c = dp
-                .I2C1
-                .i2c(i2c1_pins!(gpio), 400.kHz(), &clocks)
-                .use_dma(tx_stream, rx_stream);
+            let i2c = with_rcc!(
+                rcc,
+                dp.I2C1
+                    .i2c(i2c1_pins!(gpio), 400.kHz(), &mut rcc)
+                    .use_dma(tx_stream, rx_stream)
+            );
             // SAFETY: This is the only mutation of I2C_BUS so we have exclusive mutable access
-            unsafe { I2C1_BUS = Some(UnsafeCell::new(i2c)) };
+            unsafe { I2C1_BUS = Some(core::cell::UnsafeCell::new(i2c)) };
         }
-
-        /*
-            PWM test code for Ground Station.
-               let gpio2 = gpio.e.pe11;
-               let (_, (_, ch2, ..)) = dp.TIM1.pwm_hz(1.Hz(), &clocks);
-               let mut ch2 = ch2.with(gpio2);
-               let max_duty = ch2.get_max_duty();
-               ch2.set_duty(max_duty / 2);
-        */
 
         let bmm = {
             {
                 #[cfg(feature = "target-ultra")]
                 {
-                    use bmm350::MagConfig;
-
                     let bmm_pins = i2c1_pins!(gpio);
-                    let i2c1 = dp.I2C1.i2c(bmm_pins, 100u32.kHz(), &clocks);
-                    let mut bmm =
-                        bmm350::Bmm350::new_with_i2c(i2c1, 0x14, dp.TIM7.delay_us(&clocks));
+                    let i2c1 = with_rcc!(rcc, dp.I2C1.i2c(bmm_pins, 100u32.kHz(), &mut rcc));
+                    let mut bmm = bmm350::Bmm350::new_with_i2c(
+                        i2c1,
+                        0x14,
+                        with_rcc!(rcc, dp.TIM7.delay_us(&mut rcc)),
+                    );
                     bmm.init().unwrap();
                     bmm.set_power_mode(bmm350::PowerMode::Normal).unwrap();
                     bmm.set_odr_performance(bmm350::DataRate::ODR100Hz, bmm350::AverageNum::Avg1)
@@ -397,7 +462,10 @@ async fn main(_spawner: Spawner) {
         let i2c3 = {
             #[cfg(any(feature = "target-maxi", feature = "target-ultra"))]
             {
-                Some(dp.I2C3.i2c(i2c3_pins!(gpio), 400.kHz(), &clocks))
+                with_rcc!(
+                    rcc,
+                    Some(dp.I2C3.i2c(i2c3_pins!(gpio), 400.kHz(), &mut rcc))
+                )
             }
             #[cfg(feature = "target-mini")]
             {
@@ -405,7 +473,7 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        let bmp = if mission::role() != Role::GroundMain {
+        let bmp = {
             #[cfg(feature = "target-mini")]
             {
                 Some({
@@ -432,7 +500,7 @@ async fn main(_spawner: Spawner) {
 
             #[cfg(feature = "target-ultra")]
             {
-                let delay = futures::TimerDelay::new(dp.TIM6, clocks);
+                let delay = futures::TimerDelay::new(dp.TIM6);
                 let ms5607 = ms5607::MS5607::new(i2c3.unwrap(), 0b1110111, delay)
                     .await
                     .unwrap();
@@ -443,11 +511,12 @@ async fn main(_spawner: Spawner) {
             {
                 None
             }
-        } else {
-            None
         };
 
-        let icm = if cfg!(feature = "target-mini") {
+        #[cfg(feature = "target-mini")]
+        let lrhp = {
+            use icm20948_driver::icm20948::i2c::IcmImu;
+
             let icm_proxy = crate::pins::i2c::DMAAtomicDevice::new(
                 unsafe { I2C1_BUS.as_ref().unwrap() },
                 &I2C1_BUSY,
@@ -455,159 +524,124 @@ async fn main(_spawner: Spawner) {
             let mut icm = IcmImu::new(icm_proxy, 0x68).unwrap();
             icm.enable_acc().unwrap();
             icm.enable_gyro().unwrap();
-            Some(icm)
-        } else {
-            None
+            icm
         };
 
-        let bno080: Option<BNO080<I2cInterface<I2c<pac::I2C3>>>> = {
-            #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-            {
-                let mut delay = dp.TIM6.delay::<100000>(&clocks);
-                let mut bno = BNO080::new_with_interface(I2cInterface::alternate(i2c3.unwrap()));
+        #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+        let lrhp = {
+            use bno080::{interface::I2cInterface, wrapper::BNO080};
 
-                delay.delay_ms(10);
+            let mut delay = with_rcc!(rcc, dp.TIM6.delay::<100000>(&mut rcc));
+            let mut bno = BNO080::new_with_interface(I2cInterface::alternate(i2c3.unwrap()));
 
-                bno.init(&mut delay).unwrap();
-                delay.delay_ms(10);
+            delay.delay_ms(10);
 
-                bno.enable_gyro(200).unwrap();
-                bno.handle_all_messages(&mut delay, 5u8);
-                bno.enable_linear_accel(200).unwrap();
-                bno.handle_all_messages(&mut delay, 5u8);
-                bno.enable_rotation_vector(10).unwrap();
-                bno.handle_all_messages(&mut delay, 5u8);
+            bno.init(&mut delay).unwrap();
+            delay.delay_ms(10);
 
-                Some(bno)
-            }
+            bno.enable_gyro(200).unwrap();
+            bno.handle_all_messages(&mut delay, 5u8);
+            bno.enable_linear_accel(200).unwrap();
+            bno.handle_all_messages(&mut delay, 5u8);
+            bno.enable_rotation_vector(10).unwrap();
+            bno.handle_all_messages(&mut delay, 5u8);
 
-            #[cfg(any(
-                feature = "target-mini",
-                feature = "ultra-dev",
-                feature = "target-ultra"
-            ))]
-            {
-                None
-            }
+            bno
         };
 
         let conf = build_config(&mut wrapper).await;
         setup_logger(wrapper).unwrap();
 
-        let (bmi323, adxl375) = {
-            #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-            {
-                use adxl375::spi::ADXL375;
-                use bmi323::AccelConfig;
-                use bmi323::AccelerometerRange;
-                use bmi323::GyroConfig;
-                use bmi323::GyroscopeRange;
-                use bmi323::OutputDataRate;
-                use embedded_hal_bus::spi::AtomicDevice;
+        #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+        let (lrhp, _) = {
+            use bmi323::AccelConfig;
+            use bmi323::AccelerometerRange;
+            use bmi323::GyroConfig;
+            use bmi323::GyroscopeRange;
+            use bmi323::OutputDataRate;
+            use embedded_hal_bus::spi::AtomicDevice;
 
-                let bus = imus_spi!(dp).spi(
+            let bus = with_rcc!(
+                rcc,
+                imus_spi!(dp).spi(
                     imu_spi_pins!(gpio),
                     spi::Mode {
                         polarity: spi::Polarity::IdleHigh,
                         phase: spi::Phase::CaptureOnSecondTransition,
                     },
-                    3.MHz(),
-                    &clocks,
-                );
-
-                static mut SPI_BUS: Option<AtomicCell<Spi<ImuSpi>>> = None;
-                unsafe {
-                    SPI_BUS.replace(AtomicCell::new(bus));
-                }
-                let bmidev = AtomicDevice::new_no_delay(
-                    unsafe { SPI_BUS.as_ref().unwrap() },
-                    lrhp_nss!(gpio),
+                    100.kHz(),
+                    &mut rcc,
                 )
-                .unwrap();
+            );
 
-                let mut bmi = Bmi323::new_with_spi(bmidev, dp.TIM4.delay_us(&clocks));
-                let accel_config = AccelConfig::builder()
-                    .odr(OutputDataRate::Odr100hz)
-                    .range(AccelerometerRange::G16)
-                    .build();
-                bmi.set_accel_config(accel_config).unwrap();
+            static mut SPI_BUS: Option<AtomicCell<Spi<ImuSpi>>> = None;
+            unsafe {
+                SPI_BUS.replace(AtomicCell::new(bus));
+            }
+            let bmidev =
+                AtomicDevice::new_no_delay(unsafe { SPI_BUS.as_ref().unwrap() }, lrhp_nss!(gpio))
+                    .unwrap();
 
-                // Configure gyroscope
-                let gyro_config = GyroConfig::builder()
-                    .odr(OutputDataRate::Odr100hz)
-                    .range(GyroscopeRange::DPS2000)
-                    .build();
-                bmi.set_gyro_config(gyro_config).unwrap();
+            let mut bmi = with_rcc!(
+                rcc,
+                Bmi323::new_with_spi(bmidev, dp.TIM4.delay_us(&mut rcc))
+            );
+            bmi.init().unwrap();
+            let accel_config = AccelConfig::builder()
+                .odr(OutputDataRate::Odr100hz)
+                .range(AccelerometerRange::G16)
+                .build();
+            while let Err(_) = bmi.set_accel_config(accel_config) {}
 
-                let adxldev = AtomicDevice::new_no_delay(
-                    unsafe { SPI_BUS.as_ref().unwrap() },
-                    hrlp_nss!(gpio),
-                )
-                .unwrap();
+            // Configure gyroscope
+            let gyro_config = GyroConfig::builder()
+                .odr(OutputDataRate::Odr100hz)
+                .range(GyroscopeRange::DPS2000)
+                .build();
+            while let Err(_) = bmi.set_gyro_config(gyro_config) {}
+            /*
 
-                let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
+            let adxldev = AtomicDevice::new_no_delay(
+                unsafe { SPI_BUS.as_ref().unwrap() },
+                hrlp_nss!(gpio),
+            )
+            .unwrap();
+            let mut adxl = ADXL375::new(adxldev, futures::TimerDelay::new(dp.TIM11, clocks));
+
+            let mut count_ok = 0;
+            loop {
                 let mut buf = [0; 1];
                 adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
-                adxl.write(adxl375::Register::DataFormat, &[0b01011])
-                    .await
-                    .unwrap();
-                adxl.write(adxl375::Register::PowerCtl, &[0x8])
-                    .await
-                    .unwrap();
-                adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
-                adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
 
-                let adxl_xoff: f64 = get_logger()
-                    .read_config(&ConfigKey::try_from("adxl_xoff").unwrap())
-                    .await
-                    .unwrap_or_default();
-                let adxl_yoff: f64 = get_logger()
-                    .read_config(&ConfigKey::try_from("adxl_yoff").unwrap())
-                    .await
-                    .unwrap_or_default();
-                let adxl_zoff: f64 = get_logger()
-                    .read_config(&ConfigKey::try_from("adxl_zoff").unwrap())
-                    .await
-                    .unwrap_or_default();
-
-                adxl.set_software_offset(adxl_xoff as f32, adxl_yoff as f32, adxl_zoff as f32);
-
-                (Some(bmi), Some(adxl))
+                assert_eq!(buf[0], 0xe5, "got {} ok readings", count_ok);
+                count_ok += 1;
             }
-            #[cfg(any(
-                feature = "target-mini",
-                all(feature = "target-maxi", not(feature = "ultra-dev"))
-            ))]
-            {
-                use embedded_hal_bus::spi::NoDelay;
-                use stm32f4xx_hal::gpio::Output;
-                use stm32f4xx_hal::pac::TIM4;
-                use stm32f4xx_hal::timer::DelayUs;
-                (
-                    None::<
-                        Bmi323<
-                            bmi323::interface::SpiInterface<
-                                embedded_hal_bus::spi::AtomicDevice<
-                                    Spi<pac::SPI2>,
-                                    gpio::PE12<Output>,
-                                    NoDelay,
-                                >,
-                            >,
-                            DelayUs<TIM4>,
-                        >,
-                    >,
-                    None::<
-                        adxl375::spi::ADXL375<
-                            embedded_hal_bus::spi::AtomicDevice<
-                                Spi<pac::SPI2>,
-                                gpio::PE12<Output>,
-                                NoDelay,
-                            >,
-                            futures::TimerDelay<pac::TIM11>,
-                        >,
-                    >,
-                )
-            }
+            adxl.write(adxl375::Register::DataFormat, &[0b01011])
+                .await
+                .unwrap();
+            adxl.write(adxl375::Register::PowerCtl, &[0x8])
+                .await
+                .unwrap();
+            adxl.set_data_rate(adxl375::DataRate::Hz100).await.unwrap();
+            adxl.set_fifo_mode(adxl375::FifoMode::Stream).await.unwrap();
+
+            let adxl_xoff: f64 = get_logger()
+                .read_config(&ConfigKey::try_from("adxl_xoff").unwrap())
+                .await
+                .unwrap_or_default();
+            let adxl_yoff: f64 = get_logger()
+                .read_config(&ConfigKey::try_from("adxl_yoff").unwrap())
+                .await
+                .unwrap_or_default();
+            let adxl_zoff: f64 = get_logger()
+                .read_config(&ConfigKey::try_from("adxl_zoff").unwrap())
+                .await
+                .unwrap_or_default();
+
+            adxl.set_software_offset(adxl_xoff as f32, adxl_yoff as f32, adxl_zoff as f32);
+            */
+
+            (bmi, ())
         };
 
         // ===== Init SPI1 =====
@@ -617,13 +651,16 @@ async fn main(_spawner: Spawner) {
         };
         let radio_spi_freq = 3.MHz();
         let (nss, sck, miso, mosi, nreset, busy, dio) = radio_pins!(gpio);
-        let radio_spi_pins = (sck, miso, mosi);
-        let radio_spi = spi::Spi::new(
-            radio_spi!(dp),
-            radio_spi_pins,
-            radio_spi_mode,
-            radio_spi_freq,
-            &clocks,
+        let radio_spi_pins = (Some(sck), Some(miso), Some(mosi));
+        let radio_spi = with_rcc!(
+            rcc,
+            spi::Spi::new(
+                radio_spi!(dp),
+                radio_spi_pins,
+                radio_spi_mode,
+                radio_spi_freq,
+                &mut rcc,
+            )
         );
 
         let lora_nreset = nreset.into_push_pull_output_in_state(gpio::PinState::High);
@@ -693,33 +730,20 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        if matches!(role, Role::CansatBackup | Role::GroundBackup)
-            || radio::TDM_CONFIG_MAIN.len() == 1
-        {
-            cortex_m::interrupt::free(|cs| {
-                RTC.borrow(cs)
-                    .borrow_mut()
-                    .as_mut()
-                    .unwrap()
-                    .enable_wakeup(100u64.millis());
-            });
-        }
-
         neopixel::update_pixel(0, [0, 128, 0]);
-        mission::begin(
+
+        let mission_task = mission::begin(
             bmp,
-            dp.TIM12.counter(&clocks),
-            icm,
-            dp.TIM10.counter(&clocks),
-            bno080,
-            bmi323,
-            adxl375,
+            with_rcc!(rcc, dp.TIM12.counter(&mut rcc)),
+            lrhp,
+            with_rcc!(rcc, dp.TIM10.counter(&mut rcc)),
+            #[cfg(feature = "target-ultra")]
             bmm,
-            dp.TIM8.counter(&clocks),
+            with_rcc!(rcc, dp.TIM8.counter(&mut rcc)),
             gps,
-            clocks,
-        )
-        .await;
+        );
+
+        mission_task.await;
     }
 }
 

@@ -34,6 +34,8 @@ pub mod i2c {
     use core::{cell::UnsafeCell, sync::atomic::Ordering};
     use embedded_hal::i2c::{ErrorType, I2c};
     use embedded_hal_bus::i2c::AtomicError;
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+use stm32f4xx_hal::{pac::TIM4, timer::DelayUs};
     use stm32f4xx_hal::{
         dma::{Stream0, Stream1},
         i2c::dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
@@ -58,15 +60,30 @@ pub mod i2c {
         crate::ms5607::Calibrated,
     >;
 
+    #[cfg(feature = "target-mini")]
+    pub type LrhpImu<I> = icm20948_driver::icm20948::i2c::IcmImu<I, icm20948_driver::icm20948::NoDmp>;
+    
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+    pub type LrhpImu<I> = bno080::wrapper::BNO080<I>;
+
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    pub type LrhpImu<I> = bmi323::Bmi323<bmi323::interface::SpiInterface<I>, DelayUs<TIM4>>;
+    
+
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    pub type HrlpImu<I> = adxl375::spi::ADXL375<I, crate::futures::TimerDelay<stm32f4xx_hal::pac::TIM11>>;
+
+
+
     #[macro_export]
     macro_rules! i2c_dma_streams {
-        ($dp:ident, $gps_streams:ident) => {{
+        ($dp:ident, $gps_streams:ident, $rcc:ident) => {{
             #[cfg(any(
                 feature = "target-mini",
                 all(feature = "target-maxi", not(feature = "ultra-dev"))
             ))]
             {
-                let streams = stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA1);
+                let streams = stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA1, &mut $rcc);
                 (streams.0, streams.1)
             }
 
@@ -346,7 +363,7 @@ macro_rules! imu_spi_pins {
         }
         #[cfg(feature = "target-ultra")]
         {
-            ($gpio.a.pa5, $gpio.b.pb4.into_alternate(), $gpio.b.pb5)
+            (Some($gpio.a.pa5), Some($gpio.b.pb4.into_alternate()), Some($gpio.b.pb5))
         }
     }};
 }
@@ -447,10 +464,8 @@ macro_rules! hrlp_nss {
 }
 
 pub mod gps {
-    use stm32f4xx_hal::gpio::{Alternate, gpioa};
-
     #[cfg(feature = "target-maxi")]
-    pub type PpsPin = stm32f4xx_hal::gpio::gpioe::PE11<stm32f4xx_hal::gpio::Input>;
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioc::PC7<stm32f4xx_hal::gpio::Input>;
 
     #[cfg(feature = "target-mini")]
     pub type PpsPin = stm32f4xx_hal::gpio::gpioa::PA2<stm32f4xx_hal::gpio::Input>;
@@ -467,7 +482,7 @@ pub mod gps {
             }
             #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
             {
-                $gpio_buses.e.pe11.into_input()
+                $gpio_buses.c.pc7.into_input()
             }
             #[cfg(all(feature = "target-mini"))]
             {
@@ -479,18 +494,6 @@ pub mod gps {
             }
         }};
     }
-
-    #[cfg(feature = "target-mini")]
-    pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
-
-    #[cfg(feature = "target-ultra")]
-    pub type GPSPins = (gpioa::PA9<Alternate<7>>, gpioa::PA10<Alternate<7>>);
-
-    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-    pub type GPSPins = (gpioa::PA15<Alternate<7>>, gpioa::PA10<Alternate<7>>);
-
-    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
-    pub type GPSPins = (gpioa::PA2<Alternate<7>>, gpioa::PA3<Alternate<7>>);
 
     #[cfg(any(
         feature = "target-mini",
@@ -583,14 +586,14 @@ pub mod gps {
 
     #[macro_export]
     macro_rules! gps_dma_streams {
-        ($dp:ident) => {{
+        ($dp:ident, $rcc:ident) => {{
             #[cfg(any(
                 feature = "target-mini",
                 all(feature = "target-maxi", not(feature = "ultra-dev")),
                 feature = "target-ultra"
             ))]
             {
-                stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA2)
+                stm32f4xx_hal::dma::StreamsTuple::new($dp.DMA2, &mut $rcc)
             }
 
             #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]

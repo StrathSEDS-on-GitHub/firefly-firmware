@@ -7,32 +7,34 @@ use core::{
 use embedded_hal_async::delay::DelayNs;
 use fugit::ExtU32;
 use stm32f4xx_hal::{
-    rcc::Clocks,
     timer::{self, Counter, TimerExt},
 };
-use thingbuf::mpsc::{errors::TrySendError, StaticSender};
+use thingbuf::mpsc::{StaticSender, errors::TrySendError};
+
+use crate::CLOCKS;
 
 pub struct TimerDelay<TIM>
 where
     TIM: TimerExt,
 {
     timer: Option<TIM>,
-    clocks: Clocks,
 }
 
 impl<TIM> TimerDelay<TIM>
 where
     TIM: TimerExt + timer::Instance,
 {
-    pub fn new(timer: TIM, clocks: Clocks) -> Self {
-        TimerDelay {
-            timer: Some(timer),
-            clocks,
-        }
+    pub fn new(timer: TIM) -> Self {
+        TimerDelay { timer: Some(timer) }
     }
 
     pub fn start_counter(&mut self, ms: u32) -> Counter<TIM, 10000> {
-        let mut counter = self.timer.take().unwrap().counter::<10000>(&self.clocks);
+        let mut counter = cortex_m::interrupt::free(|cs| {
+            self.timer
+                .take()
+                .unwrap()
+                .counter::<10000>(&mut CLOCKS.borrow(cs).borrow_mut().as_mut().unwrap())
+        });
         counter.start(ms.millis()).unwrap();
         counter
     }
@@ -47,13 +49,23 @@ impl<TIM: TimerExt + timer::Instance> DelayNs for TimerDelay<TIM> {
         self.delay_us(1).await; // Best we can do, we don't have nanosecond timing.
     }
     async fn delay_us(&mut self, us: u32) {
-        let mut counter = self.timer.take().unwrap().counter_us(&self.clocks);
+        let mut counter = cortex_m::interrupt::free(|cs| {
+            self.timer
+                .take()
+                .unwrap()
+                .counter_us(&mut CLOCKS.borrow(cs).borrow_mut().as_mut().unwrap())
+        });
         counter.start(us.micros()).unwrap();
         NbFuture::new(|| counter.wait()).await.unwrap();
         self.timer.replace(counter.release().release());
     }
     async fn delay_ms(&mut self, ms: u32) {
-        let mut counter = self.timer.take().unwrap().counter_us(&self.clocks);
+        let mut counter = cortex_m::interrupt::free(|cs| {
+            self.timer
+                .take()
+                .unwrap()
+                .counter_us(&mut CLOCKS.borrow(cs).borrow_mut().as_mut().unwrap())
+        });
         counter.start(ms.millis()).unwrap();
         NbFuture::new(|| counter.wait()).await.unwrap();
         self.timer.replace(counter.release().release());

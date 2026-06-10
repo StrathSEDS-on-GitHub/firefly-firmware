@@ -357,7 +357,7 @@ impl Logger {
                 continue;
             };
 
-            let Some((flash, cache)) = flash_ref.as_mut() else {
+            let Some((flash, _cache)) = flash_ref.as_mut() else {
                 // Can't do anything if we don't even have the flash
                 drop(flash_ref);
                 drop(cs);
@@ -406,7 +406,7 @@ impl Logger {
                 cortex_m::interrupt::disable();
                 continue;
             };
-            let Some((flash, cache)) = flash.as_mut() else {
+            let Some((flash, _cache)) = flash.as_mut() else {
                 break;
             };
             let _ = map::store_item(
