@@ -21,5 +21,7 @@
   packages = with pkgs; [
     openocd
     gcc-arm-embedded
+    dfu-util
+    libllvm
   ];
 }

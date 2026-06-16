@@ -564,7 +564,6 @@ async fn main(_spawner: Spawner) {
         };
 
         let conf = build_config(&mut wrapper).await;
-        setup_logger(wrapper).unwrap();
 
         #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
         let (lrhp, _) = {
@@ -627,9 +626,24 @@ async fn main(_spawner: Spawner) {
                 let mut buf = [0; 1];
                 adxl.read(adxl375::Register::DevId, &mut buf).await.unwrap();
 
-                assert_eq!(buf[0], 0xe5, "got {} ok readings", count_ok);
-                count_ok += 1;
+                // let adxl_xoff: f64 = get_logger()
+                //     .read_config(&ConfigKey::try_from("adxl_xoff").unwrap())
+                //     .await
+                //     .unwrap_or_default();
+                // let adxl_yoff: f64 = get_logger()
+                //     .read_config(&ConfigKey::try_from("adxl_yoff").unwrap())
+                //     .await
+                //     .unwrap_or_default();
+                // let adxl_zoff: f64 = get_logger()
+                //     .read_config(&ConfigKey::try_from("adxl_zoff").unwrap())
+                //     .await
+                //     .unwrap_or_default();
+                //
+                // adxl.set_software_offset(adxl_xoff as f32, adxl_yoff as f32, adxl_zoff as f32);
+
+                (Some(bmi), Some(adxl))
             }
+
             adxl.write(adxl375::Register::DataFormat, &[0b01011])
                 .await
                 .unwrap();
@@ -719,13 +733,7 @@ async fn main(_spawner: Spawner) {
             ")."
         );
 
-        get_logger()
-            .retry_log(
-                MessageType::new_log(current_rtc_time(), STARTUP_MESSAGE)
-                    .unwrap()
-                    .into_message(current_rtc_time()),
-            )
-            .await;
+        mission::log_str(STARTUP_MESSAGE).await;
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
@@ -746,7 +754,7 @@ async fn main(_spawner: Spawner) {
 
         neopixel::update_pixel(0, [0, 128, 0]);
 
-        let mission_task = mission::begin(
+        mission::begin(
             bmp,
             with_rcc!(rcc, dp.TIM12.counter(&mut rcc)),
             lrhp,
@@ -755,9 +763,9 @@ async fn main(_spawner: Spawner) {
             bmm,
             with_rcc!(rcc, dp.TIM8.counter(&mut rcc)),
             gps,
-        );
-
-        mission_task.await;
+            wrapper,
+        )
+        .await;
     }
 }
 

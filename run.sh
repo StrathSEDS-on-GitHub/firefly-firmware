@@ -16,6 +16,6 @@ else
     # If USE_DFU is set, use the dfu-util command
     echo "Using DFU mode to flash the firmware."
     llvm-objcopy -O binary $1 firmware.bin
-    dfu-util -a 0 --dfuse-address 0x08000000 -D firmware.bin
+    sudo dfu-util -a 0 --dfuse-address 0x08000000 -D firmware.bin
 fi
 

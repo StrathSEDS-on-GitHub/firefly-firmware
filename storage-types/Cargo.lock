@@ -111,6 +111,8 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 [[package]]
 name = "gortsz"
 version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee039c5725f1256b7b65d9c0a2244f7e6569164c36bad5ac7fc6397a5d59d349"
 dependencies = [
  "bitvec",
  "heapless",

@@ -1,11 +1,15 @@
-use crate::gps::{self, GPS, GPSParser};
+use crate::gps::{GPS, GPSParser};
+use crate::{CAPACITY, CONFIG_FLASH_RANGE, LOGS_FLASH_RANGE, PAGE_COUNT, neopixel};
 use crate::logs::FixedWriter;
 use crate::pins::TARGET;
 use crate::pins::i2c::LrhpImu;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
-use cortex_m_semihosting::hprintln;
+use crate::mission::StorageTask::{DoNothing, EditConfig, EraseLogs, GetLogs, GetSpaceLeft, Msg, ReadConfig};
+use crate::pins::{QspiBank};
+use f4_w25q::embedded_storage::W25QSequentialStorage;
+use sequential_storage::cache::{NoCache, PagePointerCache};
 use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
@@ -28,18 +32,19 @@ use stm32f4xx_hal::{
 };
 use storage_types::logs::{
     AccelerometerSample, CommandResponseType, CommandType, MagnetometerSample,
+    Message, LocalCtxt, GPSSample, IMUSample, MessageType, PressureTempSample, RadioCtxt
 };
 use storage_types::{
     CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueType,
-    logs::{GPSSample, IMUSample, LocalCtxt, MessageType, PressureTempSample, RadioCtxt},
 };
-use thingbuf::mpsc::{StaticChannel, StaticReceiver};
+use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
 
 use crate::{
     BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
     altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames},
     futures::{NbFuture, YieldFuture},
-    logs::get_logger,
+    gps,
+    // logs::get_logger,
     pins::i2c::Altimeter,
     radio::{self, RECEIVED_MESSAGE_QUEUE},
     usb_logger::get_serial,
@@ -105,9 +110,7 @@ pub async fn update_pyro_state() {
     };
 
     let pyro_msg = MessageType::new_pyro(mv1, mv2);
-    get_logger()
-        .retry_log(pyro_msg.clone().into_message(current_rtc_time()))
-        .await;
+    log(pyro_msg.clone().into_message(current_rtc_time())).await;
     let radio_msg = pyro_msg.clone().into_message(radio_ctxt());
     if role() == Role::Avionics {
         radio::queue_packet(radio_msg);
@@ -173,7 +176,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                     .count()
                     > 12
                 {
-                    get_logger().log_str("stage,detected ascent!").await;
+                    log_str("stage,detected ascent!").await;
                     cortex_m::interrupt::free(|cs| STAGE.borrow(cs).set(MissionStage::Ascent));
                 }
             }
@@ -195,9 +198,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 let velocities = altitudes.windows(2).map(|w| w[1] - w[0]);
 
                 if velocities.filter(|v| *v < 0.015).count() > 10 {
-                    get_logger().log_str("stage,detected apogee").await;
+                    log_str("stage,detected apogee").await;
                     if role() == Role::Avionics {
-                        get_logger().log_str("stage,firing drogue!").await;
+                        log_str("stage,firing drogue!").await;
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::One, 1000).await;
                     }
@@ -214,9 +217,9 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                     .count()
                     > 12
                 {
-                    get_logger().log_str("stage,detected main").await;
+                    log_str("stage,detected main").await;
                     if role() == Role::Avionics {
-                        get_logger().log_str("stage,firing main!").await;
+                        log_str("stage,firing main!").await;
                         // If we're the avionics, fire the pyro
                         fire_pyro(PyroPin::Two, 1000).await;
                     }
@@ -227,11 +230,10 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                 // If our average velocity is less than 1m/s, we must have landed
                 let velocities_abs = altitudes.windows(2).map(|w| libm::fabsf(w[1] - w[0]));
                 if velocities_abs.clone().filter(|x| *x < 0.2).count() > 12 {
-                    get_logger()
-                        .log_str("stage,detected entering landed stage")
+                        log_str("stage,detected entering landed stage")
                         .await;
                     if role() == Role::Cansat {
-                        get_logger().log_str("stage,landed! firing pyro2!").await;
+                        log_str("stage,landed! firing pyro2!").await;
                         fire_pyro(PyroPin::Two, 7000).await;
                     }
 
@@ -256,8 +258,7 @@ pub async fn stage_update_handler(channel: StaticReceiver<FifoFrames>) {
                     time_of_flight: LANDING_TIME.load(core::sync::atomic::Ordering::Relaxed)
                         - LAUNCH_TIME.load(core::sync::atomic::Ordering::Relaxed),
                 };
-                get_logger()
-                    .log(message.clone().into_message(current_rtc_time()))
+                    log(message.clone().into_message(current_rtc_time()))
                     .await;
                 radio::queue_packet(message.into_message(radio_ctxt()));
             }
@@ -418,7 +419,7 @@ pub async fn usb_handler() -> ! {
             };
             let key = ConfigKey::try_from(key).unwrap();
 
-            get_logger().edit_config(&key, value).await;
+            edit_config(key, value).await;
             writeln!(get_serial(), "[REPLY#{command_id}] ok").unwrap();
         } else if split.len() >= 2 && split[0].starts_with(b"remote-erase") {
             let Some(role) = parse_role(split[1]) else {
@@ -429,25 +430,19 @@ pub async fn usb_handler() -> ! {
 
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
-            if let Err(msg) = get_logger().erase_logs().await {
-                writeln!(get_serial(), "err, {}", msg).unwrap();
-            }
+            erase_logs().await; // sure do hope this never fails
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"free") {
-            let free = get_logger().space_left().await;
-            if let Ok(free) = free {
+            get_space_left(&|free| {
                 writeln!(
                     get_serial(),
                     "free,{:.02}%",
                     free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0
-                )
-                .unwrap();
-            } else {
-                writeln!(get_serial(), "err, {}", free.unwrap_err()).unwrap();
-            }
+                ).unwrap();
+            });
         } else if split.len() >= 1 && split[0].starts_with(b"logs") {
-            if let Err(msg) = get_logger()
-                .get_logs(async |s| {match &s.message {
+            get_logs(&|logs| {
+                match &logs.message {
                     MessageType::Log { timestamp, message } => {
                             writeln!(
                                 get_serial(),
@@ -603,10 +598,7 @@ pub async fn usb_handler() -> ! {
                         }
                     },
                 }
-            }).await
-            {
-                writeln!(get_serial(), "err, {}", msg).unwrap();
-            }
+            });
         } else if split.len() == 2 && split[0].starts_with(b"info") {
             let Ok(command_id) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
@@ -637,11 +629,13 @@ pub async fn usb_handler() -> ! {
             let mut writer = FixedWriter::new(&mut buf);
             write!(writer, "[REPLY#{command_id}] ").unwrap();
             for &(key, _) in CONFIG_KEYS.iter() {
-                let value: u64 = match get_logger().read_config(&key.try_into().unwrap()).await {
-                    Ok(value) => value,
-                    Err(_) => 0,
-                };
-                write!(writer, "{key}={value},").unwrap();
+                let keyy = ConfigKey::try_from(key).unwrap();
+
+                read_config(keyy, &move |value| {
+                    let key = key.clone();
+                    let mut writer = FixedWriter::new(&mut buf);
+                    write!(writer, "{key}={value},").unwrap();
+                }).await;
             }
             writeln!(writer).unwrap();
             writeln!(get_serial(), "{}", unsafe {
@@ -740,13 +734,12 @@ async fn gps_handler(mut gps: GPS) -> ! {
 
         let radio_msg = MessageType::new_gps(samples.clone()).into_message(radio_ctxt());
 
-        get_logger()
-            .log(
-                MessageType::new_gps(samples)
-                    .clone()
-                    .into_message(current_rtc_time::<LocalCtxt>()),
-            )
-            .await;
+        log(
+            MessageType::new_gps(samples)
+                .clone()
+                .into_message(current_rtc_time::<LocalCtxt>()),
+        )
+        .await;
 
         radio::queue_packet(radio_msg)
     }
@@ -805,13 +798,12 @@ async fn bmp_altimeter_handler(
         ))
         .into_message(radio_ctxt());
 
-        get_logger()
-            .log(
-                MessageType::new_pressure_temp(samples)
-                    .clone()
-                    .into_message(current_rtc_time()),
-            )
-            .await;
+        log(
+            MessageType::new_pressure_temp(samples)
+                .clone()
+                .into_message(current_rtc_time()),
+        )
+        .await;
         radio::queue_packet(radio_msg);
     }
 }
@@ -1056,7 +1048,7 @@ async fn handle_incoming_packets() -> ! {
                                 );
                             }
                             CommandType::Erase => {
-                                get_logger().erase_logs().await.unwrap();
+                                erase_logs().await;
 
                                 radio::queue_packet(
                                     MessageType::CommandResponse {
@@ -1228,6 +1220,188 @@ pub async fn buzz_number(number: u32) {
     }
 }
 
+static LOG_CHANNEL: StaticChannel<StorageTask, 32> = StaticChannel::new();
+
+#[derive(Clone, Default)]
+enum StorageTask {
+    Msg(Message<LocalCtxt>),
+    GetLogs(&'static (dyn FnOnce(&Message<LocalCtxt>) + Sync)),
+    EraseLogs,
+    ReadConfig(ConfigKey, &'static (dyn FnOnce(u64) + Sync)),
+    EditConfig(ConfigKey, u64),
+    GetSpaceLeft(&'static (dyn FnOnce(u32) + Sync)),
+    #[default] DoNothing,
+}
+
+pub async fn log(msg: Message<LocalCtxt>) {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::Msg(msg)).await;
+}
+
+pub async fn log_str(msg: &str) {
+    let time: u32 = current_rtc_time();
+    log(
+        MessageType::new_log(time, msg)
+            .unwrap()
+            .into_message(LocalCtxt { timestamp: time }),
+    )
+    .await;
+}
+
+pub async fn get_logs(f: &'static (dyn FnOnce(&Message<LocalCtxt>) + Sync)) {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::GetLogs(f)).await;
+}
+
+pub async fn erase_logs() {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::EraseLogs);
+}
+
+pub async fn edit_config(key: ConfigKey, value: u64) {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::EditConfig(key, value)).await;
+}
+
+pub async fn read_config(key: ConfigKey, f: &'static (dyn FnOnce(u64) + Sync)) {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::ReadConfig(key, f)).await;
+}
+
+pub async fn get_space_left(f: &'static (dyn FnOnce(u32) + Sync)) {
+    let (sender, _) = LOG_CHANNEL.split();
+    sender.send(StorageTask::GetSpaceLeft(f)).await;
+}
+
+async fn log_handler(
+    mut flash: W25QSequentialStorage<QspiBank, {CAPACITY}>, 
+) -> ! {
+    let (_, receiver) = LOG_CHANNEL.split();
+    let mut cache: PagePointerCache<{PAGE_COUNT}> = PagePointerCache::new();
+
+    loop {
+        if let Some(task) = receiver.recv().await {
+            match task {
+                Msg(msg) => {
+                    let mut buf = [0u8; 2048];
+                    if let Ok(thing) = postcard::to_slice(&msg, &mut buf) {
+                        let _ = queue::push(&mut flash, LOGS_FLASH_RANGE, &mut cache, &buf, false).await;
+                    }
+                },
+                GetLogs(f) => {
+                    let mut no_cache = NoCache::new();
+                    let mut iter = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut no_cache)
+                        .await
+                        .unwrap();
+
+                    let mut buf = [0u8; 2048];
+
+                    while let Ok(Some(ref buffer)) = iter.next(&mut buf).await {
+                        let msg: Message<LocalCtxt> = match postcard::from_bytes(buffer) {
+                            Ok(msg) => msg,
+                            Err(_) => continue,
+                        };
+
+                        f(&msg);
+                    } 
+                }
+                EraseLogs => {
+                    let mut buf = [0u8; 256];
+                    let mut config = heapless::Vec::<(&'static str, u64), { CONFIG_KEYS.len() }>::new();
+
+                    for (k, value_type) in CONFIG_KEYS {
+                        let key: ConfigKey = k.try_into().unwrap();
+
+                        match value_type {
+                            storage_types::ValueType::U64 => {
+                                if let Ok(Some(v)) = map::fetch_item(
+                                    &mut flash, 
+                                    CONFIG_FLASH_RANGE, 
+                                    &mut NoCache::new(), 
+                                    &mut buf, 
+                                    &key   
+                                ).await {
+                                    config.push((k, v));  
+                                }
+                            }
+                        }
+                    }
+
+                    let mut flashh = flash.release();
+                    let pending = flashh.chip_erase().unwrap();
+
+                    let mut color = 255u8;
+                    let mut i = 0;
+                    let ooh_pretty_lights = async {
+                        loop {
+                            neopixel::update_pixel(0, [color, color, 0]);
+                            i += 1;
+
+                            if i % 100 == 0 {
+                                color ^= 255;
+                            }
+
+                            YieldFuture::new().await;
+                        }
+                    };
+
+                    embassy_futures::select::select(ooh_pretty_lights, pending).await;
+                    neopixel::update_pixel(0, [0, 128, 0]);
+
+                    flash = W25QSequentialStorage::<_, {CAPACITY}>::new(flashh);
+
+                    for (k, v) in config {
+                        let key: ConfigKey = k.try_into().unwrap();
+
+                        let _ = map::store_item(
+                            &mut flash, 
+                            CONFIG_FLASH_RANGE, 
+                            &mut NoCache::new(), 
+                            &mut buf, 
+                            &key, 
+                            &v
+                        ).await;
+                    }
+                },
+                ReadConfig(key, f) => {
+                    let mut buf = [0u8; 64];    
+                    let thing = map::fetch_item(
+                        &mut flash, 
+                        CONFIG_FLASH_RANGE, 
+                        &mut NoCache::new(), 
+                        &mut buf, 
+                        &key 
+                    ).await;
+
+                    if let Ok(Some(value)) = thing {
+                        f(value);
+                    }
+                },
+                EditConfig(key, value) => {
+                    let _ = map::store_item(
+                        &mut flash, 
+                        CONFIG_FLASH_RANGE, 
+                        &mut NoCache::new(), 
+                        &mut [0u8; 64], 
+                        &key, 
+                        &value
+                    ).await;
+                },
+                GetSpaceLeft(f) => {
+                    let space = queue::space_left(&mut flash, LOGS_FLASH_RANGE, &mut cache).await;
+
+                    if let Ok(space) = space {
+                        f(space);
+                    }
+                },
+                DoNothing => {
+                    // well, what did you expect?
+                }
+            }
+        }
+    }
+}
+
 async fn buzzer_controller() -> ! {
     // Buzz 1s on startup
     {
@@ -1279,9 +1453,7 @@ async fn bmm_350_handler<
             radio::queue_packet(radio_msg);
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
     }
 }
 
@@ -1306,9 +1478,7 @@ async fn adxl_imu_handler(
             radio::queue_packet(radio_msg);
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
     }
 }
 
@@ -1341,9 +1511,7 @@ async fn icm_imu_handler(
             radio::queue_packet(message.clone().into_message(radio_ctxt()));
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
     }
 }
 
@@ -1414,9 +1582,7 @@ where
             radio::queue_packet(message.clone().into_message(radio_ctxt()));
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
     }
 }
 
@@ -1467,9 +1633,7 @@ pub async fn bmi323_imu_handler(
             radio::queue_packet(radio_msg);
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
     }
 }
 
@@ -1530,9 +1694,7 @@ pub async fn ms5607_altimeter_handler(
             radio::queue_packet(radio_msg);
         }
 
-        get_logger()
-            .log(message.into_message(current_rtc_time()))
-            .await;
+        log(message.into_message(current_rtc_time())).await;
 
         YieldFuture::new().await;
     }
@@ -1554,7 +1716,7 @@ pub async fn begin<
     >,
     bmm_timer: Counter<TIM8, 10000>,
     gps: GPS,
-) -> !
+    flash: W25QSequentialStorage<QspiBank, {CAPACITY}>
 where
     #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
     I: SpiDevice,
@@ -1562,7 +1724,7 @@ where
     I: I2c,
     #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
     I: bno080::interface::SensorInterface<SensorError = T>,
-{
+) -> ! {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
 
@@ -1611,7 +1773,13 @@ where
         Role::GroundMain =>
         {
             #[allow(unreachable_code)]
-            join!(usb_handler(), gps_handler(gps), handle_incoming_packets()).0
+            join!(
+                usb_handler(), 
+                gps_handler(gps), 
+                handle_incoming_packets(), 
+                log_handler(flash)
+            )
+            .0
         }
         Role::Avionics =>
         {
@@ -1624,7 +1792,8 @@ where
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
-                bmm_task
+                bmm_task,
+                log_handler(flash)
             )
             .0
         }
@@ -1639,7 +1808,8 @@ where
                 altimeter_task,
                 handle_incoming_packets(),
                 stage_update_handler(pressure_receiver),
-                bmm_task
+                bmm_task,
+                log_handler(flash)
             )
             .0
         }
