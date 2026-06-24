@@ -17,7 +17,7 @@ use derive_more::{From, Into};
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, i2c::I2c, spi::SpiDevice};
 use fugit::{Duration, ExtU32};
-use futures::join;
+use futures::{StreamExt, join};
 use heapless::{String, Vec};
 use nmea0183::{GGA, ParseResult, datetime::Time};
 use serde::{Deserialize, Serialize};
@@ -628,15 +628,18 @@ pub async fn usb_handler() -> ! {
             let mut buf = [0u8; 256];
             let mut writer = FixedWriter::new(&mut buf);
             write!(writer, "[REPLY#{command_id}] ").unwrap();
-            for &(key, _) in CONFIG_KEYS.iter() {
-                let keyy = ConfigKey::try_from(key).unwrap();
+            let t = futures::stream::iter(CONFIG_KEYS.iter()).map(|key| read_config(todo!(), &|value| {
+                    writeln!(get_serial(), "{key}={value},").unwrap();
+            }));
+            //for &(key, _) in CONFIG_KEYS.iter() {
+            //    let keyy = ConfigKey::try_from(key).unwrap();
 
-                read_config(keyy, &move |value| {
-                    let key = key.clone();
-                    let mut writer = FixedWriter::new(&mut buf);
-                    write!(writer, "{key}={value},").unwrap();
-                }).await;
-            }
+
+            //    read_config(keyy, &|value| {
+            //        writeln!(get_serial(), "{key}={value},").unwrap();
+            //    }).await;
+            //}
+
             writeln!(writer).unwrap();
             writeln!(get_serial(), "{}", unsafe {
                 core::str::from_utf8_unchecked(writer.data())
