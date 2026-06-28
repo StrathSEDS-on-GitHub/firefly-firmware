@@ -133,8 +133,7 @@ pub async fn log_handler(
                     }
                 }
                 GetLogs(f) => {
-                    let mut no_cache = NoCache::new();
-                    let mut iter = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut no_cache)
+                    let mut iter = queue::iter(&mut flash, LOGS_FLASH_RANGE, &mut cache)
                         .await
                         .unwrap();
 
@@ -196,6 +195,7 @@ pub async fn log_handler(
                     neopixel::update_pixel(0, [0, 128, 0]);
 
                     flash = W25QSequentialStorage::<_, { CAPACITY }>::new(flashh);
+                    cache = PagePointerCache::new();
 
                     for (k, v) in config {
                         let key: ConfigKey = k.try_into().unwrap();
