@@ -24,7 +24,6 @@ pub fn update_target_alt(alt: f32) {
 
     unsafe {
         use micromath::F32Ext;
-        crate::hprintln!("Updating target alt to {}m (self alt {}m)", alt, SELF_ALT); // for debugging 
         TARGET_POSE_DEG[2] = (alt - SELF_ALT).atan2(dist) * 180.0 / core::f32::consts::PI;
     }
 }

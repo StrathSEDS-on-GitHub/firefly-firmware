@@ -1,4 +1,5 @@
 #![feature(ptr_metadata)]
+#![feature(sync_unsafe_cell)]
 #![allow(clippy::empty_loop)]
 #![feature(where_clause_attrs)]
 #![feature(impl_trait_in_assoc_type)]
@@ -11,8 +12,9 @@ use crate::gps::GPS;
 use crate::gs::{
     TIMER5, X_DIR_PIN, X_PWM_CHANNEL, X_PWM_MANAGER, Y_DIR_PIN, Y_PWM_CHANNEL, Y_PWM_MANAGER,
 };
-use crate::logs::get_logger;
-use crate::logs::setup_logger;
+use crate::logs::LOG_CHANNEL;
+use crate::logs::LOG_SENDER;
+use crate::logs::log_str;
 use crate::mission::PYRO_ADC;
 use crate::mission::PYRO_CONT1;
 use crate::mission::PYRO_CONT2;
@@ -21,7 +23,6 @@ use crate::mission::PYRO_FIRE1;
 use crate::mission::PYRO_FIRE2;
 use crate::mission::buzz;
 use crate::mission::buzz_number;
-use crate::mission::current_rtc_time;
 use crate::pins::gps::PpsPin;
 use crate::pins::radio::RadioInteruptPin;
 use crate::pins::radio::RadioSpi;
@@ -176,6 +177,10 @@ async fn main(_spawner: Spawner) {
 
         let mut delay = cp.SYST.delay(&rcc.clocks);
         let buzzer_pin = buzzer_pin!(gpio);
+
+        let (log_sender, log_receiver) = LOG_CHANNEL.split();
+        // SAFETY: No other references exist yet.
+        unsafe { (&mut *LOG_SENDER.get()).replace(log_sender) };
 
         // SAFETY: these are touched only in panic timer/buzzer code
         unsafe {
@@ -733,7 +738,7 @@ async fn main(_spawner: Spawner) {
             ")."
         );
 
-        mission::log_str(STARTUP_MESSAGE).await;
+        log_str(STARTUP_MESSAGE);
 
         let mut lora = SX126x::new(spi1_device, lora_pins);
         lora.init(conf).unwrap();
@@ -764,6 +769,7 @@ async fn main(_spawner: Spawner) {
             with_rcc!(rcc, dp.TIM8.counter(&mut rcc)),
             gps,
             wrapper,
+            log_receiver,
         )
         .await;
     }

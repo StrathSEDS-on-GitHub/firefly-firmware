@@ -1,6 +1,6 @@
 #![no_std]
 
-use core::str::FromStr;
+use core::{fmt::Display, str::FromStr};
 
 use heapless::String;
 use sequential_storage::map::Key;
@@ -9,7 +9,13 @@ use serde::{Deserialize, Serialize};
 pub mod logs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigKey(String<32>);
+pub struct ConfigKey(pub String<32>);
+
+impl Display for ConfigKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 #[repr(u8)]
