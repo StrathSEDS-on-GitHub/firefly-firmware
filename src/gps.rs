@@ -24,6 +24,7 @@ use stm32f4xx_hal as hal;
 mod dma {
     use core::{
         cell::RefCell,
+        fmt::Write,
         ops::{Deref, DerefMut},
     };
 
@@ -35,9 +36,12 @@ mod dma {
     };
     use thingbuf::mpsc::{StaticChannel, StaticSender};
 
-    use crate::pins::gps::{GPSRxStream, GPSUsart};
+    use crate::{
+        pins::gps::{GPSRxStream, GPSUsart},
+        usb_logger::get_serial,
+    };
 
-    pub(crate) const RX_BUFFER_SIZE: usize = 1024;
+    pub(crate) const RX_BUFFER_SIZE: usize = 512;
 
     pub static STATE: GPSState = GPSState {
         channel: thingbuf::mpsc::StaticChannel::new(),
@@ -59,7 +63,7 @@ mod dma {
     pub struct RxSendRef<'a>(pub thingbuf::mpsc::SendRef<'a, RxBuffer>);
 
     pub struct GPSState {
-        pub(super) channel: StaticChannel<RxBuffer, 4>,
+        pub(super) channel: StaticChannel<RxBuffer, 8>,
     }
 
     pub static mut SENDER: Option<StaticSender<RxBuffer>> = None;
@@ -107,7 +111,9 @@ mod dma {
                 let x = sender().try_send_ref();
                 unsafe {
                     transfer
-                        .next_transfer_with(|buf, _| ((x.ok().map(RxSendRef).unwrap_or(buf)), ()))
+                        .next_transfer_with(|buf, _| {
+                            ((x.ok().map(RxSendRef).unwrap_or(buf)), ())
+                        })
                         .unwrap();
                 }
             }
@@ -219,6 +225,8 @@ impl GPS {
             );
             rx_transfer.start(|_rx| {});
 
+            dma::RX_TRANSFER.borrow(cs).replace(Some(rx_transfer));
+
             GPS {
                 receiver: self.receiver,
                 tx,
@@ -266,8 +274,8 @@ impl GPS {
         if let Some(mode) = mode {
             write!(&mut writer, ",{:01}", mode as u8).unwrap();
         }
-        let checksum = writer.data().iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
-        write!(&mut writer, "*{checksum:02X}\r\n").unwrap();
+        // let checksum = writer.data().iter().skip(1).fold(0u8, |acc, &x| acc ^ x);
+        write!(&mut writer, "\r\n").unwrap();
 
         self.tx(writer.data()).await;
     }

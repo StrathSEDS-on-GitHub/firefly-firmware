@@ -28,6 +28,7 @@ use crate::pins::radio::RadioSpi;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::radio::TDM_CONFIG_MAIN;
+use crate::usb_logger::get_serial;
 use bmi323::Bmi323;
 use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
@@ -289,30 +290,6 @@ async fn main(_spawner: Spawner) {
         let rx_stream = gps_rx_stream!(gps_streams);
 
         let mut gps = GPS::setup(rx_stream, gps_serial);
-
-        delay.delay_ms(2);
-
-        if cfg!(any(
-            all(feature = "target-maxi", feature = "ultra-dev"),
-            feature = "target-ultra"
-        )) {
-            gps.init_teseo().await;
-            gps.set_par(gps::ConfigBlock::ConfigCurrent, 201, b"6", None)
-                .await;
-            gps.set_par(gps::ConfigBlock::ConfigCurrent, 228, b"10", None)
-                .await;
-        } else {
-            gps.tx(b"$PMTK251,115200*1F\r\n").await;
-            delay.delay_ms(10);
-            let mut rcc =
-                cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().take().unwrap());
-            gps = gps.reinit_with_rate(115200, &mut rcc).await;
-            cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().replace(rcc));
-
-            gps.set_nmea_output().await;
-            gps.tx(b"$PMTK220,100*2F\r\n").await;
-        }
-
         let mut syscfg = with_rcc!(rcc, dp.SYSCFG.constrain(&mut rcc));
         let mut pps_pin = pps_pin!(gpio);
         pps_pin.make_interrupt_source(&mut syscfg);
@@ -332,6 +309,43 @@ async fn main(_spawner: Spawner) {
                 pac::NVIC::unmask(pac::Interrupt::EXTI2);
                 pac::NVIC::unpend(pac::Interrupt::EXTI2);
             }
+        }
+
+        if cfg!(any(
+            all(feature = "target-maxi", feature = "ultra-dev"),
+            feature = "target-ultra"
+        )) {
+            delay.delay_ms(1000);
+            gps.init_teseo().await;
+            delay.delay_ms(100);
+            gps.set_par(gps::ConfigBlock::ConfigNVMStored, 201, b"0x6", None)
+                .await;
+            delay.delay_ms(100);
+            gps.set_par(gps::ConfigBlock::ConfigNVMStored, 228, b"0x0", None)
+                .await;
+            delay.delay_ms(100);
+            gps.tx(b"$PSTMSETPAR,1303,0.01\r\n").await;
+            delay.delay_ms(100);
+            gps.tx(b"$PSTMSETPAR,1102,0xD\r\n").await;
+            delay.delay_ms(100);
+            gps.tx(b"$PSTMSAVEPAR\r\n").await;
+            delay.delay_ms(100);
+            gps.tx(b"$PSTMSRR\r\n").await;
+            delay.delay_ms(100);
+            let mut rcc =
+                cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().take().unwrap());
+            gps = gps.reinit_with_rate(1680000, &mut rcc).await;
+            cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().replace(rcc));
+        } else {
+            gps.tx(b"$PMTK251,115200*1F\r\n").await;
+            delay.delay_ms(10);
+            let mut rcc =
+                cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().take().unwrap());
+            gps = gps.reinit_with_rate(115200, &mut rcc).await;
+            cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().replace(rcc));
+
+            gps.set_nmea_output().await;
+            gps.tx(b"$PMTK220,100*2F\r\n").await;
         }
 
         let mut wrapper = W25QSequentialStorage::new(flash);
@@ -566,10 +580,10 @@ async fn main(_spawner: Spawner) {
                 imus_spi!(dp).spi(
                     imu_spi_pins!(gpio),
                     spi::Mode {
-                        polarity: spi::Polarity::IdleHigh,
-                        phase: spi::Phase::CaptureOnSecondTransition,
+                        polarity: spi::Polarity::IdleLow,
+                        phase: spi::Phase::CaptureOnFirstTransition,
                     },
-                    100.kHz(),
+                    3.MHz(),
                     &mut rcc,
                 )
             );
@@ -586,7 +600,7 @@ async fn main(_spawner: Spawner) {
                 rcc,
                 Bmi323::new_with_spi(bmidev, dp.TIM4.delay_us(&mut rcc))
             );
-            bmi.init().unwrap();
+            let _ = bmi.init(); // fails if already on.
             let accel_config = AccelConfig::builder()
                 .odr(OutputDataRate::Odr100hz)
                 .range(AccelerometerRange::G16)

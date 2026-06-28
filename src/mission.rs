@@ -1,10 +1,11 @@
-use crate::gps::{GPS, GPSParser};
+use crate::gps::{self, GPS, GPSParser};
 use crate::logs::FixedWriter;
 use crate::pins::TARGET;
 use crate::pins::i2c::LrhpImu;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
+use cortex_m_semihosting::hprintln;
 use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
@@ -711,7 +712,7 @@ impl From<RTCTime> for EpochTime {
     }
 }
 
-async fn gps_handler(gps: GPS) -> ! {
+async fn gps_handler(mut gps: GPS) -> ! {
     let mut gps_parser = GPSParser::new();
     loop {
         let mut samples = [GPSSample::default(); 20];
