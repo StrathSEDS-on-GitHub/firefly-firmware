@@ -1,4 +1,3 @@
-
 #[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
 use crate::pins::i2c::Altimeter;
 #[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
@@ -76,11 +75,11 @@ pub const ALTIMETER_BUF_SIZE: usize = crate::bmp581::BMP581::BUF_SIZE;
 #[cfg(not(any(feature = "target-ultra", feature = "ultra-dev")))]
 pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
     use crate::futures::YieldFuture;
-    use crate::interrupt_wake;
-    use stm32f4xx_hal::pac;
     use crate::futures::bmp_wake;
+    use crate::interrupt_wake;
     use core::ptr::addr_of_mut;
     use core::sync::atomic::AtomicBool;
+    use stm32f4xx_hal::pac;
     static mut DATA: [u8; ALTIMETER_BUF_SIZE] = [0u8; ALTIMETER_BUF_SIZE];
 
     cortex_m::interrupt::free(|cs| {
@@ -128,7 +127,7 @@ pub async fn read_altimeter_fifo(bmp: Altimeter) -> (FifoFrames, Altimeter) {
         bmp_wake::future().await;
     }
 
-        // clear the DMA interrupt
+    // clear the DMA interrupt
     pac::NVIC::mask(pac::Interrupt::DMA1_STREAM0);
     pac::NVIC::mask(pac::Interrupt::DMA1_STREAM);
 

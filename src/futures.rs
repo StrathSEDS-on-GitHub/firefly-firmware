@@ -6,9 +6,7 @@ use core::{
 };
 use embedded_hal_async::delay::DelayNs;
 use fugit::ExtU32;
-use stm32f4xx_hal::{
-    timer::{self, Counter, TimerExt},
-};
+use stm32f4xx_hal::timer::{self, Counter, TimerExt};
 use thingbuf::mpsc::{StaticSender, errors::TrySendError};
 
 use crate::CLOCKS;

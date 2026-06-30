@@ -35,9 +35,7 @@ pub fn write_board_identifier_to_otp(flash: FLASH, id: u8, version: &[u8], lock:
 
 #[allow(dead_code)]
 pub fn read_id_from_otp() -> u8 {
-    unsafe {
-        OTP_BLOCK0.read_volatile()
-    }
+    unsafe { OTP_BLOCK0.read_volatile() }
 }
 
 #[allow(dead_code)]

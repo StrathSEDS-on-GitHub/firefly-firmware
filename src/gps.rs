@@ -24,7 +24,6 @@ use stm32f4xx_hal as hal;
 mod dma {
     use core::{
         cell::RefCell,
-        fmt::Write,
         ops::{Deref, DerefMut},
     };
 
@@ -36,9 +35,7 @@ mod dma {
     };
     use thingbuf::mpsc::{StaticChannel, StaticSender};
 
-    use crate::{
-        pins::gps::{GPSRxStream, GPSUsart}, usb_logger::get_serial,
-    };
+    use crate::pins::gps::{GPSRxStream, GPSUsart};
 
     pub(crate) const RX_BUFFER_SIZE: usize = 512;
 
@@ -110,9 +107,7 @@ mod dma {
                 let x = sender().try_send_ref();
                 unsafe {
                     transfer
-                        .next_transfer_with(|buf, _| {
-                            ((x.ok().map(RxSendRef).unwrap_or(buf)), ())
-                        })
+                        .next_transfer_with(|buf, _| ((x.ok().map(RxSendRef).unwrap_or(buf)), ()))
                         .unwrap();
                 }
             }

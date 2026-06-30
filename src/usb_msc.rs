@@ -4,18 +4,22 @@ use core::{cell::RefCell, ptr::addr_of_mut};
 
 use cortex_m::peripheral::NVIC;
 use f4_w25q::w25q::{SectorAddress, W25Q};
+use stm32f4xx_hal::pac;
 use stm32f4xx_hal::{
-    gpio::{alt::otg_fs, Input, Pin},
-    otg_fs::{UsbBus, UsbBusType, USB},
+    gpio::{Input, Pin, alt::otg_fs},
+    otg_fs::{USB, UsbBus, UsbBusType},
     pac::{OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     qspi::Bank1,
     rcc::Clocks,
 };
-use stm32f4xx_hal::{pac};
 use usb_device::prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 use usbd_scsi::{BlockDevice, Scsi};
 
-use crate::{neopixel::{self}, usb_logger::USB_BUS, EP_MEMORY};
+use crate::{
+    EP_MEMORY,
+    neopixel::{self},
+    usb_logger::USB_BUS,
+};
 
 pub static mut USB_STORAGE: Option<Scsi<UsbBusType, Storage>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<UsbBusType>> = None;
@@ -41,8 +45,11 @@ impl Storage {
             for block in 0..8 {
                 if !unsafe { SECTOR_CACHED_BLOCKS[block] } {
                     // This block is not
-                    self.read_block(cached_addr/512 + block as u32, &mut sector[block * 512..(block + 1) * 512])
-                        .unwrap();
+                    self.read_block(
+                        cached_addr / 512 + block as u32,
+                        &mut sector[block * 512..(block + 1) * 512],
+                    )
+                    .unwrap();
                 }
             }
 
@@ -56,7 +63,6 @@ impl Storage {
         addr: u32,
         sector: &[u8],
     ) -> Result<(), usbd_scsi::BlockDeviceError> {
-
         neopixel::update_pixel(2, [128, 0, 0]);
 
         self.host
@@ -72,7 +78,7 @@ impl Storage {
             self.host.borrow_mut().wait_on_busy().unwrap();
         }
 
-        neopixel::update_pixel(2, [0,0,0]);
+        neopixel::update_pixel(2, [0, 0, 0]);
 
         Ok(())
     }
@@ -81,7 +87,11 @@ impl Storage {
 impl BlockDevice for Storage {
     const BLOCK_BYTES: usize = 512;
 
-    fn read_block(&mut self, lba: u32, block: &mut [u8]) -> Result<(), usbd_scsi::BlockDeviceError> {
+    fn read_block(
+        &mut self,
+        lba: u32,
+        block: &mut [u8],
+    ) -> Result<(), usbd_scsi::BlockDeviceError> {
         if let Some(cached_addr) = unsafe { SECTOR_CACHE_ADDR } {
             // If our sector is cached
             if cached_addr == (lba / 8 * 4096) {
@@ -97,17 +107,15 @@ impl BlockDevice for Storage {
             }
         }
 
-        neopixel::update_pixel(2, [0,0,128]);
+        neopixel::update_pixel(2, [0, 0, 128]);
 
         let res = self
             .host
             .borrow_mut()
             .read((lba * Self::BLOCK_BYTES as u32).into(), block)
-            .map_err(|_| {
-                usbd_scsi::BlockDeviceError::HardwareError
-            });
+            .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError);
 
-        neopixel::update_pixel(2, [0,0,0]);
+        neopixel::update_pixel(2, [0, 0, 0]);
 
         res
     }
@@ -122,7 +130,7 @@ impl BlockDevice for Storage {
                 .chip_erase()
                 .map_err(|_| usbd_scsi::BlockDeviceError::HardwareError)?;
 
-            neopixel::update_pixel(2, [0,0,0]);
+            neopixel::update_pixel(2, [0, 0, 0]);
 
             return Ok(());
         }
@@ -173,13 +181,15 @@ pub fn setup_usb_msc<'a>(
         hclk: clocks.hclk(),
     };
 
-    let usb_bus = UsbBus::new(usb, unsafe { &mut * addr_of_mut!(EP_MEMORY) });
+    let usb_bus = UsbBus::new(usb, unsafe { &mut *addr_of_mut!(EP_MEMORY) });
     // SAFETY: This function is the only access of USB_BUS and it is only called once at init.
     // As a result we can use static mut.
     unsafe {
         crate::usb_logger::USB_BUS = Some(usb_bus);
     }
-    let storage = Storage { host: RefCell::new(w25q) };
+    let storage = Storage {
+        host: RefCell::new(w25q),
+    };
 
     let scsi = unsafe {
         Scsi::new(

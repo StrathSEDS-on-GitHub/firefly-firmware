@@ -34,13 +34,13 @@ pub mod i2c {
     use core::{cell::UnsafeCell, sync::atomic::Ordering};
     use embedded_hal::i2c::{ErrorType, I2c};
     use embedded_hal_bus::i2c::AtomicError;
-    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-use stm32f4xx_hal::{pac::TIM4, timer::DelayUs};
     use stm32f4xx_hal::{
         dma::{Stream0, Stream1},
         i2c::dma::{I2CMasterDma, I2CMasterHandleIT, I2CMasterWriteReadDMA, RxDMA, TxDMA},
         pac::{DMA1, I2C1, I2C3, TIM6},
     };
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    use stm32f4xx_hal::{pac::TIM4, timer::DelayUs};
     pub type I2c1Handle =
         I2CMasterDma<I2C1, TxDMA<I2C1, Stream1<DMA1>, 0>, RxDMA<I2C1, Stream0<DMA1>, 1>>;
 
@@ -61,19 +61,18 @@ use stm32f4xx_hal::{pac::TIM4, timer::DelayUs};
     >;
 
     #[cfg(feature = "target-mini")]
-    pub type LrhpImu<I> = icm20948_driver::icm20948::i2c::IcmImu<I, icm20948_driver::icm20948::NoDmp>;
-    
+    pub type LrhpImu<I> =
+        icm20948_driver::icm20948::i2c::IcmImu<I, icm20948_driver::icm20948::NoDmp>;
+
     #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
     pub type LrhpImu<I> = bno080::wrapper::BNO080<I>;
 
     #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
     pub type LrhpImu<I> = bmi323::Bmi323<bmi323::interface::SpiInterface<I>, DelayUs<TIM4>>;
-    
 
     #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-    pub type HrlpImu<I> = adxl375::spi::ADXL375<I, crate::futures::TimerDelay<stm32f4xx_hal::pac::TIM11>>;
-
-
+    pub type HrlpImu<I> =
+        adxl375::spi::ADXL375<I, crate::futures::TimerDelay<stm32f4xx_hal::pac::TIM11>>;
 
     #[macro_export]
     macro_rules! i2c_dma_streams {
@@ -363,7 +362,11 @@ macro_rules! imu_spi_pins {
         }
         #[cfg(feature = "target-ultra")]
         {
-            (Some($gpio.a.pa5), Some($gpio.b.pb4.into_alternate()), Some($gpio.b.pb5))
+            (
+                Some($gpio.a.pa5),
+                Some($gpio.b.pb4.into_alternate()),
+                Some($gpio.b.pb5),
+            )
         }
     }};
 }

@@ -1,10 +1,10 @@
 use fugit::RateExtU32;
 use stm32f4xx_hal::{
-    gpio::{gpioc, gpioe, Output, PushPull},
+    ClearFlags,
+    gpio::{Output, PushPull, gpioc, gpioe},
     interrupt,
     pac::{TIM1, TIM2, TIM5},
     timer::{CounterHz, PwmChannel, PwmHzManager},
-    ClearFlags
 };
 
 static mut TARGET_POSE_DEG: [f32; 3] = [0.0; 3];

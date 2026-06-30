@@ -22,7 +22,7 @@ impl Display for ConfigKey {
 pub enum PyroPin {
     One,
     Two,
-    Both
+    Both,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -31,6 +31,7 @@ pub enum Role {
     Cansat,
     Avionics,
     GroundMain,
+    AftTena,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -43,7 +44,6 @@ pub enum MissionStage {
     DescentMain,
     Landed,
 }
-
 
 pub enum ValueType {
     U64,

@@ -1,23 +1,21 @@
-
 use cortex_m::peripheral::NVIC;
 use embedded_hal::i2c::I2c;
 use heapless::Vec;
 use stm32f4xx_hal::{
-    i2c::dma::{
-            I2CMasterHandleIT, 
-            I2CMasterWriteReadDMA, 
-            I2cCompleteCallback
-        },
     i2c,
+    i2c::dma::{I2CMasterHandleIT, I2CMasterWriteReadDMA, I2cCompleteCallback},
     interrupt,
 };
 
-use crate::{altimeter::{AltimeterFifoDMA, PressureTemp}, pins::i2c::I2c1Proxy};
+use crate::{
+    altimeter::{AltimeterFifoDMA, PressureTemp},
+    pins::i2c::I2c1Proxy,
+};
 
 const ADDR: u8 = 0x46;
 
 pub struct BMP581<I2C> {
-    com: I2C
+    com: I2C,
 }
 
 #[allow(dead_code)]
@@ -29,7 +27,7 @@ pub enum Register {
 
 impl BMP581<()> {
     pub const FRAME_COUNT: usize = 16;
-    pub const BUF_SIZE:    usize = Self::FRAME_COUNT * 6;
+    pub const BUF_SIZE: usize = Self::FRAME_COUNT * 6;
 }
 
 impl BMP581<I2c1Proxy> {
@@ -39,7 +37,7 @@ impl BMP581<I2c1Proxy> {
 }
 
 #[allow(dead_code)]
-impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C>  {
+impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C> {
     pub fn new(mut i2c: I2C) -> Result<Self, I2C::Error> {
         i2c.write(ADDR, &[0x37, 0b0000_0001])?;
         let chip = BMP581 { com: i2c };
@@ -106,8 +104,10 @@ impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C>  {
             .chunks(6)
             .map(|x| x.split_at(3))
             .map(|(temp, pres)| PressureTemp {
-                pressure: ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16) as f32,
-                temperature: ((temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16) as f32,
+                pressure: ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16)
+                    as f32,
+                temperature: ((temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16)
+                    as f32,
             })
             .enumerate()
         {
@@ -118,7 +118,9 @@ impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C>  {
     }
 }
 
-impl<I2C: I2c + I2CMasterHandleIT + I2CMasterWriteReadDMA> AltimeterFifoDMA<{BMP581::FRAME_COUNT}, {BMP581::BUF_SIZE}> for BMP581<I2C> {
+impl<I2C: I2c + I2CMasterHandleIT + I2CMasterWriteReadDMA>
+    AltimeterFifoDMA<{ BMP581::FRAME_COUNT }, { BMP581::BUF_SIZE }> for BMP581<I2C>
+{
     const FIFO_READ_REG: u8 = 0x29;
     const ADDRESS: u8 = 0x46;
 
@@ -128,21 +130,20 @@ impl<I2C: I2c + I2CMasterHandleIT + I2CMasterWriteReadDMA> AltimeterFifoDMA<{BMP
 
     fn process_fifo_buffer(
         &self,
-        data: [u8; BMP581::BUF_SIZE]
-    ) -> Vec<PressureTemp, {BMP581::FRAME_COUNT}> {
-        data
-        .chunks(6)
-        .map(|x| x.split_at(3))
-        .map(|(temp, pres)| {
-            let (u_pres, u_temp) = Self::decode_frame(pres, temp);
-            let pres = u_pres as f32 / libm::powf(2.0, 6.0);
-            let temp = u_temp as f32 / libm::powf(2.0, 16.0);
-            PressureTemp {
-                temperature: temp,
-                pressure: pres
-            }
-        })
-        .collect::<Vec<_, 16>>()
+        data: [u8; BMP581::BUF_SIZE],
+    ) -> Vec<PressureTemp, { BMP581::FRAME_COUNT }> {
+        data.chunks(6)
+            .map(|x| x.split_at(3))
+            .map(|(temp, pres)| {
+                let (u_pres, u_temp) = Self::decode_frame(pres, temp);
+                let pres = u_pres as f32 / libm::powf(2.0, 6.0);
+                let temp = u_temp as f32 / libm::powf(2.0, 16.0);
+                PressureTemp {
+                    temperature: temp,
+                    pressure: pres,
+                }
+            })
+            .collect::<Vec<_, 16>>()
     }
 }
 
@@ -152,9 +153,8 @@ impl<I2C: I2c + I2CMasterWriteReadDMA> I2CMasterWriteReadDMA for BMP581<I2C> {
         addr: u8,
         bytes: &[u8],
         buf: &mut [u8],
-        callback: Option<I2cCompleteCallback>
+        callback: Option<I2cCompleteCallback>,
     ) -> Result<(), nb::Error<i2c::Error>> {
         unsafe { self.com.write_read_dma(addr, bytes, buf, callback) }
     }
 }
-

@@ -2,16 +2,16 @@ use core::{cell::RefCell, ptr::addr_of_mut};
 
 use cortex_m::{interrupt::Mutex, peripheral::NVIC};
 use stm32f4xx_hal::{
-    gpio::{alt::otg_fs, Input, Pin},
+    gpio::{Input, Pin, alt::otg_fs},
     interrupt,
-    otg_fs::{UsbBus, USB},
+    otg_fs::{USB, UsbBus},
     pac::{self, OTG_FS_DEVICE, OTG_FS_GLOBAL, OTG_FS_PWRCLK},
     rcc::Clocks,
 };
 use usb_device::{
+    UsbError,
     class_prelude::UsbBusAllocator,
     device::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
-    UsbError,
 };
 use usbd_serial::SerialPort;
 

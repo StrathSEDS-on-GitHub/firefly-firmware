@@ -57,7 +57,7 @@ pub struct MS5607<I2C, DELAY, CAL: CalibrationState> {
     calibration: CAL,
 }
 
-impl<I2C,DELAY,CAL> DelayNs for MS5607<I2C, DELAY, CAL>
+impl<I2C, DELAY, CAL> DelayNs for MS5607<I2C, DELAY, CAL>
 where
     DELAY: DelayNs,
     I2C: I2c,
