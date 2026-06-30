@@ -42,10 +42,7 @@ use storage_types::{CONFIG_KEYS, ConfigKey, MissionStage, PyroPin, Role, ValueTy
 use thingbuf::mpsc::{StaticChannel, StaticReceiver};
 
 use crate::{
-    BUZZER,
-    BUZZER_TIMER,
-    PYRO_TIMER,
-    RTC,
+    BUZZER, BUZZER_TIMER, PYRO_TIMER, RTC,
     altimeter::{ALTIMETER_FRAME_COUNT, FifoFrames},
     futures::{NbFuture, YieldFuture},
     pins::i2c::Altimeter,
@@ -1261,7 +1258,7 @@ async fn bmm_350_handler<
 ) {
     use storage_types::logs::MagnetometerSample;
 
-    bmm_timer.start(10.millis()).unwrap();
+    bmm_timer.start(50.millis()).unwrap();
     loop {
         let mut samples = [MagnetometerSample::default(); 32];
 
@@ -1272,11 +1269,12 @@ async fn bmm_350_handler<
                 store.magnetic_field = [x as f32, y as f32, z as f32];
             }
 
-            bmm_timer.start(10.millis()).unwrap();
+            bmm_timer.start(50.millis()).unwrap();
         }
 
         let message = MessageType::new_magnetometer(samples.into_iter());
-        let radio_msg = message.clone().into_message(radio_ctxt());
+        let message_reduced = MessageType::new_magnetometer(samples.into_iter().step_by(4));
+        let radio_msg = message_reduced.into_message(radio_ctxt());
         if role() == Role::Avionics {
             radio::queue_packet(radio_msg);
         }
@@ -1422,12 +1420,12 @@ pub async fn bmi323_imu_handler(
     mut timer: stm32f4xx_hal::timer::Counter<impl Instance, 100_000>,
 ) -> ! {
     // So that the first iteration doesn't block forever
-    timer.start(10u32.millis()).unwrap();
+    timer.start(20u32.millis()).unwrap();
 
     loop {
         use crate::logs::log;
 
-        let mut samples = [IMUSample::default(); 16];
+        let mut samples = [IMUSample::default(); 32];
         for sample in samples.iter_mut() {
             NbFuture::new(|| timer.wait()).await.unwrap();
             sample.timestamp = current_rtc_time();
@@ -1455,11 +1453,12 @@ pub async fn bmi323_imu_handler(
                     .map(|it| [it.x, it.y, it.z])
                     .unwrap(),
             );
-            timer.start(10u32.millis()).unwrap();
+            timer.start(20u32.millis()).unwrap();
         }
 
         let message = MessageType::new_imu(samples.into_iter());
-        let radio_msg = message.clone().into_message(radio_ctxt());
+        let message_reduced = MessageType::new_imu(samples.into_iter().step_by(2));
+        let radio_msg = message_reduced.into_message(radio_ctxt());
 
         if role() == Role::Avionics {
             radio::queue_packet(radio_msg);

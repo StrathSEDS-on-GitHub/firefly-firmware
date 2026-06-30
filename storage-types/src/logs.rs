@@ -187,6 +187,27 @@ pub enum MessageType {
     },
 }
 
+impl MessageType {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MessageType::Log { .. } => "log",
+            MessageType::Gps(_) => "gps",
+            MessageType::PressureTemp(_) => "pressure",
+            MessageType::Imu(_) => "imu",
+            MessageType::Accelerometer(_) => "accelerometer",
+            MessageType::Magnetometer(_) => "magnetometer",
+            MessageType::Arm(_) => "arm",
+            MessageType::Disarm(_) => "disarm",
+            MessageType::TestPyro(_, _, _) => "test_pyro",
+            MessageType::SetStage(_, _) => "set_stage",
+            MessageType::Pyro(_, _) => "pyro",
+            MessageType::MissionSumary { .. } => "mission_summary",
+            MessageType::Command { .. } => "command",
+            MessageType::CommandResponse { .. } => "command_response",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GPSSample {
     pub timestamp: u32,

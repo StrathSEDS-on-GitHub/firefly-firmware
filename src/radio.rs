@@ -2,6 +2,7 @@ use core::cell::Cell;
 use core::cell::RefCell;
 
 use core::convert::Infallible;
+use core::fmt::Write;
 use core::ops::DerefMut;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
@@ -14,7 +15,9 @@ use crate::pins::radio::RadioChipSelect;
 use crate::pins::radio::RadioInteruptPin;
 use crate::pins::radio::RadioResetPin;
 use crate::pins::radio::RadioSpi;
+use crate::usb_logger::get_serial;
 use cortex_m::interrupt::Mutex;
+use cortex_m_semihosting::hprint;
 use dummy_pin::DummyPin;
 use embedded_hal::spi::SpiDevice;
 use heapless::Deque;
@@ -23,9 +26,9 @@ use stm32f4xx_hal::prelude::_stm32f4xx_hal_gpio_ExtiPin;
 use stm32f4xx_hal::rtc;
 use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::timer::SysDelay;
+use storage_types::Role;
 use storage_types::logs;
 use storage_types::logs::Message;
-use storage_types::Role;
 use sx126x::op::IrqMask;
 use sx126x::op::IrqMaskBit;
 use sx126x::op::PacketStatus;
@@ -35,7 +38,6 @@ const MAX_PAYLOAD_SIZE: usize = 255;
 static TRANSMISSION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LISTEN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU16 = AtomicU16::new(0);
-
 
 #[cfg(feature = "target-ultra")]
 #[interrupt]
@@ -62,7 +64,8 @@ fn dio1_interrupt_impl() {
                 radio.radio.wait_on_busy().unwrap();
                 if let RadioState::Tx(transmitter) = RADIO_STATE.borrow(cs).get() {
                     return transmitter != mission::role()
-                        && (transmitter == Role::GroundMain || mission::role() == Role::GroundMain);
+                        && (transmitter == Role::GroundMain
+                            || mission::role() == Role::GroundMain);
                 }
             }
 
@@ -130,11 +133,22 @@ impl RadioDevice<'static> {
     }
 }
 
-static QUEUED_PACKETS: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 32>>> = Mutex::new(RefCell::new(Deque::new()));
+static QUEUED_PACKETS: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 32>>> =
+    Mutex::new(RefCell::new(Deque::new()));
 
 pub fn queue_packet(msg: Message<logs::RadioCtxt>) {
     cortex_m::interrupt::free(|cs| {
         let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
+        writeln!(
+            get_serial(),
+            "Queue length: {}, {:?}",
+            queued_packets.len(),
+            queued_packets
+                .iter()
+                .map(|p| p.message.kind())
+                .collect::<heapless::Vec<_, 32>>()
+        );
+
         if let Err(msg) = queued_packets.push_back(msg) {
             queued_packets.clear();
             let _ = queued_packets.push_back(msg);
@@ -155,8 +169,10 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 1] = [
-    (RadioState::Tx(Role::Avionics), 1000),
+pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 3] = [
+    (RadioState::Tx(Role::Avionics), 450),
+    (RadioState::Tx(Role::Cansat), 450),
+    (RadioState::Tx(Role::GroundMain), 100),
 ];
 
 const fn total_tdm_duration() -> u32 {
@@ -211,7 +227,6 @@ fn receive_message() {
         radio
             .radio
             .read_buffer(
-                
                 rx_buf_status.rx_start_buffer_pointer(),
                 &mut buf[0usize..size],
             )
@@ -267,12 +282,9 @@ fn set_radio() {
                 if let Some(msg) = queued_packets.pop_front() {
                     let mut buf = [0u8; MAX_PAYLOAD_SIZE];
                     let bytes = postcard::to_slice(&msg, &mut buf).unwrap();
-                    radio.radio.write_buffer( 0, bytes).unwrap();
+                    radio.radio.write_buffer(0, bytes).unwrap();
                     radio.radio.wait_on_busy().unwrap();
-                    radio
-                        .radio
-                        .set_tx( RxTxTimeout::from_ms(5000))
-                        .unwrap();
+                    radio.radio.set_tx(RxTxTimeout::from_ms(5000)).unwrap();
 
                     radio.radio.wait_on_busy().unwrap();
 
@@ -296,10 +308,7 @@ fn set_radio() {
                     let mut radio_ref = RADIO.borrow(cs).borrow_mut();
                     let radio = radio_ref.as_mut().unwrap();
                     radio.radio.wait_on_busy().unwrap();
-                    radio
-                        .radio
-                        .set_rx( RxTxTimeout::from_ms(5000))
-                        .unwrap();
+                    radio.radio.set_rx(RxTxTimeout::from_ms(5000)).unwrap();
                     radio.radio.wait_on_busy().unwrap();
                     TRANSMISSION_IN_PROGRESS.store(false, Ordering::Relaxed);
                     LISTEN_IN_PROGRESS.store(true, Ordering::Relaxed);
@@ -313,7 +322,7 @@ fn set_radio() {
                     radio.radio.wait_on_busy().unwrap();
                     radio
                         .radio
-                        .set_standby( sx126x::op::StandbyConfig::StbyRc)
+                        .set_standby(sx126x::op::StandbyConfig::StbyRc)
                         .unwrap();
                     radio.radio.wait_on_busy().unwrap();
                 });
@@ -333,7 +342,6 @@ pub fn get_packet_status() -> PacketStatus {
         radio.radio.get_packet_status().unwrap()
     })
 }
-
 
 pub(crate) struct RadioInterruptRefMut<'dio1>(pub &'dio1 mut RadioInteruptPin);
 impl embedded_hal::digital::ErrorType for RadioInterruptRefMut<'_> {

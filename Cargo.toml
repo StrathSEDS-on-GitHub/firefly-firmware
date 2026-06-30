@@ -65,7 +65,7 @@ tmc2209 = { version="0.2.2", git="https://github.com/mitchmindtree/tmc2209" }
 bmi323 = { version = "0.1.0", path="bmi323-rs" }
 embedded-hal-async = "1.0.0"
 derive_more = { version = "2.0.1", default-features = false, features = ["from", "into"] }
-const_format = { version = "0.2.34", features = ["rust_1_83", "nightly_const_generics"] }
+const_format = { version = "0.2.36", features = ["rust_1_83", "nightly_const_generics"] }
 bmm350 = { version = "0.0.2", path = "bmm350-rs" }
 stable_deref_trait = { version = "1.2.1", default-features = false }
 micromath = "2.1.0"
