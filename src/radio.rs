@@ -2,7 +2,6 @@ use core::cell::Cell;
 use core::cell::RefCell;
 
 use core::convert::Infallible;
-use core::fmt::Write;
 use core::ops::DerefMut;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU16;
@@ -15,9 +14,7 @@ use crate::pins::radio::RadioChipSelect;
 use crate::pins::radio::RadioInteruptPin;
 use crate::pins::radio::RadioResetPin;
 use crate::pins::radio::RadioSpi;
-use crate::usb_logger::get_serial;
 use cortex_m::interrupt::Mutex;
-use cortex_m_semihosting::hprint;
 use dummy_pin::DummyPin;
 use embedded_hal::spi::SpiDevice;
 use heapless::Deque;
@@ -159,10 +156,16 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 3] = [
-    (RadioState::Tx(Role::Avionics), 450),
-    (RadioState::Tx(Role::Cansat), 450),
-    (RadioState::Tx(Role::GroundMain), 100),
+// Must add up to multiple of 1000
+pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 8] = [
+    (RadioState::Tx(Role::Avionics), 600),
+    (RadioState::Buffer(Role::Cansat), 10),
+    (RadioState::Tx(Role::Cansat), 600),
+    (RadioState::Buffer(Role::GroundMain), 10),
+    (RadioState::Tx(Role::GroundMain), 360),
+    (RadioState::Buffer(Role::AftTena), 10),
+    (RadioState::Tx(Role::AftTena), 400),
+    (RadioState::Buffer(Role::Avionics), 10),
 ];
 
 const fn total_tdm_duration() -> u32 {

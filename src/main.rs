@@ -29,7 +29,6 @@ use crate::pins::radio::RadioSpi;
 use crate::pins::*;
 use crate::radio::Radio;
 use crate::radio::TDM_CONFIG_MAIN;
-use crate::usb_logger::get_serial;
 use bmi323::Bmi323;
 use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
@@ -65,7 +64,6 @@ use stm32f4xx_hal::rcc;
 use stm32f4xx_hal::timer::Delay;
 use storage_types::ConfigKey;
 use storage_types::Role;
-use storage_types::logs::MessageType;
 use sx126x::SX126x;
 use sx126x::op::CalibParam;
 use sx126x::op::IrqMask;
@@ -381,6 +379,7 @@ async fn main(_spawner: Spawner) {
             1 => Role::Avionics,
             2 => Role::GroundMain,
             4 => Role::Cansat,
+            67 => Role::AftTena,
             _ => panic!("Invalid board ID {}", board_id),
         };
 
