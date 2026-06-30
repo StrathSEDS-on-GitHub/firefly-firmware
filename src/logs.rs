@@ -3,9 +3,11 @@ use core::fmt::{self, Write};
 
 use cortex_m_semihosting::hprintln;
 use f4_w25q::embedded_storage::W25QSequentialStorage;
+use heapless::String;
 use sequential_storage::cache::{NoCache, PagePointerCache};
 use sequential_storage::{map, queue};
 
+use stm32f4xx_hal::qspi::{Bank1, Bank2};
 use storage_types::logs::{LocalCtxt, Message, MessageType};
 use storage_types::{CONFIG_KEYS, ConfigKey};
 use thingbuf::mpsc::{StaticChannel, StaticReceiver, StaticSender};
@@ -57,6 +59,8 @@ pub enum StorageTask {
     GetLogs(&'static (dyn Fn(&Message<LocalCtxt>) + Sync)),
     EraseLogs,
     ReadConfig(ConfigKey, &'static (dyn Fn(ConfigKey, u64) + Sync)),
+    // really dislike how an option is in the function signature
+    ReadAllConfig(&'static (dyn Fn([(Option<ConfigKey>, u64); CONFIG_KEYS.len()]) + Sync)),
     EditConfig(ConfigKey, u64),
     GetSpaceLeft(&'static (dyn Fn(u32) + Sync)),
     #[default]
@@ -92,7 +96,10 @@ pub async fn get_logs(f: &'static (dyn Fn(&Message<LocalCtxt>) + Sync)) {
 }
 
 pub async fn erase_logs() {
-    log_sender().send(StorageTask::EraseLogs).await.unwrap();
+    log_sender()
+        .send(StorageTask::EraseLogs)
+        .await
+        .unwrap();
 }
 
 pub async fn edit_config(key: ConfigKey, value: u64) {
@@ -105,6 +112,13 @@ pub async fn edit_config(key: ConfigKey, value: u64) {
 pub async fn read_config(key: ConfigKey, f: &'static (dyn Fn(ConfigKey, u64) + Sync)) {
     log_sender()
         .send(StorageTask::ReadConfig(key, f))
+        .await
+        .unwrap();
+}
+
+pub async fn read_all_config(f: &'static (dyn Fn([(Option<ConfigKey>, u64); CONFIG_KEYS.len()]) + Sync)) {
+    log_sender()
+        .send(StorageTask::ReadAllConfig(f))
         .await
         .unwrap();
 }
@@ -226,6 +240,32 @@ pub async fn log_handler(
                         f(key, value);
                     }
                 }
+                ReadAllConfig(f) => {
+                    let mut buf = [0u8; 64];
+
+                    let mut cache = NoCache::new();
+
+                    let thing = map::fetch_all_items::<ConfigKey, _, _>(
+                        &mut flash, 
+                        CONFIG_FLASH_RANGE, 
+                        &mut cache,
+                        &mut buf
+                    ).await;
+
+                    if let Ok(mut iter) = thing {
+                        let mut buff = [0u8; 64];
+                        let mut res: [(Option<ConfigKey>, u64); CONFIG_KEYS.len()] = core::array::from_fn(|_| (None, 0));
+
+                        for i in 0..CONFIG_KEYS.len() {
+                            if let Ok(Some((k, v))) = iter.next(&mut buff).await {
+                                let k: ConfigKey = k;
+                                res[i] = (Some(k), v); 
+                            }
+                        }
+
+                        f(res);
+                    }
+                },
                 EditConfig(key, value) => {
                     let _ = map::store_item(
                         &mut flash,

@@ -5,7 +5,7 @@ use crate::logs::FixedWriter;
 use crate::logs::log;
 use crate::logs::log_handler;
 use crate::logs::{
-    StorageTask, edit_config, erase_logs, get_logs, get_space_left, log_str, read_config,
+    StorageTask, edit_config, erase_logs, get_logs, get_space_left, log_str, read_config, read_all_config
 };
 use crate::pins::QspiBank;
 use crate::pins::TARGET;
@@ -13,6 +13,7 @@ use crate::pins::i2c::LrhpImu;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
+use cortex_m_semihosting::hprintln;
 use core::sync::atomic::AtomicU32;
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
@@ -642,18 +643,18 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
             write!(get_serial(), "[REPLY#{command_id}] ").unwrap();
-            for &(key, _) in CONFIG_KEYS.iter() {
-                let config_key = ConfigKey::try_from(key).unwrap();
 
-                read_config(config_key, &|key, value| {
-                    if key.0 == CONFIG_KEYS.last().unwrap().0 {
-                        writeln!(get_serial(), "{key}={value}").unwrap();
-                    } else {
-                        write!(get_serial(), "{key}={value},").unwrap();
+            read_all_config(&|keyval| {
+                for (key, value) in keyval {
+                    if let Some(key) = key {
+                        if key.0 == CONFIG_KEYS.last().unwrap().0 {
+                            writeln!(get_serial(), "{key}={value}").unwrap();
+                        } else {
+                            write!(get_serial(), "{key}={value},").unwrap();
+                        }
                     }
-                })
-                .await;
-            }
+                } 
+            }).await;
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
