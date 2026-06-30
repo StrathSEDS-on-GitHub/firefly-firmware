@@ -342,6 +342,7 @@ async fn main(_spawner: Spawner) {
             gps = gps.reinit_with_rate(1680000, &mut rcc).await;
             cortex_m::interrupt::free(|cs| CLOCKS.borrow(cs).borrow_mut().replace(rcc));
         } else {
+            delay.delay_ms(100);
             gps.tx(b"$PMTK251,115200*1F\r\n").await;
             delay.delay_ms(10);
             let mut rcc =

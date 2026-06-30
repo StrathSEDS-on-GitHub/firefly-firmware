@@ -1,7 +1,6 @@
 use crate::CAPACITY;
 use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
-#[cfg(feature = "target-ultra")]
 use crate::logs::log;
 use crate::logs::log_handler;
 use crate::logs::{
@@ -810,8 +809,7 @@ async fn bmp_altimeter_handler(
 
         log(MessageType::new_pressure_temp(samples)
             .clone()
-            .into_message(current_rtc_time()))
-        .await;
+            .into_message(current_rtc_time()));
         radio::queue_packet(radio_msg);
     }
 }
@@ -1411,7 +1409,7 @@ where
             radio::queue_packet(message.clone().into_message(radio_ctxt()));
         }
 
-        log(message.into_message(current_rtc_time())).await;
+        log(message.into_message(current_rtc_time()));
     }
 }
 

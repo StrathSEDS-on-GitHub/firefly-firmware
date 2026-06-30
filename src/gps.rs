@@ -37,8 +37,7 @@ mod dma {
     use thingbuf::mpsc::{StaticChannel, StaticSender};
 
     use crate::{
-        pins::gps::{GPSRxStream, GPSUsart},
-        usb_logger::get_serial,
+        pins::gps::{GPSRxStream, GPSUsart}, usb_logger::get_serial,
     };
 
     pub(crate) const RX_BUFFER_SIZE: usize = 512;
