@@ -18,6 +18,7 @@
 	let devices: Firefly[] = $state([]);
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let canvasContainer: HTMLDivElement | null = $state(null);
+	let lastCoordinate = $state<[number, number] | null>(null);
 	let files: string[] = $state([]);
 
 	let leafletMap: HTMLDivElement | null = $state(null);
@@ -86,6 +87,7 @@
 		}).addTo(m);
 		addMarker = ([lat, long]: [number, number], color: string) => {
 			circle([lat, long], { color, radius: 1 }).addTo(m);
+			lastCoordinate = [lat, long];
 		};
 	}, 300);
 </script>
@@ -105,6 +107,22 @@
 				<div class="w-full h-1/2" bind:this={mapContainer}>
 					<div id="map" bind:this={leafletMap}></div>
 				</div>
+				<div class="w-full h-10">
+					<i class="fa-solid fa-location-dot"></i>
+					{lastCoordinate?.join(', ') || 'No GPS yet...'}
+					<!-- copy button -->
+					<!-- svelte-ignore a11y_consider_explicit_label -->
+					<button
+						class="ml-2 p-1 bg-teal-500 text-white rounded"
+						onclick={() => {
+							if (lastCoordinate) {
+								navigator.clipboard.writeText(lastCoordinate.join(', '));
+							}
+						}}
+					>
+					<i class="fa-solid fa-copy"></i>
+					</button>
+				</div>
 			</div>
 		</main>
 		<div class="flex flex-col justify-between">
@@ -114,7 +132,7 @@
 					<i class="fa-solid fa-folder p-1"></i>
 					Previous logs
 				</h2>
-				
+
 				<ul class="flex flex-col gap-1 max-h-full overflow-y-scroll">
 					{#each files as file_name}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->

@@ -11,16 +11,16 @@ export class RemoteFirefly implements Firefly {
         this.connection = connection;
     }
     arm(): void {
-        this.connection.device.sendCommand(`arm,${this.role}`);
+        this.connection.device.sendCommand(`arm,${this.role.toLowerCase()}`);
     }
     disarm(): void {
-        this.connection.device.sendCommand(`disarm,${this.role}`);
+        this.connection.device.sendCommand(`disarm,${this.role.toLowerCase()}`);
     }
     testFire1(): void {
-        this.connection.device.sendCommand(`fire,${this.role},1,100`);
+        this.connection.device.sendCommand(`fire,${this.role.toLowerCase()},1,100`);
     }
     testFire2(): void {
-        this.connection.device.sendCommand(`fire,${this.role},2,100`);
+        this.connection.device.sendCommand(`fire,${this.role.toLowerCase()},2,100`);
     }
 
     getConfig(): Promise<DeviceConfig> {

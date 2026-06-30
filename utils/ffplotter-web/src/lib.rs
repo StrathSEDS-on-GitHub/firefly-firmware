@@ -34,7 +34,7 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         return Ok(());
     }
 
-    if data.dim().1 != 3  {
+    if data.dim().1 != 3 {
         return Ok(());
     }
 
@@ -91,13 +91,13 @@ pub fn draw(canvas_id: String) -> eyre::Result<()> {
         .slice(s![.., 2])
         .iter()
         .take(sample_count)
-        .max_by(|l, r| r.partial_cmp(l).unwrap())
+        .max_by(|l, r| r.partial_cmp(l).unwrap_or(std::cmp::Ordering::Less))
         .unwrap_or(&0.);
     let max = *data
         .slice(s![.., 2])
         .iter()
         .take(sample_count)
-        .max_by(|l, r| l.partial_cmp(r).unwrap())
+        .max_by(|l, r| l.partial_cmp(r).unwrap_or(std::cmp::Ordering::Less))
         .unwrap_or(&0.);
 
     let mut cc = ChartBuilder::on(&root)

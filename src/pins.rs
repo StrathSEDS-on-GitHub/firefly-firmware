@@ -464,8 +464,11 @@ macro_rules! hrlp_nss {
 }
 
 pub mod gps {
-    #[cfg(feature = "target-maxi")]
-    pub type PpsPin = stm32f4xx_hal::gpio::gpioc::PC7<stm32f4xx_hal::gpio::Input>;
+    #[cfg(all(feature = "target-maxi", feature = "ultra-dev"))]
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioe::PE11<stm32f4xx_hal::gpio::Input>;
+
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+    pub type PpsPin = stm32f4xx_hal::gpio::gpioe::PE10<stm32f4xx_hal::gpio::Input>;
 
     #[cfg(feature = "target-mini")]
     pub type PpsPin = stm32f4xx_hal::gpio::gpioa::PA2<stm32f4xx_hal::gpio::Input>;
@@ -482,7 +485,7 @@ pub mod gps {
             }
             #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
             {
-                $gpio_buses.c.pc7.into_input()
+                $gpio_buses.e.pe10.into_input()
             }
             #[cfg(all(feature = "target-mini"))]
             {

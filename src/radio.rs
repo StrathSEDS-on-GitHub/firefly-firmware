@@ -139,16 +139,6 @@ static QUEUED_PACKETS: Mutex<RefCell<Deque<Message<logs::RadioCtxt>, 32>>> =
 pub fn queue_packet(msg: Message<logs::RadioCtxt>) {
     cortex_m::interrupt::free(|cs| {
         let mut queued_packets = QUEUED_PACKETS.borrow(cs).borrow_mut();
-        // writeln!(
-        //     get_serial(),
-        //     "Queue length: {}, {:?}",
-        //     queued_packets.len(),
-        //     queued_packets
-        //         .iter()
-        //         .map(|p| p.message.kind())
-        //         .collect::<heapless::Vec<_, 32>>()
-        // );
-
         if let Err(msg) = queued_packets.push_back(msg) {
             queued_packets.clear();
             let _ = queued_packets.push_back(msg);
