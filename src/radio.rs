@@ -156,15 +156,15 @@ static RADIO_STATE: Mutex<Cell<RadioState>> =
 
 // Prior to launch, we have a slot for the ground station to transmit
 // so it can send arm/disarm commands to the avionics.
-// Must add up to multiple of 1000
+// Must add up to 1000
 pub(crate) const TDM_CONFIG_MAIN: [(RadioState, u32); 8] = [
-    (RadioState::Tx(Role::Avionics), 600),
+    (RadioState::Tx(Role::Avionics), 300),
     (RadioState::Buffer(Role::Cansat), 10),
-    (RadioState::Tx(Role::Cansat), 600),
+    (RadioState::Tx(Role::Cansat), 300),
     (RadioState::Buffer(Role::GroundMain), 10),
-    (RadioState::Tx(Role::GroundMain), 360),
+    (RadioState::Tx(Role::GroundMain), 160),
     (RadioState::Buffer(Role::AftTena), 10),
-    (RadioState::Tx(Role::AftTena), 400),
+    (RadioState::Tx(Role::AftTena), 200),
     (RadioState::Buffer(Role::Avionics), 10),
 ];
 
