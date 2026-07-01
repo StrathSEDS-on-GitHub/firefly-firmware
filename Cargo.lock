@@ -727,9 +727,9 @@ dependencies = [
 
 [[package]]
 name = "gortsz"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee039c5725f1256b7b65d9c0a2244f7e6569164c36bad5ac7fc6397a5d59d349"
+checksum = "7d0c7c61ef435bc6c79fe78a5cdeaa9a69f4c2df7d58688cef4052d3ab936015"
 dependencies = [
  "bitvec",
  "heapless 0.8.0",

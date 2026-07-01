@@ -15,7 +15,15 @@
       "cargo"
       "rust-analyzer"
     ];
-    targets = [ "thumbv7em-none-eabihf" ];
+    targets = [
+      "wasm32-unknown-unknown"
+      "thumbv7em-none-eabihf"
+    ];
+  };
+
+  languages.javascript = {
+    enable = true;
+    npm.enable = true;
   };
 
   packages = with pkgs; [
@@ -23,5 +31,6 @@
     gcc-arm-embedded
     dfu-util
     libllvm
+    wasm-pack
   ];
 }

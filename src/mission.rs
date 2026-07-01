@@ -12,7 +12,7 @@ use crate::pins::i2c::LrhpImu;
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU16, AtomicU32};
 use core::{cell::Cell, convert::Infallible, f32::consts::PI, fmt::Write};
 use cortex_m::interrupt::Mutex;
 use derive_more::{From, Into};
@@ -424,17 +424,16 @@ pub async fn usb_handler() -> ! {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-info role").unwrap();
                 continue;
-            };
+            }; 
 
-            let response_identifier =
-                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                    .unwrap_or_default()
-                    .trim()
-                    .parse::<u16>()
-                {
-                    Ok(response_identifier) => response_identifier,
-                    _ => 0,
-                };
+            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0,
+            };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Info)
@@ -447,15 +446,14 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
 
-            let response_identifier =
-                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                    .unwrap_or_default()
-                    .trim()
-                    .parse::<u16>()
-                {
-                    Ok(response_identifier) => response_identifier,
-                    _ => 0,
-                };
+            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0,
+            };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Erase)
@@ -466,17 +464,16 @@ pub async fn usb_handler() -> ! {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-free role");
                 continue;
-            };
+            }; 
 
-            let response_identifier =
-                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                    .unwrap_or_default()
-                    .trim()
-                    .parse::<u16>()
-                {
-                    Ok(response_identifier) => response_identifier,
-                    _ => 0,
-                };
+            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0
+            };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Free)
@@ -1130,15 +1127,17 @@ async fn handle_incoming_packets() -> ! {
                                 );
                             }
                             CommandType::Free => {
-                                //     get_space_left(&|free| {
-                                //         radio::queue_packet(
-                                //             MessageType::CommandResponse {
-                                //                 id,
-                                //                 response: CommandResponseType::Free { free }
-                                //             }.into_message(radio_ctxt()),
-                                //         );
-                                //     })
-                                //     .await;
+                                static ATOMIC_ID: AtomicU16 = AtomicU16::new(0);
+                                ATOMIC_ID.store(id, core::sync::atomic::Ordering::Relaxed);
+                                get_space_left(&move |free| {
+                                    radio::queue_packet(
+                                        MessageType::CommandResponse { 
+                                            id: ATOMIC_ID.load(core::sync::atomic::Ordering::Relaxed),
+                                            response: CommandResponseType::Free { free }
+                                        }.into_message(radio_ctxt()),
+                                    );
+                                })
+                                .await;
                             }
                         }
                     }
