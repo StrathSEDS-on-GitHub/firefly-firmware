@@ -99,7 +99,6 @@ mod neopixel;
 mod otp;
 mod pins;
 mod radio;
-mod stepper;
 mod usb_logger;
 #[cfg(feature = "msc")]
 mod usb_msc;

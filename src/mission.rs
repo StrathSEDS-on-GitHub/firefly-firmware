@@ -433,7 +433,7 @@ pub async fn usb_handler() -> ! {
                 _ => 0,
             };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Info));
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Info).into_message(radio_ctxt()));
             get_serial().log("ok\n").await;
         } else if split.len() >= 3 && split[0].starts_with(b"remote-erase") {
             let Some(role) = parse_role(split[1]) else {
@@ -450,7 +450,7 @@ pub async fn usb_handler() -> ! {
                 _ => 0,
             };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Erase));
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Erase).into_message(radio_ctxt()));
             get_serial().log("ok\n").await;
         }
         else if split.len() >= 3 && split[0].starts_with(b"remote-free") {
@@ -468,7 +468,7 @@ pub async fn usb_handler() -> ! {
                 _ => 0
             };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Free));
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Free).into_message(radio_ctxt()));
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             erase_logs().await; // sure do hope this never fails
@@ -1116,15 +1116,15 @@ async fn handle_incoming_packets() -> ! {
                                 );
                             }
                             CommandType::Free => {
-                                get_space_left(&|free| {
-                                    radio::queue_packet(
-                                        MessageType::CommandResponse { 
-                                            id, 
-                                            response: CommandResponseType::Free { free }
-                                        }.into_message(radio_ctxt()),
-                                    );
-                                })
-                                .await;
+                            //     get_space_left(&|free| {
+                            //         radio::queue_packet(
+                            //             MessageType::CommandResponse { 
+                            //                 id, 
+                            //                 response: CommandResponseType::Free { free }
+                            //             }.into_message(radio_ctxt()),
+                            //         );
+                            //     })
+                            //     .await;
                             }
                         }
                     }
