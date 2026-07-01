@@ -378,7 +378,7 @@ async fn main(_spawner: Spawner) {
             1 => Role::Avionics,
             2 => Role::GroundMain,
             4 => Role::Cansat,
-            67 => Role::AftTena,
+            5 => Role::AftTena,
             _ => panic!("Invalid board ID {}", board_id),
         };
 

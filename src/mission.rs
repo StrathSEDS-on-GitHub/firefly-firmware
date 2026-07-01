@@ -277,6 +277,8 @@ fn parse_role(s: &[u8]) -> Option<Role> {
         Some(Role::Avionics)
     } else if s.starts_with(b"ground") {
         Some(Role::GroundMain)
+    } else if s.starts_with(b"aft") {
+        Some(Role::AftTena)
     } else {
         None
     }
@@ -422,18 +424,22 @@ pub async fn usb_handler() -> ! {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-info role").unwrap();
                 continue;
-            }; 
-
-            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0,
             };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Info).into_message(radio_ctxt()));
+            let response_identifier =
+                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
+
+            radio::queue_packet(
+                MessageType::new_command(role, response_identifier, CommandType::Info)
+                    .into_message(radio_ctxt()),
+            );
             get_serial().log("ok\n").await;
         } else if split.len() >= 3 && split[0].starts_with(b"remote-erase") {
             let Some(role) = parse_role(split[1]) else {
@@ -441,34 +447,41 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
 
-            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0,
-            };
+            let response_identifier =
+                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Erase).into_message(radio_ctxt()));
+            radio::queue_packet(
+                MessageType::new_command(role, response_identifier, CommandType::Erase)
+                    .into_message(radio_ctxt()),
+            );
             get_serial().log("ok\n").await;
-        }
-        else if split.len() >= 3 && split[0].starts_with(b"remote-free") {
+        } else if split.len() >= 3 && split[0].starts_with(b"remote-free") {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-free role");
                 continue;
-            }; 
-
-            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0
             };
 
-            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Free).into_message(radio_ctxt()));
+            let response_identifier =
+                match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
+
+            radio::queue_packet(
+                MessageType::new_command(role, response_identifier, CommandType::Free)
+                    .into_message(radio_ctxt()),
+            );
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             erase_logs().await; // sure do hope this never fails
@@ -1047,10 +1060,11 @@ async fn handle_incoming_packets() -> ! {
                             }
                             CommandResponseType::Free { free } => {
                                 write!(
-                                    writer, 
+                                    writer,
                                     "free,{:.02}%",
                                     free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0
-                                ).unwrap();
+                                )
+                                .unwrap();
                             }
                         }
                         writeln!(get_serial(), "[REPLY#{id}] {}", unsafe {
@@ -1116,15 +1130,15 @@ async fn handle_incoming_packets() -> ! {
                                 );
                             }
                             CommandType::Free => {
-                            //     get_space_left(&|free| {
-                            //         radio::queue_packet(
-                            //             MessageType::CommandResponse { 
-                            //                 id, 
-                            //                 response: CommandResponseType::Free { free }
-                            //             }.into_message(radio_ctxt()),
-                            //         );
-                            //     })
-                            //     .await;
+                                //     get_space_left(&|free| {
+                                //         radio::queue_packet(
+                                //             MessageType::CommandResponse {
+                                //                 id,
+                                //                 response: CommandResponseType::Free { free }
+                                //             }.into_message(radio_ctxt()),
+                                //         );
+                                //     })
+                                //     .await;
                             }
                         }
                     }
