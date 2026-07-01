@@ -141,6 +141,7 @@ pub const TS_BUF_SIZE: usize = 222;
 pub enum CommandType {
     Info,
     Erase,
+    Free,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +152,9 @@ pub enum CommandResponseType {
         role: Role,
     },
     Erase,
+    Free {
+        free: u32,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,6 +391,10 @@ impl MessageType {
 
     pub fn new_set_stage(role: Role, stage: MissionStage) -> Self {
         MessageType::SetStage(role, stage)
+    }
+
+    pub fn new_command(role: Role, response_identifier: u16, cmd_type: CommandType) -> Self {
+        MessageType::Command { role, id: response_identifier, command: cmd_type }
     }
 
     pub fn into_message<CTX: MessageContext>(self, context: CTX) -> Message<CTX> {

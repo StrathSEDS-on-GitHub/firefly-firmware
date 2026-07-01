@@ -418,13 +418,57 @@ pub async fn usb_handler() -> ! {
 
             edit_config(key, value).await;
             writeln!(get_serial(), "[REPLY#{command_id}] ok").unwrap();
-        } else if split.len() >= 2 && split[0].starts_with(b"remote-erase") {
+        } else if split.len() >= 3 && split[0].starts_with(b"remote-info") {
             let Some(role) = parse_role(split[1]) else {
+                writeln!(get_serial(), "Invalid remote-info role").unwrap();
+                continue;
+            }; 
+
+            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0,
+            };
+
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Info));
+            get_serial().log("ok\n").await;
+        } else if split.len() >= 3 && split[0].starts_with(b"remote-erase") {
+            let Some(role) = parse_role(split[1]) else {
+                writeln!(get_serial(), "Invalid remote-erase role").unwrap();
                 continue;
             };
 
-            // TODO: Remote erase
+            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0,
+            };
 
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Erase));
+            get_serial().log("ok\n").await;
+        }
+        else if split.len() >= 3 && split[0].starts_with(b"remote-free") {
+            let Some(role) = parse_role(split[1]) else {
+                writeln!(get_serial(), "Invalid remote-free role");
+                continue;
+            }; 
+
+            let response_identifier = match core::str::from_utf8(split.get(3).unwrap_or(&(b"" as &[u8])))
+                .unwrap_or_default()
+                .trim()
+                .parse::<u16>()
+            {
+                Ok(response_identifier) => response_identifier,
+                _ => 0
+            };
+
+            radio::queue_packet(MessageType::new_command(role, response_identifier, CommandType::Free));
             get_serial().log("ok\n").await;
         } else if split.len() >= 1 && split[0].starts_with(b"erase") {
             erase_logs().await; // sure do hope this never fails
@@ -1001,6 +1045,13 @@ async fn handle_incoming_packets() -> ! {
                             CommandResponseType::Erase => {
                                 write!(writer, "ok").unwrap();
                             }
+                            CommandResponseType::Free { free } => {
+                                write!(
+                                    writer, 
+                                    "free,{:.02}%",
+                                    free as f32 / (16.0 * 1024.0 * 1024.0) * 100.0
+                                ).unwrap();
+                            }
                         }
                         writeln!(get_serial(), "[REPLY#{id}] {}", unsafe {
                             core::str::from_utf8_unchecked(writer.data())
@@ -1063,6 +1114,17 @@ async fn handle_incoming_packets() -> ! {
                                     }
                                     .into_message(radio_ctxt()),
                                 );
+                            }
+                            CommandType::Free => {
+                                get_space_left(&|free| {
+                                    radio::queue_packet(
+                                        MessageType::CommandResponse { 
+                                            id, 
+                                            response: CommandResponseType::Free { free }
+                                        }.into_message(radio_ctxt()),
+                                    );
+                                })
+                                .await;
                             }
                         }
                     }
