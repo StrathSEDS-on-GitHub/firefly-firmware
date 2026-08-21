@@ -82,7 +82,7 @@ impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C> {
     pub fn setup_fifo(&mut self) -> Result<(), I2C::Error> {
         unsafe { NVIC::unmask(interrupt::EXTI0) };
         self.com.write(ADDR, &[0x18, 0b_11])?; // Fifo sel
-        self.com.write(ADDR, &[0x16, 0])?; // Streaming mode
+        self.com.write(ADDR, &[0x16, 0])?; // Streaming mode 
         self.com.write(ADDR, &[0x14, 1 << 3])?; // int enable
         self.com.write(ADDR, &[0x15, 1 << 1]) // int source fifo full
     }
@@ -103,11 +103,39 @@ impl<I2C: I2c + I2CMasterHandleIT> BMP581<I2C> {
         for (i, frame) in data
             .chunks(6)
             .map(|x| x.split_at(3))
-            .map(|(temp, pres)| PressureTemp {
-                pressure: ((pres[0] as u32) | (pres[1] as u32) << 8 | (pres[2] as u32) << 16)
-                    as f32,
-                temperature: ((temp[0] as u32) | (temp[1] as u32) << 8 | (temp[2] as u32) << 16)
-                    as f32,
+            .map(|(temp, pres)| {
+                let temp_xlsb = temp[0];
+                let temp_lsb = temp[1];
+                let temp_msb = temp[2];
+                let pres_xlsb = pres[0];
+                let pres_lsb = pres[1];
+                let pres_msb = pres[2];
+
+                use cortex_m_semihosting::hprintln;
+                // hprintln!("txlsb: 0b{:b}", temp_xlsb);
+                // hprintln!("tlsb: 0b{:b}", temp_lsb);
+                // hprintln!("tmsb: 0b{:b}", temp_msb);
+                // hprintln!("pxlsb: 0b{:b}", pres_xlsb);
+                // hprintln!("plsb: 0b{:b}", pres_lsb);
+                // hprintln!("pmsb: 0b{:b}", pres_msb);
+
+                let pressure = ((pres_msb as u32) << 16 | (pres_lsb as u32) << 8 | (pres_xlsb as u32)) as f32 / libm::powf(2., 6.);
+                let temperature = ((temp_msb as u32) << 16 | (temp_lsb as u32) << 8 | (temp_xlsb as u32)) as f32 / libm::powf(2., 16.);
+
+                // hprintln!("temp: {}, pres: {}", temperature, pressure);
+                // if (temperature > 100.) {
+                //     hprintln!("txlsb: 0b{:b}", temp_xlsb);
+                //     hprintln!("tlsb: 0b{:b}", temp_lsb);
+                //     hprintln!("tmsb: 0b{:b}", temp_msb);
+                //     hprintln!("pxlsb: 0b{:b}", pres_xlsb);
+                //     hprintln!("plsb: 0b{:b}", pres_lsb);
+                //     hprintln!("pmsb: 0b{:b}", pres_msb);
+                // }
+
+                return PressureTemp {
+                    pressure,
+                    temperature
+                };
             })
             .enumerate()
         {

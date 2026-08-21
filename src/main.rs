@@ -382,6 +382,9 @@ async fn main(_spawner: Spawner) {
             _ => panic!("Invalid board ID {}", board_id),
         };
 
+        use cortex_m_semihosting::hprintln;
+        hprintln!("{:?}", role);
+
         #[cfg(feature = "target-maxi")]
         if role == Role::GroundMain {
             use stm32f4xx_hal::timer::Event;
@@ -545,7 +548,7 @@ async fn main(_spawner: Spawner) {
             icm
         };
 
-        #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+        #[cfg(all(not(feature = "target-maxi"), not(feature = "ultra-dev")))]
         let lrhp = {
             use bno080::{interface::I2cInterface, wrapper::BNO080};
 
@@ -761,8 +764,8 @@ async fn main(_spawner: Spawner) {
         mission::begin(
             bmp,
             with_rcc!(rcc, dp.TIM12.counter(&mut rcc)),
-            lrhp,
-            with_rcc!(rcc, dp.TIM10.counter(&mut rcc)),
+            // lrhp,
+            // with_rcc!(rcc, dp.TIM10.counter(&mut rcc)),
             #[cfg(feature = "target-ultra")]
             bmm,
             with_rcc!(rcc, dp.TIM8.counter(&mut rcc)),

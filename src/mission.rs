@@ -1,4 +1,4 @@
-use crate::CAPACITY;
+use crate::{CAPACITY, gs};
 use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
 use crate::logs::log;
@@ -708,6 +708,34 @@ pub async fn usb_handler() -> ! {
                 }
             })
             .await;
+        } else if split.len() == 3 && split[0].starts_with(b"spin-around") {
+            let Ok(command_id) = core::str::from_utf8(split[1])
+                .unwrap_or_default()
+                .trim()
+                .parse::<u32>()
+            else {
+                writeln!(get_serial(), "Invalid command ID").unwrap();
+                continue;
+            };
+
+            let Ok(target) = core::str::from_utf8(split[2])
+                .unwrap_or_default()
+                .trim()
+                .parse::<f32>()
+            else {
+                writeln!(get_serial(), "Not a good angle or smth idk").unwrap();
+                continue;
+            };
+
+            #[cfg(not(feature = "target-maxi"))]
+            {
+                writeln!(get_serial(), "This is not the groundstation :sob:").unwrap();
+                continue;
+            }
+
+
+            writeln!(get_serial(), "I'll try spinning to {}, that's a good trick", target).unwrap();
+            gs::update_target_deg(Some(target), None);
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
@@ -790,12 +818,13 @@ async fn gps_handler(mut gps: GPS) -> ! {
                     break;
                 }
             }
-        }
 
-        if role() == Role::GroundMain {
-            // Ground doesn't need GPS for anything except timing so
-            // we can discard the results.
-            continue;
+            #[cfg(feature = "target-maxi")]
+            if role() == Role::GroundMain {
+                crate::gs::update_self_lat_long(sample.latitude, sample.longitude);
+                use cortex_m_semihosting::hprintln;
+                hprintln!("{} {}", sample.latitude, sample.longitude);
+            }
         }
 
         let radio_msg = MessageType::new_gps(samples.clone()).into_message(radio_ctxt());
@@ -824,30 +853,42 @@ async fn bmp_altimeter_handler(
         let mut samples = [PressureTempSample::default(); 40 * NTH];
 
         for sample in samples.iter_mut() {
-            let (frames, returned_sensor) = crate::altimeter::read_altimeter_fifo(sensor).await;
-            sensor = returned_sensor;
+            // let (frames, returned_sensor) = crate::altimeter::read_altimeter_fifo(sensor).await;
+            let frames = sensor.read_fifo().unwrap();
+            // sensor = returned_sensor;
             for frame in &frames {
                 let pressure = frame.pressure;
                 let temperature = frame.temperature;
-
-                *sample = PressureTempSample {
-                    timestamp: current_rtc_time(),
-                    pressure,
-                    temperature,
-                };
+               
+                // fails if all the temperature frames are bad (in which case we're fucked anyways)
+                // also fails if the temperature is about 100 degrees (in which case we're doubly fucked)
+                if temperature < 100. {
+                    *sample = PressureTempSample {
+                        timestamp: current_rtc_time(),
+                        pressure,
+                        temperature,
+                    };
+                }
             }
 
+            // ^^^ Why the fuck are we dropping all but the last sample
+
             if role() == Role::GroundMain {
-                let alt = (libm::powf(1013.25 / sample.pressure, 1.0 / 5.257) - 1.0)
+                use cortex_m_semihosting::hprintln;
+                // hprintln!(" p{} t{}", sample.pressure, sample.temperature);
+                let alt = (libm::powf(101325. / sample.pressure, 1.0 / 5.257) - 1.0)
                     * (sample.temperature + 273.15)
                     / 0.0065;
+
+                // hprintln!(" a{}", alt);
+
                 crate::gs::update_self_alt(alt);
             }
 
-            pressure_sender
-                .send(Vec::from_slice(&frames).unwrap())
-                .await
-                .unwrap();
+            // pressure_sender
+            //     .send(Vec::from_slice(&frames).unwrap())
+            //     .await
+            //     .unwrap();
             timer.clear_flags(timer::Flag::Update);
             timer.start(400.millis()).unwrap();
             // FIXME: Use interrupt to wait for FIFO to fill up.
@@ -915,6 +956,11 @@ async fn handle_incoming_packets() -> ! {
                                 altitude,
                             }) = sample
                             {
+                                #[cfg(feature = "target-maxi")]
+                                if role() == Role::GroundMain {
+                                    crate::gs::update_target_lat_long(latitude, longitude);
+                                }
+                                 
                                 writeln!(
                                     get_serial(),
                                     "[{}] [{source:?} {:?} gps] {latitude},{longitude},{altitude}",
@@ -935,7 +981,7 @@ async fn handle_incoming_packets() -> ! {
                             {
                                 #[cfg(feature = "target-maxi")]
                                 if role() == Role::GroundMain {
-                                    let altitude = (libm::powf(1013.25 / pressure, 1.0 / 5.257)
+                                    let altitude = (libm::powf(101325. / pressure, 1.0 / 5.257)
                                         - 1.0)
                                         * (temperature + 273.15)
                                         / 0.0065;
@@ -1607,17 +1653,19 @@ pub async fn ms5607_altimeter_handler(
     }
 }
 
-pub async fn begin<
-    #[cfg(feature = "target-ultra")] T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
-        + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
-    I,
-    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] T: core::fmt::Debug,
->(
+pub async fn begin
+// <
+//     #[cfg(feature = "target-ultra")] T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
+//         + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
+//     I,
+//     #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] T: core::fmt::Debug,
+// >
+(
     altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
-    imu: LrhpImu<I>,
-    imu_timer: Counter<impl Instance, 100000>,
-    // #[cfg(feature = "target-ultra")] adxl_imu: HrlpImu<impl SpiDevice<u8>>,
+    // imu: LrhpImu<I>,
+    // imu_timer: Counter<impl Instance, 100000>,
+    #[cfg(feature = "target-ultra")] adxl_imu: HrlpImu<impl SpiDevice<u8>>,
     #[cfg(feature = "target-ultra")] bmm350: Option<
         Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
     >,
@@ -1627,12 +1675,12 @@ pub async fn begin<
     log_receiver: StaticReceiver<StorageTask>,
 ) -> !
 where
-    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-    I: SpiDevice,
-    #[cfg(feature = "target-mini")]
-    I: I2c,
-    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-    I: bno080::interface::SensorInterface<SensorError = T>,
+    // #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
+    // I: SpiDevice,
+    // #[cfg(feature = "target-mini")]
+    // I: I2c,
+    // #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
+    // I: bno080::interface::SensorInterface<SensorError = T>,
 {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
@@ -1665,7 +1713,7 @@ where
         }
         #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
         {
-            bno_imu_handler(imu, imu_timer)
+            // bno_imu_handler(imu, imu_timer)
         }
         #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
         {
@@ -1686,7 +1734,8 @@ where
                 usb_handler(),
                 gps_handler(gps),
                 handle_incoming_packets(),
-                log_handler(flash, log_receiver)
+                log_handler(flash, log_receiver),
+                altimeter_task
             )
             .0
         }
@@ -1696,7 +1745,7 @@ where
             join!(
                 usb_handler(),
                 buzzer_controller(),
-                imu_task,
+                // imu_task,
                 gps_handler(gps),
                 altimeter_task,
                 handle_incoming_packets(),
@@ -1712,7 +1761,7 @@ where
             join!(
                 usb_handler(),
                 buzzer_controller(),
-                imu_task,
+                // imu_task,
                 gps_handler(gps),
                 altimeter_task,
                 handle_incoming_packets(),
@@ -1728,7 +1777,7 @@ where
             join!(
                 usb_handler(),
                 buzzer_controller(),
-                imu_task,         // disabled
+                // imu_task,         // disabled
                 gps_handler(gps), // enabled
                 altimeter_task,   // enabled
                 handle_incoming_packets(),
