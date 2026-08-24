@@ -17,8 +17,8 @@ static mut CURRENT_POSE_DEG: [f32; 3] = [0.0; 3];
 static mut LAST_TIME_MS: u32 = 0;
 
 static mut SELF_ALT: f32 = 0.0;
-static mut SELF_LAT: f32 = 55.8616372;
-static mut SELF_LONG: f32 = -4.2448985;
+static mut SELF_LAT: f32 = 0.0;// 55.8616372;
+static mut SELF_LONG: f32 = 0.0;//-4.2448985;
 static mut TARGET_DIST: f32 = 0.0;
 
 pub fn update_self_alt(alt: f32) {
@@ -115,12 +115,12 @@ pub static mut Y_DIR_PIN: Option<gpioc::PC3<Output<PushPull>>> = None;
 pub static mut TIMER5: Option<CounterHz<TIM5>> = None;
 
 const MOTOR_TICK_PERIOD_S: f32 = 0.01;
-const X_STEPS_PER_REV: f32 = 200.0 * 41.;
+const X_STEPS_PER_REV: f32 = 2080.;//200.0 * 41. * 0.25;
 const Y_STEPS_PER_REV: f32 = 200.0 * 11.;
 const X_DEG_PER_STEP: f32 = 360.0 / X_STEPS_PER_REV;
 const Y_DEG_PER_STEP: f32 = 360.0 / Y_STEPS_PER_REV;
 const MAX_FREQ_HZ: f32 = 1300.0;
-const DEADBAND_DEG: f32 = 0.1;
+const DEADBAND_DEG: f32 = 0.7;
 
 #[interrupt]
 fn TIM5() {
@@ -143,40 +143,43 @@ fn motor_tick() {
 
         // use cortex_m_semihosting::hprintln;
         // hprintln!("{} {}", error_x, error_y);
-        //
-        // if error_x.abs() < DEADBAND_DEG {
-        //     x_pwm.disable();
-        // } else {
-        //     if error_x > 0.0 {
-        //         x_dir.set_high();
-        //     } else {
-        //         x_dir.set_low();
-        //     }
-        //
-        //     let freq_hz = (error_x.abs() * 100.0).clamp(400., MAX_FREQ_HZ);
-        //     x_man.set_period((freq_hz as u32).Hz());
-        //     let max_duty = x_pwm.get_max_duty();
-        //     x_pwm.set_duty(max_duty / 2);
-        //     x_pwm.enable();
-        //
-        //     let steps_this_tick = freq_hz * MOTOR_TICK_PERIOD_S;
-        //     let deg_moved = steps_this_tick * X_DEG_PER_STEP;
-        //     writeln!(get_serial(), "Commanding {deg_moved}° x at {freq_hz}").unwrap();
-        //     if error_x > 0.0 {
-        //         CURRENT_POSE_DEG[0] += deg_moved;
-        //     } else {
-        //         CURRENT_POSE_DEG[0] -= deg_moved;
-        //     }
-        // }
 
-        x_man.set_period(200u32.Hz());
-        x_pwm.set_duty(x_pwm.get_max_duty() / 2);
-        x_pwm.enable();
+        if error_x.abs() < DEADBAND_DEG {
+            x_pwm.disable();
+        } else {
+            if error_x > 0.0 {
+                x_dir.set_high();
+            } else {
+                x_dir.set_low();
+            }
+
+            let freq_hz = (error_x.abs() * 100.0).clamp(400., MAX_FREQ_HZ);
+            x_man.set_period((freq_hz as u32).Hz());
+            let max_duty = x_pwm.get_max_duty();
+            x_pwm.set_duty(max_duty / 2);
+            x_pwm.enable();
+
+            let steps_this_tick = freq_hz * MOTOR_TICK_PERIOD_S;
+            let deg_moved = steps_this_tick * X_DEG_PER_STEP;
+            // writeln!(get_serial(), "Commanding {deg_moved}° x at {freq_hz}").unwrap();
+            if error_x > 0.0 {
+                CURRENT_POSE_DEG[0] += deg_moved;
+            } else {
+                CURRENT_POSE_DEG[0] -= deg_moved;
+            }
+        }
+
+        // x_man.set_period(200u32.Hz());
+        // x_pwm.set_duty(x_pwm.get_max_duty() / 2);
+        // x_pwm.enable();
 
         let y_pwm = Y_PWM_CHANNEL.as_mut().unwrap();
         let y_man = Y_PWM_MANAGER.as_mut().unwrap();
         let y_dir = Y_DIR_PIN.as_mut().unwrap();
 
+        // y_man.set_period(200u32.Hz());
+        // y_pwm.set_duty(y_pwm.get_max_duty() / 2);
+        // y_pwm.enable();
         if error_y.abs() < DEADBAND_DEG {
             y_pwm.disable();
         } else {
@@ -193,7 +196,7 @@ fn motor_tick() {
             y_pwm.enable();
             let steps_this_tick = freq_hz * MOTOR_TICK_PERIOD_S;
             let deg_moved = steps_this_tick * Y_DEG_PER_STEP;
-            writeln!(get_serial(), "Commanding {deg_moved}° y at {freq_hz}").unwrap();
+            // writeln!(get_serial(), "Commanding {deg_moved}° y at {freq_hz}").unwrap();
             if error_y > 0.0 {
                 CURRENT_POSE_DEG[1] += deg_moved;
             } else {

@@ -733,9 +733,42 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-
-            writeln!(get_serial(), "I'll try spinning to {}, that's a good trick", target).unwrap();
             gs::update_target_deg(Some(target), None);
+        } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
+            let Ok(command_id) = core::str::from_utf8(split[1])
+                .unwrap_or_default()
+                .trim()
+                .parse::<u32>()
+            else {
+                writeln!(get_serial(), "Invalid command ID").unwrap();
+                continue;
+            };
+
+            let Ok(lat) = core::str::from_utf8(split[2])
+                .unwrap_or_default()
+                .trim()
+                .parse::<f32>()
+            else {
+                writeln!(get_serial(), "Could not parse latitude").unwrap();
+                continue;
+            };
+
+            let Ok(long) = core::str::from_utf8(split[2])
+                .unwrap_or_default()
+                .trim()
+                .parse::<f32>()
+            else {
+                writeln!(get_serial(), "Could not parse longitude").unwrap();
+                continue;
+            };
+
+            #[cfg(not(feature = "target-maxi"))]
+            {
+                writeln!(get_serial(), "This is not the groundstation :skull:").unwrap();
+                continue;
+            }
+
+            gs::update_self_lat_long(lat, long);
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
