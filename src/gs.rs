@@ -1,3 +1,6 @@
+use crate::logs::log_str;
+use crate::usb_logger::get_serial;
+use core::fmt::Write;
 use cortex_m_semihosting::hprintln;
 use fugit::RateExtU32;
 use stm32f4xx_hal::{
@@ -7,18 +10,14 @@ use stm32f4xx_hal::{
     pac::{TIM1, TIM2, TIM5},
     timer::{CounterHz, PwmChannel, PwmHzManager},
 };
-use crate::logs::log_str;
-use crate::usb_logger::get_serial;
-use core::fmt::Write;
-
 
 static mut TARGET_POSE_DEG: [f32; 3] = [0.0; 3];
 static mut CURRENT_POSE_DEG: [f32; 3] = [0.0; 3];
 static mut LAST_TIME_MS: u32 = 0;
 
 static mut SELF_ALT: f32 = 0.0;
-static mut SELF_LAT: f32 = 0.0;// 55.8616372;
-static mut SELF_LONG: f32 = 0.0;//-4.2448985;
+static mut SELF_LAT: f32 = 0.0; // 55.8616372;
+static mut SELF_LONG: f32 = 0.0; //-4.2448985;
 static mut TARGET_DIST: f32 = 0.0;
 
 pub fn update_self_alt(alt: f32) {
@@ -30,8 +29,9 @@ pub fn update_self_alt(alt: f32) {
 pub fn update_target_alt(alt: f32) {
     unsafe {
         use micromath::F32Ext;
-        TARGET_POSE_DEG[1] = ((alt - SELF_ALT).atan2(TARGET_DIST) * 180.0 / core::f32::consts::PI + 360.) % 360.0;
-        use cortex_m_semihosting::hprintln;
+        TARGET_POSE_DEG[1] =
+            ((alt - SELF_ALT).atan2(TARGET_DIST) * 180.0 / core::f32::consts::PI + 360.) % 360.0;
+        // use cortex_m_semihosting::hprintln;
         // hprintln!("deg phi: {}", TARGET_POSE_DEG[1]);
     }
 }
@@ -47,7 +47,7 @@ pub fn update_target_deg(around: Option<f32>, updown: Option<f32>) {
     unsafe {
         if let Some(around) = around {
             TARGET_POSE_DEG[0] = around;
-        }  
+        }
 
         if let Some(updown) = updown {
             TARGET_POSE_DEG[1] = updown;
@@ -102,7 +102,7 @@ fn bearing(lat1: f32, long1: f32, lat2: f32, long2: f32) -> f32 {
     let x = f32::sin(d_long) * f32::cos(lat2);
     let y = f32::cos(lat1) * f32::sin(lat2) - f32::sin(lat1) * f32::cos(lat2) * f32::cos(d_long);
 
-    return f32::atan2(x, y);    
+    return f32::atan2(x, y);
 }
 
 pub static mut X_PWM_CHANNEL: Option<PwmChannel<TIM1, 1>> = None;
@@ -115,8 +115,8 @@ pub static mut Y_DIR_PIN: Option<gpioc::PC3<Output<PushPull>>> = None;
 pub static mut TIMER5: Option<CounterHz<TIM5>> = None;
 
 const MOTOR_TICK_PERIOD_S: f32 = 0.01;
-const X_STEPS_PER_REV: f32 = 2080.;//200.0 * 41. * 0.25;
-const Y_STEPS_PER_REV: f32 = 200.0 * 11.;
+const X_STEPS_PER_REV: f32 = 2080.; //200.0 * 41. * 0.25;
+const Y_STEPS_PER_REV: f32 = 770. * 11.; //200.0 * 11.;
 const X_DEG_PER_STEP: f32 = 360.0 / X_STEPS_PER_REV;
 const Y_DEG_PER_STEP: f32 = 360.0 / Y_STEPS_PER_REV;
 const MAX_FREQ_HZ: f32 = 1300.0;

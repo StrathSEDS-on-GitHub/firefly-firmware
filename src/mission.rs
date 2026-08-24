@@ -1,4 +1,3 @@
-use crate::{CAPACITY, gs};
 use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
 use crate::logs::log;
@@ -9,6 +8,7 @@ use crate::logs::{
 use crate::pins::QspiBank;
 use crate::pins::TARGET;
 use crate::pins::i2c::LrhpImu;
+use crate::{CAPACITY, gs};
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
@@ -424,16 +424,17 @@ pub async fn usb_handler() -> ! {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-info role").unwrap();
                 continue;
-            }; 
-
-            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0,
             };
+
+            let response_identifier =
+                match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Info)
@@ -446,14 +447,15 @@ pub async fn usb_handler() -> ! {
                 continue;
             };
 
-            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0,
-            };
+            let response_identifier =
+                match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Erase)
@@ -464,16 +466,17 @@ pub async fn usb_handler() -> ! {
             let Some(role) = parse_role(split[1]) else {
                 writeln!(get_serial(), "Invalid remote-free role");
                 continue;
-            }; 
-
-            let response_identifier = match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
-                .unwrap_or_default()
-                .trim()
-                .parse::<u16>()
-            {
-                Ok(response_identifier) => response_identifier,
-                _ => 0
             };
+
+            let response_identifier =
+                match core::str::from_utf8(split.get(2).unwrap_or(&(b"" as &[u8])))
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u16>()
+                {
+                    Ok(response_identifier) => response_identifier,
+                    _ => 0,
+                };
 
             radio::queue_packet(
                 MessageType::new_command(role, response_identifier, CommandType::Free)
@@ -733,7 +736,7 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_deg(Some(target), None);
+            gs::update_target_deg(None, Some(target));
         } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
             let Ok(command_id) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
@@ -892,7 +895,7 @@ async fn bmp_altimeter_handler(
             for frame in &frames {
                 let pressure = frame.pressure;
                 let temperature = frame.temperature;
-               
+
                 // fails if all the temperature frames are bad (in which case we're fucked anyways)
                 // also fails if the temperature is about 100 degrees (in which case we're doubly fucked)
                 if temperature < 100. {
@@ -993,7 +996,7 @@ async fn handle_incoming_packets() -> ! {
                                 if role() == Role::GroundMain {
                                     crate::gs::update_target_lat_long(latitude, longitude);
                                 }
-                                 
+
                                 writeln!(
                                     get_serial(),
                                     "[{}] [{source:?} {:?} gps] {latitude},{longitude},{altitude}",
@@ -1210,10 +1213,12 @@ async fn handle_incoming_packets() -> ! {
                                 ATOMIC_ID.store(id, core::sync::atomic::Ordering::Relaxed);
                                 get_space_left(&move |free| {
                                     radio::queue_packet(
-                                        MessageType::CommandResponse { 
-                                            id: ATOMIC_ID.load(core::sync::atomic::Ordering::Relaxed),
-                                            response: CommandResponseType::Free { free }
-                                        }.into_message(radio_ctxt()),
+                                        MessageType::CommandResponse {
+                                            id: ATOMIC_ID
+                                                .load(core::sync::atomic::Ordering::Relaxed),
+                                            response: CommandResponseType::Free { free },
+                                        }
+                                        .into_message(radio_ctxt()),
                                     );
                                 })
                                 .await;
@@ -1686,14 +1691,7 @@ pub async fn ms5607_altimeter_handler(
     }
 }
 
-pub async fn begin
-// <
-//     #[cfg(feature = "target-ultra")] T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
-//         + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
-//     I,
-//     #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] T: core::fmt::Debug,
-// >
-(
+pub async fn begin(
     altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
     // imu: LrhpImu<I>,
@@ -1772,8 +1770,7 @@ where
             )
             .0
         }
-        Role::Avionics =>
-        {
+        Role::Avionics => {
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
@@ -1788,8 +1785,7 @@ where
             )
             .0
         }
-        Role::Cansat =>
-        {
+        Role::Cansat => {
             #[allow(unreachable_code)]
             join!(
                 usb_handler(),
