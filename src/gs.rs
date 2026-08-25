@@ -115,11 +115,11 @@ pub static mut Y_DIR_PIN: Option<gpioc::PC3<Output<PushPull>>> = None;
 pub static mut TIMER5: Option<CounterHz<TIM5>> = None;
 
 const MOTOR_TICK_PERIOD_S: f32 = 0.01;
-const X_STEPS_PER_REV: f32 = 2080.; //200.0 * 41. * 0.25;
-const Y_STEPS_PER_REV: f32 = 770. * 11.; //200.0 * 11.;
+const X_STEPS_PER_REV: f32 = 2080.; 
+const Y_STEPS_PER_REV: f32 = 770. * 11.; 
 const X_DEG_PER_STEP: f32 = 360.0 / X_STEPS_PER_REV;
 const Y_DEG_PER_STEP: f32 = 360.0 / Y_STEPS_PER_REV;
-const MAX_FREQ_HZ: f32 = 1300.0;
+const MAX_FREQ_HZ: f32 = 600.0;
 const DEADBAND_DEG: f32 = 0.7;
 
 #[interrupt]
