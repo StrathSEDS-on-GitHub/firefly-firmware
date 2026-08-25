@@ -712,22 +712,28 @@ pub async fn usb_handler() -> ! {
             })
             .await;
         } else if split.len() == 3 && split[0].starts_with(b"spin-around") {
-            let Ok(target_x) = core::str::from_utf8(split[1])
-                .unwrap_or_default()
-                .trim()
-                .parse::<f32>()
-            else {
-                writeln!(get_serial(), "Invalid target x").unwrap();
-                continue;
+            let x = core::str::from_utf8(split[1]).unwrap_or_default().trim();
+            let target_x = match x {
+                "-" => None,
+                _ => match x.parse::<f32>() {
+                    Ok(val) => Some(val),
+                    Err(_) => {
+                        writeln!(get_serial(), "Invalid target x").unwrap();
+                        continue;
+                    }
+                },
             };
 
-            let Ok(target_y) = core::str::from_utf8(split[2])
-                .unwrap_or_default()
-                .trim()
-                .parse::<f32>()
-            else {
-                writeln!(get_serial(), "Invalid target y").unwrap();
-                continue;
+            let y = core::str::from_utf8(split[2]).unwrap_or_default().trim();
+            let target_y = match y {
+                "-" => None,
+                _ => match y.parse::<f32>() {
+                    Ok(val) => Some(val),
+                    Err(_) => {
+                        writeln!(get_serial(), "Invalid target y").unwrap();
+                        continue;
+                    }
+                },
             };
 
             #[cfg(not(feature = "target-maxi"))]
@@ -736,7 +742,7 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_deg(Some(target_x), Some(target_y));
+            gs::update_target_deg(target_x, target_y);
         } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
             let Ok(command_id) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
