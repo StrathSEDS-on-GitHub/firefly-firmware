@@ -712,21 +712,21 @@ pub async fn usb_handler() -> ! {
             })
             .await;
         } else if split.len() == 3 && split[0].starts_with(b"spin-around") {
-            let Ok(command_id) = core::str::from_utf8(split[1])
-                .unwrap_or_default()
-                .trim()
-                .parse::<u32>()
-            else {
-                writeln!(get_serial(), "Invalid command ID").unwrap();
-                continue;
-            };
-
-            let Ok(target) = core::str::from_utf8(split[2])
+            let Ok(target_x) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
                 .parse::<f32>()
             else {
-                writeln!(get_serial(), "Not a good angle or smth idk").unwrap();
+                writeln!(get_serial(), "Invalid target x").unwrap();
+                continue;
+            };
+
+            let Ok(target_y) = core::str::from_utf8(split[2])
+                .unwrap_or_default()
+                .trim()
+                .parse::<f32>()
+            else {
+                writeln!(get_serial(), "Invalid target y").unwrap();
                 continue;
             };
 
@@ -736,7 +736,7 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_deg(None, Some(target));
+            gs::update_target_deg(Some(target_x), Some(target_y));
         } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
             let Ok(command_id) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
