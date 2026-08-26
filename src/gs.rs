@@ -112,8 +112,8 @@ pub static mut Y_DIR_PIN: Option<gpioc::PC3<Output<PushPull>>> = None;
 pub static mut TIMER5: Option<CounterHz<TIM5>> = None;
 
 const MOTOR_TICK_PERIOD_S: f32 = 0.01;
-const X_STEPS_PER_REV: f32 = 2080.; 
-const Y_STEPS_PER_REV: f32 = 770. * 11.; 
+const X_STEPS_PER_REV: f32 = 2080.;
+const Y_STEPS_PER_REV: f32 = 770. * 11.;
 const X_DEG_PER_STEP: f32 = 360.0 / X_STEPS_PER_REV;
 const Y_DEG_PER_STEP: f32 = 360.0 / Y_STEPS_PER_REV;
 const MAX_FREQ_HZ: f32 = 1100.0;
@@ -131,8 +131,6 @@ fn TIM5() {
 // called in ISR every 10ms
 fn motor_tick() {
     unsafe {
-        writeln!(get_serial(), "Target: {}°", TARGET_POSE_DEG[0]).unwrap();
-
         let x_pwm = X_PWM_CHANNEL.as_mut().unwrap();
         let x_man = X_PWM_MANAGER.as_mut().unwrap();
         let x_dir = X_DIR_PIN.as_mut().unwrap();
@@ -166,6 +164,13 @@ fn motor_tick() {
             } else {
                 CURRENT_POSE_DEG[0] -= deg_moved;
             }
+            writeln!(
+                get_serial(),
+                "x target: {}°, current: {}°",
+                TARGET_POSE_DEG[0],
+                CURRENT_POSE_DEG[0]
+            )
+            .unwrap();
         }
 
         // x_man.set_period(200u32.Hz());
@@ -201,6 +206,13 @@ fn motor_tick() {
             } else {
                 CURRENT_POSE_DEG[1] -= deg_moved;
             }
+            writeln!(
+                get_serial(),
+                "y target: {}°, current: {}°",
+                TARGET_POSE_DEG[1],
+                CURRENT_POSE_DEG[1]
+            )
+            .unwrap();
         }
     }
 }

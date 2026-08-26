@@ -743,7 +743,7 @@ pub async fn usb_handler() -> ! {
             }
 
             gs::update_target_deg(target_x, target_y);
-        } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
+        } else if split.len() == 3 && split[0].starts_with(b"set-coords") {
             let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
@@ -769,7 +769,7 @@ pub async fn usb_handler() -> ! {
             }
 
             gs::update_self_lat_long(lat, long);
-        } else if split.len() == 4 && split[0].starts_with(b"set-remote-coords") {
+        } else if split.len() == 3 && split[0].starts_with(b"set-remote-coords") {
             let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
@@ -795,6 +795,23 @@ pub async fn usb_handler() -> ! {
             }
 
             gs::update_target_lat_long(lat, long);
+        } else if split.len() == 2 && split[0].starts_with(b"set-target-alt") {
+            let Ok(alt) = core::str::from_utf8(split[1])
+                .unwrap_or_default()
+                .trim()
+                .parse::<f32>()
+            else {
+                writeln!(get_serial(), "Could not parse altitude").unwrap();
+                continue;
+            };
+
+            #[cfg(not(feature = "target-maxi"))]
+            {
+                writeln!(get_serial(), "This is not the groundstation :skull:").unwrap();
+                continue;
+            }
+
+            gs::update_target_alt(alt);
         } else {
             writeln!(get_serial(), "Invalid command").unwrap();
         }
