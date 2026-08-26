@@ -769,7 +769,17 @@ pub async fn usb_handler() -> ! {
             }
 
             gs::update_self_lat_long(lat, long);
-        } else if split.len() == 3 && split[0].starts_with(b"set-remote-coords") {
+        } else if split[0].starts_with(b"set-remote-coords") {
+            if split.len() != 3 {
+                writeln!(
+                    get_serial(),
+                    "Invalid set-remote-coords command: command: [{}]",
+                    core::str::from_utf8(bytes).unwrap_or_default()
+                )
+                .unwrap();
+                continue;
+            }
+
             let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
@@ -813,7 +823,12 @@ pub async fn usb_handler() -> ! {
 
             gs::update_target_alt(alt);
         } else {
-            writeln!(get_serial(), "Invalid command").unwrap();
+            writeln!(
+                get_serial(),
+                "Invalid command, command entered: [{}]",
+                core::str::from_utf8(bytes).unwrap_or_default()
+            )
+            .unwrap();
         }
 
         // writeln!(get_serial(), "Received: {:?}", core::str::from_utf8(bytes)).unwrap();
