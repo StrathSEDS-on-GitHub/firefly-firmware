@@ -744,16 +744,7 @@ pub async fn usb_handler() -> ! {
 
             gs::update_target_deg(target_x, target_y);
         } else if split.len() == 4 && split[0].starts_with(b"set-coords") {
-            let Ok(command_id) = core::str::from_utf8(split[1])
-                .unwrap_or_default()
-                .trim()
-                .parse::<u32>()
-            else {
-                writeln!(get_serial(), "Invalid command ID").unwrap();
-                continue;
-            };
-
-            let Ok(lat) = core::str::from_utf8(split[2])
+            let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
                 .parse::<f32>()
@@ -779,16 +770,7 @@ pub async fn usb_handler() -> ! {
 
             gs::update_self_lat_long(lat, long);
         } else if split.len() == 4 && split[0].starts_with(b"set-remote-coords") {
-            let Ok(command_id) = core::str::from_utf8(split[1])
-                .unwrap_or_default()
-                .trim()
-                .parse::<u32>()
-            else {
-                writeln!(get_serial(), "Invalid command ID").unwrap();
-                continue;
-            };
-
-            let Ok(lat) = core::str::from_utf8(split[2])
+            let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
                 .trim()
                 .parse::<f32>()

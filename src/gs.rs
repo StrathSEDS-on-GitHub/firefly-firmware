@@ -1,7 +1,5 @@
-use crate::logs::log_str;
 use crate::usb_logger::get_serial;
 use core::fmt::Write;
-use cortex_m_semihosting::hprintln;
 use fugit::RateExtU32;
 use stm32f4xx_hal::{
     ClearFlags,
@@ -57,18 +55,17 @@ pub fn update_target_deg(around: Option<f32>, updown: Option<f32>) {
 
 pub fn update_target_lat_long(lat: f32, long: f32) {
     unsafe {
-        // TARGET_DIST = dist(SELF_LAT, SELF_LONG, lat, long);
-        TARGET_POSE_DEG[0] = 90.;//((bearing(SELF_LAT, SELF_LONG, lat, long).to_degrees() + 360.) % 360.);
-        // writeln!(get_serial(), "angle {}", TARGET_POSE_DEG[0]);
-        use cortex_m_semihosting::hprintln;
-        hprintln!("deg theta: {}", TARGET_POSE_DEG[0]);
-        hprintln!("dist: {}", TARGET_DIST);
+        TARGET_DIST = dist(SELF_LAT, SELF_LONG, lat, long);
+        TARGET_POSE_DEG[0] = (bearing(SELF_LAT, SELF_LONG, lat, long).to_degrees() + 360.) % 360.;
+        writeln!(get_serial(), "deg theta: {}", TARGET_POSE_DEG[0]).unwrap();
+        writeln!(get_serial(), "dist: {}", TARGET_DIST).unwrap();
     }
 }
 
 fn haversine(x: f32) -> f32 {
     use micromath::F32Ext;
-    return 0.5 * (1. - f32::cos(x));
+    let thing = f32::sin(0.5 * x);
+    thing * thing
 }
 
 // returns distance in meters
