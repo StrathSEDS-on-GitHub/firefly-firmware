@@ -1,5 +1,6 @@
 use crate::gps::{GPS, GPSParser};
 use crate::logs::FixedWriter;
+use crate::i2c::HrlpImu;
 use crate::logs::log;
 use crate::logs::log_handler;
 use crate::logs::{
@@ -8,7 +9,7 @@ use crate::logs::{
 use crate::pins::QspiBank;
 use crate::pins::TARGET;
 use crate::pins::i2c::LrhpImu;
-use crate::{CAPACITY, gs};
+use crate::{CAPACITY};
 use crate::{futures::TimerDelay, pins::pyro::*};
 use bmi323::{Bmi323, interface::SpiInterface};
 use bmm350::Bmm350;
@@ -742,7 +743,10 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_deg(target_x, target_y);
+            #[cfg(feature = "target-maxi")]
+            {
+                gs::update_target_deg(target_x, target_y);
+            }
         } else if split.len() == 3 && split[0].starts_with(b"set-coords") {
             let Ok(lat) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
@@ -768,7 +772,10 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_self_lat_long(lat, long);
+            #[cfg(feature = "target-maxi")]
+            {
+                gs::update_self_lat_long(lat, long);
+            }
         } else if split[0].starts_with(b"set-remote-coords") {
             if split.len() != 3 {
                 writeln!(
@@ -804,7 +811,10 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_lat_long(lat, long);
+            #[cfg(feature = "target-maxi")]
+            {
+                gs::update_target_lat_long(lat, long);
+            }
         } else if split.len() == 2 && split[0].starts_with(b"set-target-alt") {
             let Ok(alt) = core::str::from_utf8(split[1])
                 .unwrap_or_default()
@@ -821,7 +831,10 @@ pub async fn usb_handler() -> ! {
                 continue;
             }
 
-            gs::update_target_alt(alt);
+            #[cfg(feature = "target-maxi")]
+            {
+                gs::update_target_alt(alt);
+            }
         } else {
             writeln!(
                 get_serial(),
@@ -913,8 +926,6 @@ async fn gps_handler(mut gps: GPS) -> ! {
             #[cfg(feature = "target-maxi")]
             if role() == Role::GroundMain {
                 crate::gs::update_self_lat_long(sample.latitude, sample.longitude);
-                use cortex_m_semihosting::hprintln;
-                hprintln!("{} {}", sample.latitude, sample.longitude);
             }
         }
 
@@ -965,13 +976,9 @@ async fn bmp_altimeter_handler(
             // ^^^ Why the fuck are we dropping all but the last sample
 
             if role() == Role::GroundMain {
-                use cortex_m_semihosting::hprintln;
-                // hprintln!(" p{} t{}", sample.pressure, sample.temperature);
                 let alt = (libm::powf(101325. / sample.pressure, 1.0 / 5.257) - 1.0)
                     * (sample.temperature + 273.15)
                     / 0.0065;
-
-                // hprintln!(" a{}", alt);
 
                 crate::gs::update_self_alt(alt);
             }
@@ -1746,12 +1753,17 @@ pub async fn ms5607_altimeter_handler(
     }
 }
 
-pub async fn begin(
+pub async fn begin<
+    #[cfg(feature = "target-ultra")] T: bmm350::interface::WriteData<Error = bmm350::Error<crate::hal::i2c::Error>>
+        + bmm350::interface::ReadData<Error = bmm350::Error<crate::hal::i2c::Error>>,
+    I,
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] T: core::fmt::Debug,
+>(
     altimeter: Option<Altimeter>,
     pr_timer: Counter<TIM12, 10000>,
-    // imu: LrhpImu<I>,
-    // imu_timer: Counter<impl Instance, 100000>,
-    #[cfg(feature = "target-ultra")] adxl_imu: HrlpImu<impl SpiDevice<u8>>,
+    imu: LrhpImu<I>,
+    imu_timer: Counter<impl Instance, 100000>,
+    // #[cfg(feature = "target-ultra")] adxl_imu: HrlpImu<impl SpiDevice<u8>>,
     #[cfg(feature = "target-ultra")] bmm350: Option<
         Bmm350<T, stm32f4xx_hal::timer::Delay<impl stm32f4xx_hal::timer::Instance, 1000000>>,
     >,
@@ -1761,12 +1773,9 @@ pub async fn begin(
     log_receiver: StaticReceiver<StorageTask>,
 ) -> !
 where
-    // #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))]
-    // I: SpiDevice,
-    // #[cfg(feature = "target-mini")]
-    // I: I2c,
-    // #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))]
-    // I: bno080::interface::SensorInterface<SensorError = T>,
+    #[cfg(any(feature = "target-ultra", feature = "ultra-dev"))] I: SpiDevice,
+    #[cfg(feature = "target-mini")] I: I2c,
+    #[cfg(all(feature = "target-maxi", not(feature = "ultra-dev")))] I: bno080::interface::SensorInterface<SensorError = T>,
 {
     static PRESSURE_CHANNEL: StaticChannel<FifoFrames, 10> = StaticChannel::new();
     let (pressure_sender, pressure_receiver) = PRESSURE_CHANNEL.split();
